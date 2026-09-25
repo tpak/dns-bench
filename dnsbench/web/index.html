@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <meta name="description" content="Benchmark DNS resolvers politely and pick the fastest one.">
+  <title>DNS Bench</title>
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%23111'/%3E%3Crect x='7' y='8' width='12' height='4' rx='2' fill='%233987e5'/%3E%3Crect x='7' y='14' width='18' height='4' rx='2' fill='%23eb6834'/%3E%3Crect x='7' y='20' width='8' height='4' rx='2' fill='%231baf7a'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="/static/style.css">
+  <script src="/static/app.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+
+  <header class="appbar">
+    <div class="appbar-inner">
+      <a class="brand" href="#overview" aria-label="DNS Bench home">
+        <svg class="brand-mark" viewBox="0 0 32 32" width="32" height="32" aria-hidden="true">
+          <rect width="32" height="32" rx="8" class="brand-bg"/>
+          <rect x="7" y="8" width="12" height="4" rx="2" class="brand-b1"/>
+          <rect x="7" y="14" width="18" height="4" rx="2" class="brand-b2"/>
+          <rect x="7" y="20" width="8" height="4" rx="2" class="brand-b3"/>
+        </svg>
+        <span class="brand-text">
+          <span class="brand-name">DNS Bench</span>
+          <span class="brand-sub">Resolver latency benchmark</span>
+        </span>
+      </a>
+
+      <div class="run-controls">
+        <label class="rounds-field" for="rounds-input" title="How many times each domain is queried on each server (this run only)">
+          <span>Rounds</span>
+          <input id="rounds-input" class="input input-num" type="number" min="1" max="10" step="1" value="1" inputmode="numeric">
+        </label>
+        <button id="run-btn" class="btn btn-primary" type="button" disabled>Run benchmark</button>
+        <div id="run-estimate" class="run-estimate" aria-live="off"></div>
+      </div>
+    </div>
+
+    <nav class="tabs-bar" aria-label="Views">
+      <div id="tabs" class="tabs" role="tablist">
+        <a role="tab" id="tab-overview" data-tab="overview" href="#overview" aria-selected="true" aria-controls="main">Overview</a>
+        <a role="tab" id="tab-resolver" data-tab="resolver" href="#resolver" aria-selected="false" aria-controls="main" tabindex="-1">By resolver</a>
+        <a role="tab" id="tab-domain" data-tab="domain" href="#domain" aria-selected="false" aria-controls="main" tabindex="-1">By domain</a>
+        <a role="tab" id="tab-history" data-tab="history" href="#history" aria-selected="false" aria-controls="main" tabindex="-1">History</a>
+        <a role="tab" id="tab-settings" data-tab="settings" href="#settings" aria-selected="false" aria-controls="main" tabindex="-1">Settings</a>
+      </div>
+    </nav>
+  </header>
+
+  <div class="page">
+    <div id="banners" class="banners"></div>
+    <section id="progress" class="card progress-card" aria-label="Benchmark progress" hidden></section>
+    <div id="dataset-bar" class="dataset-bar" hidden></div>
+    <main id="main" role="tabpanel" tabindex="-1" aria-labelledby="tab-overview"></main>
+    <footer class="page-footer">DNS Bench · queries are rate-limited per server so public resolvers are never flooded.</footer>
+  </div>
+
+  <div id="tooltip" class="tooltip" role="tooltip" hidden></div>
+  <div id="toasts" class="toasts" role="status" aria-live="polite"></div>
+
+  <noscript><p class="noscript">DNS Bench needs JavaScript to show results. You can still use the command line: <code>./dns-bench run</code>.</p></noscript>
+</body>
+</html>

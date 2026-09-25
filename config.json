@@ -1,0 +1,116 @@
+{
+  "resolvers": [
+    {
+      "name": "OpenDNS",
+      "servers": [
+        "208.67.222.222",
+        "208.67.220.220"
+      ],
+      "enabled": true
+    },
+    {
+      "name": "Cloudflare",
+      "servers": [
+        "1.1.1.1",
+        "1.0.0.1"
+      ],
+      "enabled": true
+    },
+    {
+      "name": "Google",
+      "servers": [
+        "8.8.8.8",
+        "8.8.4.4"
+      ],
+      "enabled": true
+    },
+    {
+      "name": "Quad9",
+      "servers": [
+        "9.9.9.9",
+        "149.112.112.112"
+      ],
+      "enabled": false
+    },
+    {
+      "name": "ISP",
+      "servers": [
+        "61.9.134.49",
+        "61.9.133.193"
+      ],
+      "enabled": true
+    }
+  ],
+  "domains": [
+    "google.com",
+    "bbc.co.uk",
+    "reddit.com",
+    "amazon.com",
+    "github.com",
+    "wikipedia.org",
+    "apple.com",
+    "microsoft.com",
+    "netflix.com",
+    "spotify.com",
+    "twitter.com",
+    "linkedin.com",
+    "instagram.com",
+    "nytimes.com",
+    "cnn.com",
+    "yahoo.com",
+    "ebay.com",
+    "paypal.com",
+    "stackoverflow.com",
+    "dropbox.com",
+    "salesforce.com",
+    "adobe.com",
+    "oracle.com",
+    "ibm.com",
+    "intel.com",
+    "samsung.com",
+    "sony.com",
+    "nike.com",
+    "airbnb.com",
+    "uber.com",
+    "slack.com",
+    "zoom.us",
+    "shopify.com",
+    "wordpress.com",
+    "wikimedia.org",
+    "mozilla.org",
+    "cloudflare.com",
+    "digitalocean.com",
+    "heroku.com",
+    "atlassian.com",
+    "trello.com",
+    "notion.so",
+    "figma.com",
+    "canva.com",
+    "twitch.tv",
+    "pinterest.com",
+    "tumblr.com",
+    "quora.com",
+    "medium.com",
+    "etsy.com",
+    "commbank.com.au",
+    "anz.com.au",
+    "westpac.com.au",
+    "nab.com.au",
+    "telstra.com.au",
+    "optus.com.au",
+    "woolworths.com.au",
+    "coles.com.au",
+    "news.com.au",
+    "realestate.com.au"
+  ],
+  "settings": {
+    "per_server_interval_ms": 250,
+    "timeout_ms": 1000,
+    "tries": 1,
+    "rounds": 1,
+    "max_parallel_servers": 8,
+    "slow_threshold_ms": 200,
+    "record_type": "A",
+    "shuffle": true
+  }
+}

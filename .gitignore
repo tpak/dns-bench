@@ -1,0 +1,7 @@
+# Every benchmark run is saved here; keep the folder but not the data.
+runs/*
+!runs/.gitkeep
+
+__pycache__/
+*.py[cod]
+.DS_Store

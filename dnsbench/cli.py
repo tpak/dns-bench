@@ -1,0 +1,479 @@
+"""Command-line entry point: ``dns-bench run|serve|list|report|config``."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import signal
+import sys
+import tempfile
+import threading
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+
+from . import __version__
+from . import config as config_mod
+from . import report, runner, storage
+
+EXIT_OK, EXIT_ERROR, EXIT_USAGE, EXIT_INTERRUPTED = 0, 1, 2, 130
+
+
+def _err(msg: str) -> None:
+    print(f"dns-bench: {msg}", file=sys.stderr)
+
+
+# --------------------------------------------------------------------------- #
+# Live progress
+# --------------------------------------------------------------------------- #
+
+class Progress:
+    """Progress callback for run_benchmark (calls are serialised by the runner)."""
+
+    def __init__(self, total: int, slow_threshold_ms: float, stream=None, quiet: bool = False):
+        self.stream = stream or sys.stderr
+        self.total = total
+        self.slow_ms = slow_threshold_ms
+        self.quiet = quiet
+        try:
+            self.tty = self.stream.isatty()
+        except (AttributeError, ValueError):
+            self.tty = False
+        self.t0 = time.monotonic()
+        self.done = 0
+        self.slow = 0
+        self.failed = 0
+        self._last_draw = 0.0
+        self._last_line = self.t0
+        self._drawn = False
+
+    def __call__(self, event: dict) -> None:
+        row = event["result"]
+        self.done = event["done"]
+        self.total = event["total"]
+        where = f"{row['resolver']} {row['server']} {row['domain']}"
+        if row["status"] != "ok":
+            self.failed += 1
+            if row["status"] == "timeout":
+                why = "timeout"
+            elif row.get("rcode"):
+                why = row["rcode"] + (f" ({row['ms']:.1f}ms)" if row.get("ms") is not None else "")
+            else:
+                why = f"error: {row.get('error')}"
+            self._emit(f"  [fail] {where} -> {why}")
+        elif row["ms"] is not None and row["ms"] > self.slow_ms:
+            self.slow += 1
+            self._emit(f"  [slow] {where} -> {row['ms']:.1f}ms")
+        self._draw()
+
+    def _status(self) -> str:
+        elapsed = time.monotonic() - self.t0
+        pct = 100.0 * self.done / self.total if self.total else 100.0
+        eta = elapsed * (self.total - self.done) / self.done if self.done else None
+        eta_txt = f"{eta:.0f}s" if eta is not None else "?"
+        return (f"{self.done}/{self.total} {pct:3.0f}%  elapsed {elapsed:.1f}s  ETA {eta_txt}  "
+                f"slow {self.slow}  fail {self.failed}")
+
+    def _emit(self, line: str) -> None:
+        if self.quiet:
+            return
+        if self.tty:
+            self.stream.write("\r\x1b[K" + line + "\n")
+            self._draw(force=True)
+        else:
+            self.stream.write(line + "\n")
+        self.stream.flush()
+
+    def _draw(self, force: bool = False) -> None:
+        if self.quiet:
+            return
+        now = time.monotonic()
+        final = self.done >= self.total
+        if self.tty:
+            if force or final or now - self._last_draw >= 0.1:
+                self._last_draw = now
+                self._drawn = True
+                self.stream.write("\r\x1b[K  " + self._status())
+                self.stream.flush()
+        elif final or now - self._last_line >= 5.0:
+            self._last_line = now
+            self.stream.write("  progress: " + self._status() + "\n")
+            self.stream.flush()
+
+    def finish(self) -> None:
+        if self.tty and self._drawn and not self.quiet:
+            self.stream.write("\r\x1b[K")
+            self.stream.flush()
+
+
+# --------------------------------------------------------------------------- #
+# Commands
+# --------------------------------------------------------------------------- #
+
+def _apply_run_overrides(cfg: dict, args) -> list[str]:
+    s = cfg["settings"]
+    if args.rounds is not None:
+        s["rounds"] = args.rounds
+    if args.interval_ms is not None:
+        s["per_server_interval_ms"] = args.interval_ms
+    if args.timeout_ms is not None:
+        s["timeout_ms"] = args.timeout_ms
+    if args.resolvers:
+        wanted = [w.strip() for w in args.resolvers.split(",") if w.strip()]
+        by_name = {r["name"].casefold(): r for r in cfg["resolvers"]}
+        unknown = [w for w in wanted if w.casefold() not in by_name]
+        if unknown:
+            names = ", ".join(r["name"] for r in cfg["resolvers"])
+            return [f"unknown resolver(s): {', '.join(unknown)} (configured: {names})"]
+        keep = {w.casefold() for w in wanted}
+        for r in cfg["resolvers"]:
+            r["enabled"] = r["name"].casefold() in keep
+    return config_mod.validate_config(cfg)
+
+
+def _check_runs_dir(runs_dir: Path) -> str | None:
+    """Make sure a run can be saved BEFORE sending any DNS traffic."""
+    try:
+        runs_dir.mkdir(parents=True, exist_ok=True)
+        fd, probe = tempfile.mkstemp(prefix=".tmp-", suffix=".part", dir=str(runs_dir))
+        os.close(fd)
+        os.unlink(probe)
+    except OSError as exc:
+        return f"cannot write to {runs_dir}: {exc.strerror or exc}"
+    return None
+
+
+def _rescue_run(run: dict) -> Path | None:
+    """Last resort when the runs dir fails mid-save: keep the data in the temp dir."""
+    try:
+        fd, path = tempfile.mkstemp(prefix=f"dns-bench-{run.get('id', 'run')}-", suffix=".json")
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(run, fh, indent=2, ensure_ascii=False)
+            fh.write("\n")
+        return Path(path)
+    except OSError:
+        return None
+
+
+def cmd_run(args) -> int:
+    cfg = config_mod.load_config(args.config)
+    errors = _apply_run_overrides(cfg, args)
+    if errors:
+        for e in errors:
+            _err(e)
+        return EXIT_USAGE
+    if not args.no_save:
+        problem = _check_runs_dir(args.runs_dir)
+        if problem:
+            _err(problem + " (use --runs-dir DIR, or --no-save)")
+            return EXIT_ERROR
+    cfg = config_mod.normalize_config(cfg)
+    est = config_mod.estimate(cfg)
+    s = cfg["settings"]
+    names = [r["name"] for r in config_mod.enabled_resolvers(cfg)]
+    if not args.quiet:
+        print(f"Benchmarking {len(names)} resolver{'s' if len(names) != 1 else ''} "
+              f"({est['servers']} server{'s' if est['servers'] != 1 else ''}: {', '.join(names)}) "
+              f"x {len(cfg['domains'])} domains x {s['rounds']} round{'s' if s['rounds'] != 1 else ''} "
+              f"= {est['queries']} queries", file=sys.stderr)
+        print(f"Polite pacing: 1 query in flight per server, >= {s['per_server_interval_ms']} ms apart "
+              f"(<= {est['max_qps_per_server']:g} q/s per server, <= {est['max_qps_total']:g} q/s total). "
+              f"Estimated time ~{est['est_seconds']:.0f} s. Ctrl-C to stop early.", file=sys.stderr)
+
+    progress = Progress(est["queries"], s["slow_threshold_ms"], quiet=args.quiet)
+    cancel = threading.Event()
+
+    def on_sigint(signum, frame):
+        cancel.set()
+        signal.signal(signal.SIGINT, signal.default_int_handler)  # 2nd Ctrl-C: hard interrupt
+        if not args.quiet:
+            sys.stderr.write("\r\x1b[K" if progress.tty else "\n")
+            sys.stderr.write("Cancelling: waiting for in-flight queries, then saving the partial run...\n")
+            sys.stderr.flush()
+
+    previous = signal.signal(signal.SIGINT, on_sigint)
+    try:
+        run = runner.run_benchmark(cfg, progress=progress, cancel_event=cancel)
+    finally:
+        signal.signal(signal.SIGINT, previous)
+        progress.finish()
+
+    saved_path = None
+    save_error = None
+    if args.no_save:
+        storage.finalize_run(run)
+    else:
+        try:
+            saved_path = storage.save_run(run, args.runs_dir)
+        except OSError as exc:  # full disk, permissions changed mid-run, ...
+            save_error = exc
+            if "summary" not in run or "recommendation" not in run:
+                storage.finalize_run(run)
+
+    # The report goes out first, so the measurements are never lost.
+    if args.json:
+        json.dump(run, sys.stdout, indent=2, ensure_ascii=False)
+        sys.stdout.write("\n")
+    else:
+        sys.stdout.write(report.render_text(run))
+    sys.stdout.flush()
+    if saved_path is not None:
+        txt = saved_path.with_suffix(".txt")
+        print(f"Saved: {saved_path} (report: {txt.name})", file=sys.stderr)
+    if save_error is not None:
+        why = save_error.strerror or save_error
+        json_path = args.runs_dir / f"{run.get('id')}.json"
+        if storage.valid_run_id(run.get("id")) and json_path.is_file():
+            _err(f"the run was saved as {json_path}, but its text report could not be written: {why}")
+        else:
+            _err(f"could not save run to {args.runs_dir}: {why}")
+        rescued = _rescue_run(run)
+        if rescued is not None:
+            _err(f"the full run record was written to {rescued} instead")
+    if run["status"] == "cancelled":
+        print(f"Run cancelled after {len(run['results'])} of {est['queries']} queries.", file=sys.stderr)
+        return EXIT_INTERRUPTED
+    if save_error is not None:
+        return EXIT_ERROR
+    overall = (run.get("summary") or {}).get("overall") or {}
+    if run.get("results") and not overall.get("ok"):
+        _err("no resolver returned any successful answers "
+             "(check your network connection and that outbound UDP port 53 is allowed)")
+        return EXIT_ERROR
+    return EXIT_OK
+
+
+def _raise_interrupt(signum, frame):
+    raise KeyboardInterrupt
+
+
+def cmd_serve(args) -> int:
+    from . import server
+    # Explicit handlers: Ctrl-C and `kill` both stop cleanly (a running job is
+    # cancelled and its partial run saved), even if SIGINT was inherited as ignored.
+    signal.signal(signal.SIGINT, _raise_interrupt)
+    signal.signal(signal.SIGTERM, _raise_interrupt)
+    try:
+        server.serve(args.host, args.port, args.config, args.runs_dir, open_browser=args.open,
+                     quiet=False)
+    except (OSError, OverflowError) as exc:
+        _err(f"cannot listen on {args.host}:{args.port}: {exc}")
+        return EXIT_ERROR
+    except KeyboardInterrupt:
+        print("\nStopped.", file=sys.stderr)
+        return EXIT_INTERRUPTED
+    return EXIT_OK
+
+
+def _local(iso: str | None) -> str:
+    if not iso:
+        return "?"
+    try:
+        dt = datetime.strptime(iso, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+        return dt.astimezone().strftime("%Y-%m-%d %H:%M")
+    except ValueError:
+        return iso
+
+
+def cmd_list(args) -> int:
+    rows = storage.list_runs(args.runs_dir)
+    if not rows:
+        print(f"No runs saved yet in {args.runs_dir}. Start one with: dns-bench run")
+        return EXIT_OK
+    table = []
+    for r in rows:
+        table.append([
+            r["id"], _local(r.get("started_at")),
+            f"{r['duration_s']:.1f}s" if isinstance(r.get("duration_s"), (int, float)) else "-",
+            r.get("status") or "-", str(r.get("n_queries", 0)),
+            report.printable(",".join(map(str, r.get("resolvers") or []))),
+            report.printable(str(r.get("best") or "-")),
+            f"{r['best_median']:.1f} ms" if isinstance(r.get("best_median"), (int, float)) else "-",
+        ])
+    headers = ["ID", "Started", "Duration", "Status", "Queries", "Resolvers", "Best", "Best median"]
+    widths = [max(len(h), *(len(row[i]) for row in table)) for i, h in enumerate(headers)]
+    right = {2, 4, 7}
+
+    def fmt(cells):
+        return "  ".join(c.rjust(w) if i in right else c.ljust(w)
+                         for i, (c, w) in enumerate(zip(cells, widths))).rstrip()
+    print(fmt(headers))
+    print(fmt(["-" * w for w in widths]))
+    for row in table:
+        print(fmt(row))
+    print(f"\n{len(rows)} run{'s' if len(rows) != 1 else ''} in {args.runs_dir}")
+    return EXIT_OK
+
+
+def cmd_report(args) -> int:
+    target = args.target
+    if target == "all":
+        try:
+            bundle = storage.aggregate(args.runs_dir, "all",
+                                       current=config_mod.current_resolver_names(args.config))
+        except KeyError:
+            _err(f"no runs saved yet in {args.runs_dir}")
+            return EXIT_ERROR
+        sys.stdout.write(report.render_text(bundle))
+        return EXIT_OK
+    if target == "latest":
+        run_id = storage.latest_run_id(args.runs_dir)
+        if run_id is None:
+            _err(f"no runs saved yet in {args.runs_dir}")
+            return EXIT_ERROR
+    else:
+        run_id = target
+        if not storage.valid_run_id(run_id):
+            _err(f"invalid run id {run_id!r} (expected e.g. 20260925T023456Z; see `dns-bench list`)")
+            return EXIT_USAGE
+    try:
+        run = storage.load_run(run_id, args.runs_dir)
+    except KeyError:
+        _err(f"run {run_id} not found in {args.runs_dir}")
+        return EXIT_ERROR
+    except storage.StorageError as exc:
+        _err(str(exc))
+        return EXIT_ERROR
+    sys.stdout.write(report.render_text(run))
+    return EXIT_OK
+
+
+def cmd_config(args) -> int:
+    path = Path(args.config)
+    if args.path:
+        print(path)
+        return EXIT_OK
+    if args.reset:
+        config_mod.reset_config(path)
+        print(f"Config reset to defaults: {path}")
+        return EXIT_OK
+    cfg = config_mod.load_config(path, strict=False)
+    print(config_mod.dumps_config(cfg), end="")
+    errors = config_mod.validate_config(cfg)
+    for e in errors:
+        _err(f"config problem: {e}")
+    return EXIT_ERROR if errors else EXIT_OK
+
+
+# --------------------------------------------------------------------------- #
+# Parser
+# --------------------------------------------------------------------------- #
+
+def _int_in_range(value: str, lo: int, hi: int) -> int:
+    try:
+        n = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"expected a whole number, got {value!r}") from None
+    if not lo <= n <= hi:
+        raise argparse.ArgumentTypeError(f"must be from {lo} to {hi} (got {n})")
+    return n
+
+
+def _bounded_int(key: str):
+    """argparse type for a run override, with the same bounds as config.json."""
+    lo, hi = config_mod.SETTING_BOUNDS[key]
+
+    def conv(value: str) -> int:
+        return _int_in_range(value, lo, hi)
+    conv.__name__ = key  # argparse's fallback 'invalid <name> value' message
+    return conv
+
+
+def _port(value: str) -> int:
+    return _int_in_range(value, 0, 65535)  # 0 = let the OS pick a free port
+
+
+def _range_help(text: str, key: str, unit: str = "") -> str:
+    lo, hi = config_mod.SETTING_BOUNDS[key]
+    return (f"{text} ({lo}-{hi}{unit}; default: from the config, built-in "
+            f"{config_mod.DEFAULT_SETTINGS[key]})")
+
+
+def build_parser() -> argparse.ArgumentParser:
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("--config", default=argparse.SUPPRESS, metavar="PATH",
+                        help=f"config file (default: {config_mod.DEFAULT_CONFIG_PATH})")
+    common.add_argument("--runs-dir", default=argparse.SUPPRESS, metavar="DIR",
+                        help=f"where runs are saved (default: {config_mod.DEFAULT_RUNS_DIR})")
+
+    p = argparse.ArgumentParser(
+        prog="dns-bench",
+        description="Fast, polite DNS resolver benchmark with a local web UI.",
+        epilog="Run `dns-bench <command> -h` for command options.")
+    p.add_argument("--version", action="version", version=f"dns-bench {__version__}")
+    p.add_argument("--config", default=str(config_mod.DEFAULT_CONFIG_PATH), metavar="PATH",
+                   help="config file (default: %(default)s)")
+    p.add_argument("--runs-dir", default=str(config_mod.DEFAULT_RUNS_DIR), metavar="DIR",
+                   help="where runs are saved (default: %(default)s)")
+    sub = p.add_subparsers(dest="cmd", metavar="<command>")
+
+    r = sub.add_parser("run", parents=[common], help="run a benchmark now",
+                       description="Run a benchmark. Overrides apply to this run only.")
+    r.add_argument("--rounds", type=_bounded_int("rounds"), metavar="N",
+                   help=_range_help("query every domain N times per server", "rounds"))
+    r.add_argument("--interval-ms", type=_bounded_int("per_server_interval_ms"), metavar="MS",
+                   help=_range_help("min gap between queries to the same server",
+                                    "per_server_interval_ms", " ms"))
+    r.add_argument("--timeout-ms", type=_bounded_int("timeout_ms"), metavar="MS",
+                   help=_range_help("per-query timeout", "timeout_ms", " ms"))
+    r.add_argument("--resolvers", metavar="A,B",
+                   help="only these resolvers (by name, comma separated; may include disabled ones)")
+    r.add_argument("--no-save", action="store_true", help="don't save the run")
+    r.add_argument("--quiet", action="store_true", help="no progress or [slow]/[fail] lines")
+    r.add_argument("--json", action="store_true", help="print the full run record as JSON")
+    r.set_defaults(func=cmd_run)
+
+    s = sub.add_parser("serve", parents=[common], help="start the web UI")
+    s.add_argument("--host", default="127.0.0.1", help="bind address (default: %(default)s)")
+    s.add_argument("--port", type=_port, default=8053, help="port, 0-65535 (default: %(default)s)")
+    s.add_argument("--open", action="store_true", help="open the UI in your browser")
+    s.set_defaults(func=cmd_serve)
+
+    ls = sub.add_parser("list", parents=[common], help="list saved runs")
+    ls.set_defaults(func=cmd_list)
+
+    rp = sub.add_parser("report", parents=[common], help="text report for a saved run",
+                        description="Print the report for the latest run, a run id, or all runs combined.")
+    rp.add_argument("target", nargs="?", default="latest", metavar="latest|all|RUN_ID")
+    rp.set_defaults(func=cmd_report)
+
+    c = sub.add_parser("config", parents=[common], help="show, locate or reset the config")
+    g = c.add_mutually_exclusive_group()
+    g.add_argument("--show", action="store_true", help="print the config (default)")
+    g.add_argument("--reset", action="store_true", help="overwrite the config with the defaults")
+    g.add_argument("--path", action="store_true", help="print the config file path")
+    c.set_defaults(func=cmd_config)
+    return p
+
+
+def main(argv=None) -> int:
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(errors="replace")
+        except (AttributeError, ValueError):
+            pass
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    if not getattr(args, "func", None):
+        parser.print_help(sys.stderr)
+        return EXIT_USAGE
+    args.config = Path(os.path.abspath(os.path.expanduser(args.config)))
+    args.runs_dir = Path(os.path.abspath(os.path.expanduser(args.runs_dir)))
+    try:
+        return args.func(args)
+    except config_mod.ConfigError as exc:
+        for e in exc.errors:
+            _err(e)
+        return EXIT_ERROR
+    except KeyboardInterrupt:
+        print("\nInterrupted.", file=sys.stderr)
+        return EXIT_INTERRUPTED
+    except BrokenPipeError:
+        # e.g. `dns-bench list | head`: silence the flush error at interpreter exit
+        try:
+            devnull = os.open(os.devnull, os.O_WRONLY)
+            os.dup2(devnull, sys.stdout.fileno())
+        except (OSError, ValueError):
+            pass
+        return EXIT_ERROR
