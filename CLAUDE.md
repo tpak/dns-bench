@@ -99,7 +99,7 @@ Applies to every `.py` file and to the `dns-bench` launcher script.
 
 #### 4.2.1 General
 
-- **Python 3.13 is the floor.** The `dns-bench` launcher enforces it (and `requires-python` in `pyproject.toml` once that file exists). Features up to 3.13 are fine (`match`, `tomllib`, `type` alias statements, `def f[T](...)` type parameters, `itertools.batched`, `copy.replace`, reusing the outer quote inside an f-string). Features from 3.14 on are not: no template strings (`t"..."`), no `except A, B:` without brackets, no `compression.zstd`, no `annotationlib`, and no relying on annotations being evaluated lazily without the `__future__` import. Existing modules start with `from __future__ import annotations`. Keep it in new modules too, for consistency.
+- **Python 3.13 is the floor.** The `dns-bench` launcher enforces it, and so does `requires-python` in `pyproject.toml`. Features up to 3.13 are fine (`match`, `tomllib`, `type` alias statements, `def f[T](...)` type parameters, `itertools.batched`, `copy.replace`, reusing the outer quote inside an f-string). Features from 3.14 on are not: no template strings (`t"..."`), no `except A, B:` without brackets, no `compression.zstd`, no `annotationlib`, and no relying on annotations being evaluated lazily without the `__future__` import. Existing modules start with `from __future__ import annotations`. Keep it in new modules too, for consistency.
 - **Standard library first.** Third-party packages are allowed when they clearly earn their place. See §7.2.
 - **PEP 8 layout.** 4-space indents, double-quoted strings, lines up to about 110 characters (the width the existing code uses).
 - **f-strings** for string formatting. The one exception is the `dns-bench` launcher: it must stay parseable by old interpreters so that its version check can run and print a clear error.
@@ -214,8 +214,7 @@ This is non-negotiable for new features. For pure bug fixes with an obvious root
 - **Add packages with `uv add <pkg>`**, or `uv add --dev <pkg>` for dev-only packages the code or tests import. This records the package in `pyproject.toml` and pins the whole tree in `uv.lock`. Commit both files. Never hand-edit `uv.lock`.
 - **Linters and formatters run through pre-commit**, not uv dev dependencies. Their versions are pinned in `.pre-commit-config.yaml`; update them with `pre-commit autoupdate`, then run the §4.2.6 gate. Install pre-commit itself with `uv tool install pre-commit`, then run `pre-commit install` once per clone.
 - **Justify every new dependency.** Prefer the standard library when it does the job reasonably. Don't add a package for a single helper. A new runtime dependency needs a reason in the commit message, plus a research file (§3.4) if it's a substantial choice. Check that it is maintained, has an MIT-compatible license, and supports the Python floor.
-- **The first runtime dependency is an architectural decision.** Right now dns-bench runs from a plain `python3` with no install step, and the README says so. The change that adds the first package must also:
-  - create `pyproject.toml` (`uv init --bare`) with `requires-python = ">=3.13"`;
+- **The first runtime dependency is an architectural decision.** Right now dns-bench has none: it runs from a plain `python3` with no install step, and the README says so. (`pyproject.toml` exists for the optional `dns-bench` command and tool settings; its only build-time requirement is hatchling.) The change that adds the first package must also:
   - agree with Chris on how users get the dependency (for example `uv tool install .`, or a launcher that runs through `uv run`), then make the `dns-bench` launcher work that way;
   - update the README's requirements and install instructions;
   - log the decision in `.project/DECISIONS.md`.

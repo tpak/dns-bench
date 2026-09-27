@@ -7,6 +7,12 @@ release notes.
 
 ## [Unreleased]
 
+### Added
+
+- `python3 -m dnsbench` runs dns-bench from the checkout, just like `./dns-bench`.
+- An optional `dns-bench` command on your PATH: run `uv tool install --editable .` in the checkout
+  (README, "Installing a `dns-bench` command"). `./dns-bench` still needs no install.
+
 ## [1.1.0] - 2026-09-27
 
 ### Added
