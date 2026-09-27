@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import contextlib
 import csv
 import http.client
 import io
 import json
+import socket
 import tempfile
 import threading
 import time
@@ -103,6 +105,16 @@ class ServerTestBase(unittest.TestCase):
         headers_out = {k.lower(): v for k, v in resp.getheaders()}
         conn.close()
         return resp.status, headers_out, content
+
+    def raw_request(self, data: bytes) -> bytes:
+        """Send bytes as-is (for requests http.client won't build) and return the whole response."""
+        chunks = []
+        with socket.create_connection(("127.0.0.1", self.port), timeout=10) as sock:
+            sock.sendall(data)
+            with contextlib.suppress(ConnectionResetError):  # a close with unread input may end in a reset
+                while chunk := sock.recv(65536):
+                    chunks.append(chunk)
+        return b"".join(chunks)
 
     def jreq(self, method, path, body=None, **kw):
         status, headers, content = self.req(method, path, body, **kw)
@@ -222,6 +234,150 @@ class SecurityTest(ServerTestBase):
         status, data = self.jreq("GET", "/", headers={"Host": "attacker.example"})
         self.assertEqual(status, 403)
         self.assertIn("error", data)
+
+    def test_cross_origin_state_changes_are_refused(self):
+        port = self.port
+        for method, path, body in (
+            ("PUT", "/api/config", small_config()),
+            ("POST", "/api/config/reset", {}),
+            ("POST", "/api/run", {}),
+            ("POST", "/api/run/cancel", {}),
+            ("OPTIONS", "/api/config", None),
+            ("DELETE", "/api/config", None),
+        ):
+            for origin in (
+                "http://evil.example",
+                "null",  # sandboxed iframes and file:// pages
+                f"http://127.0.0.1:{port + 1}",
+                f"https://127.0.0.1:{port}",
+                f"http://localhost:{port}",  # this server, but not the name the request was sent to
+                f"http://127.0.0.1:{port}.evil.example",
+            ):
+                with self.subTest(method=method, path=path, origin=origin):
+                    status, headers, content = self.req(method, path, body, headers={"Origin": origin})
+                    self.assertEqual(status, 403, content)
+                    self.assertEqual(json.loads(content)["error"], "Forbidden: cross-origin request")
+                    self.assertFalse([h for h in headers if h.startswith("access-control-")], headers)
+        # nothing was started or changed
+        self.assertEqual(self.fake.calls, 0)
+        self.assertEqual(C.load_config(self.cfg_path), C.normalize_config(small_config()))
+
+    def test_same_origin_and_originless_state_changes_are_allowed(self):
+        cfg = small_config()
+        for host in (f"127.0.0.1:{self.port}", f"localhost:{self.port}", f"[::1]:{self.port}", "localhost"):
+            for origin in (f"http://{host}", f"HTTP://{host.upper()}"):
+                with self.subTest(host=host, origin=origin):
+                    status, data = self.jreq(
+                        "PUT", "/api/config", cfg, headers={"Host": host, "Origin": origin}
+                    )
+                    self.assertEqual(status, 200, data)
+        # curl and scripts send no Origin; a web page can't leave it out
+        self.assertEqual(self.jreq("PUT", "/api/config", cfg)[0], 200)
+        # A GET has no side effects: it is answered even cross-origin, but without CORS headers the
+        # browser never lets the other site read the response.
+        status, headers, _ = self.req("GET", "/api/config", headers={"Origin": "http://evil.example"})
+        self.assertEqual(status, 200)
+        self.assertFalse([h for h in headers if h.startswith("access-control-")], headers)
+
+    def test_duplicate_host_or_origin_headers_are_refused(self):
+        port = self.port
+        body = b"{}"
+        for extra in (
+            "Host: evil.example\r\n",
+            f"Origin: http://127.0.0.1:{port}\r\nOrigin: http://evil.example\r\n",
+        ):
+            with self.subTest(extra=extra):
+                resp = self.raw_request(
+                    (
+                        f"POST /api/run/cancel HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n{extra}"
+                        f"Content-Type: application/json\r\nContent-Length: {len(body)}\r\n\r\n"
+                    ).encode()
+                    + body
+                )
+                self.assertTrue(resp.startswith(b"HTTP/1.0 403 "), resp[:80])
+
+    def test_host_port_must_be_ascii_digits(self):
+        # int() rejects both of these, which used to turn into a 500
+        for host in (
+            "localhost:\u00b2",
+            "localhost:" + "9" * 5000,
+            "localhost:+80",
+            f"localhost:{self.port}0",
+        ):
+            with self.subTest(host=host[:20]):
+                status, data = self.jreq("GET", "/api/status", headers={"Host": host})
+                self.assertEqual(status, 403, data)
+
+    def test_malformed_requests_get_json_errors_with_security_headers(self):
+        host = f"Host: 127.0.0.1:{self.port}\r\n"
+        for request, code in (
+            (f"GET / HTTP/9.9\r\n{host}\r\n", 505),
+            (f"GET / FOO HTTP/1.1\r\n{host}\r\n", 400),
+            (f"BREW /pot HTTP/1.1\r\n{host}\r\n", 501),
+        ):
+            with self.subTest(request=request.split("\r\n")[0]):
+                head, _, body = self.raw_request(request.encode()).partition(b"\r\n\r\n")
+                lines = head.decode("latin-1").split("\r\n")
+                self.assertTrue(lines[0].startswith(f"HTTP/1.0 {code} "), lines[0])
+                headers = {k.lower(): v.strip() for k, _, v in (line.partition(":") for line in lines[1:])}
+                self.assertEqual(headers["content-type"], "application/json; charset=utf-8")
+                self.assertEqual(headers["x-content-type-options"], "nosniff")
+                self.assertEqual(headers["cross-origin-resource-policy"], "same-origin")
+                self.assertTrue(json.loads(body)["error"])
+
+    def test_one_request_per_connection(self):
+        host = f"Host: 127.0.0.1:{self.port}\r\n"
+        # HTTP/1.0 even when the client asks for keep-alive: raw_request reads until the server closes.
+        resp = self.raw_request(f"GET /api/status HTTP/1.1\r\n{host}Connection: keep-alive\r\n\r\n".encode())
+        self.assertTrue(resp.startswith(b"HTTP/1.0 200 "), resp[:40])
+        # A body the server never reads (the 405 goes out first) is never parsed as a second request.
+        smuggled = (
+            f"POST /api/config/reset HTTP/1.1\r\n{host}Content-Type: application/json\r\n"
+            "Content-Length: 2\r\n\r\n{}"
+        )
+        resp = self.raw_request(
+            f"POST /api/status HTTP/1.1\r\n{host}Content-Type: application/json\r\n"
+            f"Content-Length: {len(smuggled)}\r\n\r\n{smuggled}".encode()
+        )
+        self.assertTrue(resp.startswith(b"HTTP/1.0 405 "), resp[:40])
+        self.assertEqual(resp.count(b"HTTP/1.0 "), 1)
+        self.assertEqual(C.load_config(self.cfg_path), C.normalize_config(small_config()))  # not reset
+
+    def test_stalled_clients_are_dropped(self):
+        self.assertEqual(SV.Handler.timeout, 15)
+        host = f"Host: 127.0.0.1:{self.port}\r\n"
+        with mock.patch.object(SV.Handler, "timeout", 0.3):
+            for partial in (
+                f"GET /api/status HTTP/1.1\r\n{host}",  # the headers never end
+                f"PUT /api/config HTTP/1.1\r\n{host}Content-Type: application/json\r\n"
+                'Content-Length: 100\r\n\r\n{"a"',  # the body never arrives
+            ):
+                with self.subTest(partial=partial.split("\r\n")[0]):
+                    t0 = time.monotonic()
+                    resp = self.raw_request(partial.encode())
+                    self.assertLess(time.monotonic() - t0, 5)
+                    self.assertEqual(resp, b"")  # dropped: no response, and no 500
+        self.assertEqual(self.jreq("GET", "/api/status")[0], 200)
+        self.assertEqual(C.load_config(self.cfg_path), C.normalize_config(small_config()))
+
+    def test_options_is_405_without_cors_headers(self):
+        status, headers, _ = self.req("OPTIONS", "/api/config")
+        self.assertEqual(status, 405)
+        self.assertFalse([h for h in headers if h.startswith("access-control-")], headers)
+
+    def test_cross_origin_isolation_headers_on_every_response(self):
+        for method, path, extra in (
+            ("GET", "/", None),
+            ("GET", "/static/app.js", None),
+            ("GET", "/api/status", None),
+            ("GET", "/api/nope", None),
+            ("GET", "/api/config", {"Host": "evil.example"}),
+            ("PUT", "/api/config", {"Origin": "http://evil.example"}),
+        ):
+            with self.subTest(method=method, path=path):
+                _, headers, _ = self.req(method, path, {} if method == "PUT" else None, headers=extra)
+                self.assertEqual(headers["cross-origin-resource-policy"], "same-origin")
+                self.assertEqual(headers["cross-origin-opener-policy"], "same-origin")
 
     def test_state_changing_requires_json_content_type(self):
         for method, path in (
@@ -514,6 +670,73 @@ class RunsApiTest(ServerTestBase):
                 self.assertEqual(status, 400, data)
         self.assertEqual(self.jreq("POST", "/api/run", raw=b"{ nope")[0], 400)
         self.assertEqual(self.fake.calls, 0)
+
+    def test_unwritable_runs_dir_is_refused_before_any_query(self):
+        blocker = Path(self.tmp.name) / "not-a-dir"
+        blocker.write_text("x")
+        self.srv.runs_dir = blocker / "runs"
+        status, data = self.jreq("POST", "/api/run")
+        self.assertEqual(status, 500, data)
+        self.assertEqual(data["error"], "Cannot save runs")
+        self.assertIn("cannot write to", data["details"][0])
+        self.assertEqual(self.fake.calls, 0)
+        self.assertFalse(self.jreq("GET", "/api/status")[1]["running"])
+
+    def test_a_run_that_cannot_be_saved_is_rescued(self):
+        rescue_dir = Path(self.tmp.name) / "rescue"
+        rescue_dir.mkdir()
+        with (
+            mock.patch.object(storage, "save_run", side_effect=OSError(28, "No space left on device")),
+            mock.patch.object(tempfile, "tempdir", str(rescue_dir)),
+        ):
+            _, st = self.run_job()
+        self.assertFalse(st["running"])
+        self.assertEqual(st["last_status"], "complete")
+        self.assertIsNone(st["last_run_id"])  # nothing in runs/ to point the UI at
+        self.assertIn("could not save run", st["error"])
+        self.assertIn("No space left on device", st["error"])
+        (rescued,) = rescue_dir.glob("dns-bench-*.json")
+        self.assertIn(str(rescued), st["error"])
+        record = json.loads(rescued.read_text(encoding="utf-8"))
+        self.assertEqual(len(record["results"]), 6)
+        self.assertIn("recommendation", record)
+
+    def test_job_state_is_reset_whatever_happens(self):
+        # SystemExit gets past `except Exception` (and the default thread excepthook ignores it): the
+        # job must still end, or the UI would show a benchmark running forever and refuse new ones.
+        with mock.patch.object(storage, "save_run", side_effect=SystemExit):
+            _, st = self.run_job()
+        self.assertFalse(st["running"])
+        self.assertEqual(self.jreq("POST", "/api/run")[0], 202)  # a new run can start
+        self.wait_idle()
+
+    def test_rounds_override_cannot_exceed_the_query_limit(self):
+        cfg = small_config(domains=500)
+        cfg["resolvers"] = [
+            {"name": f"R{i}", "servers": [f"192.0.2.{4 * i + j}" for j in range(1, 5)], "enabled": True}
+            for i in range(3)
+        ]
+        C.save_config(cfg, self.cfg_path)  # 12 servers x 500 domains = 6,000 queries a round
+        status, data = self.jreq("POST", "/api/run", {"rounds": 10})
+        self.assertEqual(status, 400, data)
+        self.assertEqual(data["error"], "Invalid run settings")
+        self.assertIn("the limit is 50,000", data["details"][0])
+        self.assertEqual(self.fake.calls, 0)
+
+    def test_a_crashed_run_is_saved_and_reported(self):
+        def broken(server, domain, **kw):
+            if server == "192.0.2.2":
+                return {"status": "ok", "ms": "garbage"}
+            return QueryResult("ok", ms=4.0, rcode="NOERROR", answers=1)
+
+        self.srv.query_fn = broken
+        _, st = self.run_job()
+        self.assertEqual(st["last_status"], "partial")
+        self.assertIn("stopped early after an internal error (ValueError", st["error"])
+        self.assertIn("were saved", st["error"])
+        _, run = self.jreq("GET", f"/api/runs/{st['last_run_id']}")
+        self.assertEqual(run["status"], "partial")
+        self.assertIn("192.0.2.2", run["error"])
 
     def test_conflict_and_cancel(self):
         C.save_config(small_config(domains=40, interval_ms=100), self.cfg_path)  # ~4 s run

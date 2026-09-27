@@ -27,18 +27,28 @@ HTML_SINKS = re.compile(
 )
 
 
+# A style attribute set from script; the CSP (style-src 'self') blocks it. app.js styles elements through
+# CSSOM (element.style), which the CSP allows.
+STYLE_ATTRIBUTE = re.compile(
+    r"""setAttribute\s*\(\s*["']style["']|setAttributeNS\s*\([^,]*,\s*["']style["']"""
+)
+
+
 class _Refs(HTMLParser):
-    """Collects the same-origin URLs a page loads, and counts inline scripts."""
+    """Collects the same-origin URLs a page loads, and what its CSP would block: inline scripts and styles."""
 
     def __init__(self) -> None:
         super().__init__()
         self.urls: list[str] = []
         self.inline_scripts = 0
+        self.inline_styles: list[str] = []
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         a = dict(attrs)
         if tag == "script" and not a.get("src"):
             self.inline_scripts += 1
+        if tag == "style" or "style" in a:
+            self.inline_styles.append(self.get_starttag_text() or tag)
         for name in ("src", "href"):
             url = a.get(name)
             if url and url.startswith("/") and not url.startswith("//"):
@@ -101,6 +111,9 @@ class RealWebUITest(unittest.TestCase):
         }
         self.assertEqual(csp["default-src"], ["'self'"])
         self.assertEqual(csp["script-src"], ["'self'"])
+        self.assertEqual(csp["style-src"], ["'self'"])  # no 'unsafe-inline'
+        self.assertEqual(csp["require-trusted-types-for"], ["'script'"])
+        self.assertEqual(csp["trusted-types"], ["'none'"])
         self.assertEqual(csp["object-src"], ["'none'"])
         self.assertEqual(csp["base-uri"], ["'none'"])
         self.assertEqual(csp["frame-ancestors"], ["'none'"])
@@ -120,9 +133,19 @@ class RealWebUITest(unittest.TestCase):
                 self.assertEqual(body, on_disk.read_bytes())
                 self.assertEqual(headers["content-type"], types[on_disk.suffix])
 
-    def test_no_inline_scripts(self):
-        # script-src 'self' blocks inline scripts, so one would silently never run.
-        self.assertEqual(self.index_refs().inline_scripts, 0)
+    def test_no_inline_scripts_or_styles(self):
+        # The CSP blocks both, so one would silently never run or apply.
+        refs = self.index_refs()
+        self.assertEqual(refs.inline_scripts, 0)
+        self.assertEqual(refs.inline_styles, [])
+
+    def test_app_never_sets_a_style_attribute(self):
+        for n, line in enumerate((C.WEB_DIR / "app.js").read_text(encoding="utf-8").splitlines(), 1):
+            with self.subTest(line=n):
+                self.assertIsNone(STYLE_ATTRIBUTE.search(line), line.strip())
+        for bad in ("el.setAttribute('style', s)", 'el.setAttributeNS(null, "style", s)'):
+            self.assertIsNotNone(STYLE_ATTRIBUTE.search(bad), bad)
+        self.assertIsNone(STYLE_ATTRIBUTE.search("el.style.setProperty('color', c)"))
 
     def test_no_html_sinks_in_the_ui(self):
         files = [p for p in sorted(C.WEB_DIR.rglob("*")) if p.is_file()]

@@ -27,7 +27,6 @@ def make_config(
     interval_ms=50,
     rounds=1,
     shuffle=True,
-    parallel=8,
     tries=1,
     timeout_ms=200,
 ):
@@ -46,7 +45,6 @@ def make_config(
             "timeout_ms": timeout_ms,
             "tries": tries,
             "rounds": rounds,
-            "max_parallel_servers": parallel,
             "slow_threshold_ms": 200,
             "record_type": "A",
             "shuffle": shuffle,
@@ -256,41 +254,25 @@ class RateLimitTest(unittest.TestCase):
         self.check_spacing(fake, 0.05)
         self.assertEqual(run["config"]["settings"]["per_server_interval_ms"], 50)
 
-    def test_max_parallel_servers_respected(self):
-        cfg = make_config(resolvers=2, servers_per=2, domains=3, interval_ms=50, parallel=2)
-        lock = threading.Lock()
-        active_servers = set()
-        peak = [0]
-        state = defaultdict(int)
-        remaining = Counter({f"10.0.{i}.{j}": 3 for i in range(2) for j in (1, 2)})
-
-        def qfn(server, domain, **kw):
-            # a server is "active" from its first query to its last
-            with lock:
-                active_servers.add(server)
-                peak[0] = max(peak[0], len(active_servers))
-                state[server] += 1
-            time.sleep(0.002)
-            with lock:
-                remaining[server] -= 1
-                if remaining[server] == 0:
-                    active_servers.discard(server)
-            return QueryResult("ok", ms=2.0, rcode="NOERROR", answers=1)
-
-        t0 = time.monotonic()
-        run = runner.run_benchmark(cfg, query_fn=qfn)
-        wall = time.monotonic() - t0
-        self.assertEqual(len(run["results"]), 12)
-        self.assertLessEqual(peak[0], 2)
-        self.assertGreaterEqual(wall, 2 * 2 * 0.05)  # two batches of 3 queries each
-
-    def test_single_worker_is_sequential(self):
-        cfg = make_config(resolvers=1, servers_per=3, domains=3, interval_ms=50, parallel=1)
+    def test_every_server_is_measured_at_the_same_time(self):
+        # More servers than the old max_parallel_servers default of 8, which ran the rest in a later
+        # batch: a different stretch of time, so not comparable (COR-M1). Every server's queries must
+        # now overlap every other server's.
+        cfg = make_config(resolvers=5, servers_per=2, domains=4, interval_ms=50)
         fake = FakeDNS(latency=0.002)
         runner.run_benchmark(cfg, query_fn=fake)
-        spans = sorted((evs[0][3], evs[-1][4]) for evs in fake.by_server().values())
-        for (_a1, b1), (a2, _b2) in itertools.pairwise(spans):
-            self.assertGreaterEqual(a2, b1)
+        spans = [(evs[0][3], evs[-1][4]) for evs in fake.by_server().values()]
+        self.assertEqual(len(spans), 10)
+        self.assertLess(max(first for first, _ in spans), min(last for _, last in spans))
+
+    def test_an_old_max_parallel_servers_setting_is_ignored(self):
+        cfg = make_config(resolvers=5, servers_per=2, domains=4, interval_ms=50)
+        cfg["settings"]["max_parallel_servers"] = 1
+        fake = FakeDNS(latency=0.002)
+        run = runner.run_benchmark(cfg, query_fn=fake)
+        spans = [(evs[0][3], evs[-1][4]) for evs in fake.by_server().values()]
+        self.assertLess(max(first for first, _ in spans), min(last for _, last in spans))
+        self.assertEqual(len(run["results"]), 40)
 
 
 class RunnerBehaviourTest(unittest.TestCase):
@@ -431,6 +413,54 @@ class RunnerBehaviourTest(unittest.TestCase):
         self.assertGreaterEqual(len(run["results"]), 6)
         self.assertLess(len(run["results"]), 160)
         self.assertLess(took, 1.5)  # full run would take ~4 s
+
+    def test_a_crashing_worker_stops_the_run_but_keeps_its_results(self):
+        # A query that fails is a row; a bug in turning its result into a row is a crash. That used to
+        # be re-raised after the run, throwing away every query already measured (COR-4).
+        cfg = make_config(resolvers=2, servers_per=2, domains=40, interval_ms=50)
+        calls = itertools.count(1)
+
+        def qfn(server, domain, **kw):
+            if server == "10.0.1.2" and next(calls) > 8:
+                return {"status": "ok", "ms": "garbage"}  # float() of this raises inside the runner
+            return QueryResult("ok", ms=2.0, rcode="NOERROR", answers=1)
+
+        t0 = time.monotonic()
+        run = runner.run_benchmark(cfg, query_fn=qfn)
+        self.assertLess(time.monotonic() - t0, 1.5)  # the other workers stopped too (a full run takes ~2 s)
+        self.assertEqual(run["status"], "partial")
+        self.assertRegex(run["error"], r"^ValueError: .*garbage.* \(while measuring 10\.0\.1\.2\)$")
+        self.assertGreater(len(run["results"]), 0)
+        self.assertLess(len(run["results"]), 160)
+        self.assertNotIn("error", runner.run_benchmark(make_config(), query_fn=FakeDNS(latency=0.0)))
+
+    def test_stop_waiting_returns_without_the_queries_in_flight(self):
+        cfg = make_config(resolvers=2, servers_per=2, domains=40, interval_ms=50)
+        cancel, stop_waiting = threading.Event(), threading.Event()
+        stuck, finished = threading.Event(), threading.Event()
+
+        def qfn(server, domain, **kw):
+            if server == "10.0.0.1" and not stuck.is_set():
+                stuck.set()
+                time.sleep(2.0)  # a query in flight that takes its whole (long) timeout
+                finished.set()
+            return QueryResult("ok", ms=2.0, rcode="NOERROR", answers=1)
+
+        def two_ctrl_cs():  # what the CLI's signal handler does on the first and second Ctrl-C
+            stuck.wait(5)
+            cancel.set()
+            time.sleep(0.2)
+            stop_waiting.set()
+
+        threading.Thread(target=two_ctrl_cs, daemon=True).start()
+        t0 = time.monotonic()
+        run = runner.run_benchmark(cfg, query_fn=qfn, cancel_event=cancel, stop_waiting=stop_waiting)
+        self.assertLess(time.monotonic() - t0, 1.5)  # didn't wait out the 2 s query
+        self.assertEqual(run["status"], "cancelled")
+        n = len(run["results"])
+        self.assertTrue(finished.wait(5))
+        time.sleep(0.1)  # the stuck worker's row would be added now: it must be dropped
+        self.assertEqual(len(run["results"]), n)
 
     def test_cancel_before_start(self):
         cancel = threading.Event()

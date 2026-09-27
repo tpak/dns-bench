@@ -80,10 +80,13 @@ def render_text(bundle: dict) -> str:
             lines.append(f"Runs:      {ids[-1]} … {ids[0]}" if len(ids) > 1 else f"Run:       {ids[0]}")
     else:
         status = bundle.get("status", "complete")
-        lines.append(
-            f"DNS Bench run {bundle.get('id', '?')}"
-            + ("  [CANCELLED — partial results]" if status == "cancelled" else "")
-        )
+        flags = {
+            "cancelled": "  [CANCELLED — partial results]",
+            "partial": "  [STOPPED BY AN ERROR — partial results]",
+        }
+        lines.append(f"DNS Bench run {bundle.get('id', '?')}" + flags.get(status, ""))
+        if status == "partial" and bundle.get("error"):
+            lines.append(f"Error:     {printable(str(bundle['error']))}")
         lines.append(f"Started:   {_local_time(bundle.get('started_at'))}")
         lines.append(f"Duration:  {_f(bundle.get('duration_s'))} s on {bundle.get('host', '?')}")
     lines.append(

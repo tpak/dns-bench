@@ -13,6 +13,45 @@ release notes.
 - An optional `dns-bench` command on your PATH: run `uv tool install --editable .` in the checkout
   (README, "Installing a `dns-bench` command"). `./dns-bench` still needs no install.
 
+### Changed
+
+- Every enabled server is now measured at the same time. With more than 8 servers (the default
+  config has 8, so enabling Quad9 makes 10), the rest used to wait for a second batch, so they were timed at a different time from the others and the results
+  weren't comparable. Results with more than 8 servers can therefore differ from earlier versions.
+  Such runs also finish sooner. The `max_parallel_servers` setting is gone: it is ignored if your
+  `config.json` still has it, and dropped the next time the config is saved. The load on each server
+  is unchanged (one query at a time, at least `per_server_interval_ms` apart).
+- `dns-bench serve` refuses a `--host` that other machines can reach (such as `0.0.0.0` or a LAN
+  address) unless you add `--allow-remote`, because the web UI has no authentication. The README
+  shows how to reach the UI from another computer over an SSH tunnel instead.
+- A config can list at most 20 resolvers, and one run can send at most 50,000 queries (enabled
+  servers × domains × rounds; the defaults send 480). A config or `--rounds` value that goes over
+  either limit is rejected with a message saying which limit and by how much.
+
+### Fixed
+
+- A benchmark started from the web UI is no longer lost when it can't be saved (a full disk, or the
+  runs folder became unwritable). As with `dns-bench run`, the full record is written to the
+  system's temp folder instead, and the UI's error message says where. The UI also checks that the
+  runs folder is writable before sending any queries.
+- `dns-bench run` stopped with `kill` (SIGTERM) now saves the queries done so far, like Ctrl-C, instead
+  of exiting without saving. A second Ctrl-C saves straight away instead of waiting for the
+  queries still in flight, and a Ctrl-C while the run is being saved no longer interrupts the save.
+- An internal error while a benchmark is running no longer throws away the queries already measured.
+  The run stops, is saved with the status `partial` and the error, and its report says so.
+  `dns-bench run` exits with 1 in that case.
+
+### Security
+
+- The web UI's API refuses a state-changing request whose `Origin` is not the UI's own, so another
+  web page can't change your config or start and cancel runs. Requests without an `Origin` header,
+  such as from `curl`, work as before.
+- Responses carry `Cross-Origin-Resource-Policy` and `Cross-Origin-Opener-Policy`. The page's
+  Content Security Policy no longer allows inline styles, and requires Trusted Types.
+- The server drops a client that stalls for 15 seconds while sending a request. Malformed requests
+  get a JSON error with the usual security headers instead of an HTML page, and an odd port in the
+  `Host` header (such as `localhost:²`) is refused with 403 instead of causing a 500.
+
 ## [1.1.0] - 2026-09-27
 
 ### Added

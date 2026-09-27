@@ -4,7 +4,9 @@ The original script was slow because it was fully sequential with a global
 0.8 s sleep between *every* query. Here we parallelise ACROSS servers while
 strictly rate-limiting PER server:
 
-* one worker thread per server IP, at most ``max_parallel_servers`` at once;
+* one worker thread per server IP, all running at once, so every server is
+  measured over the same stretch of time (network conditions drift, so servers
+  measured in different time windows aren't comparable);
 * each worker issues its queries sequentially, so there is never more than
   ONE query in flight to a given server;
 * consecutive query start times to the same server are at least
@@ -25,7 +27,6 @@ import random
 import socket
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor, wait
 from datetime import UTC, datetime
 
 from . import __version__, resolver
@@ -40,7 +41,6 @@ def effective_settings(config: dict) -> dict:
     s["per_server_interval_ms"] = max(MIN_INTERVAL_MS, int(s["per_server_interval_ms"]))
     s["tries"] = max(1, int(s["tries"]))
     s["rounds"] = max(1, int(s["rounds"]))
-    s["max_parallel_servers"] = max(1, int(s["max_parallel_servers"]))
     return s
 
 
@@ -89,6 +89,7 @@ def run_benchmark(
     query_fn=None,
     progress=None,
     cancel_event=None,
+    stop_waiting=None,
     clock=time.monotonic,
     sleep=time.sleep,
     rng: random.Random | None = None,
@@ -101,9 +102,20 @@ def run_benchmark(
     serialised by the runner so the callback needn't be thread-safe.
     Setting ``cancel_event`` stops workers promptly; the record then has
     ``status == "cancelled"`` and contains the results gathered so far.
+    If a worker crashes (a bug, not a failed query: query_fn's own exceptions
+    are recorded as ``error`` rows), the run stops the same way and comes back
+    with ``status == "partial"`` and the crash in ``error``, so the queries
+    already measured are still returned and can be saved.
+
+    Setting ``stop_waiting`` as well stops waiting for the queries still in
+    flight (up to one timeout each): the record is returned at once, and rows
+    that finish later are dropped. A KeyboardInterrupt in the calling thread
+    (a Ctrl-C the caller doesn't handle) sets ``cancel_event``, and a second one
+    sets ``stop_waiting``.
     """
     query_fn = query_fn or resolver.query
     cancel_event = cancel_event or threading.Event()
+    stop_waiting = stop_waiting or threading.Event()
     rng = rng or random.Random()
     settings = effective_settings(config)
     interval_s = settings["per_server_interval_ms"] / 1000.0
@@ -117,8 +129,8 @@ def run_benchmark(
     jobs = build_jobs(config, rng)
     total = sum(len(j["items"]) for j in jobs)
     results: list[dict] = []
-    lock = threading.Lock()
-    state = {"done": 0}
+    lock = threading.Lock()  # guards results and state
+    state: dict = {"done": 0, "crash": None, "closed": False}  # closed: the record has been returned
 
     started_wall = datetime.now(UTC)
     t0 = clock()
@@ -134,6 +146,15 @@ def run_benchmark(
             sleep(min(remaining, _WAIT_SLICE_S))
 
     def worker(job: dict, seed: int) -> None:
+        try:
+            measure(job, seed)
+        except Exception as exc:  # a bug in the measuring itself: stop the run, keep what was measured
+            with lock:
+                if state["crash"] is None:
+                    state["crash"] = f"{type(exc).__name__}: {exc} (while measuring {job['server']})"
+            cancel_event.set()
+
+    def measure(job: dict, seed: int) -> None:
         wrng = random.Random(seed)
         name, server = job["resolver"], job["server"]
         next_start: float | None = None  # earliest allowed start of the next query
@@ -175,41 +196,55 @@ def run_benchmark(
                 "attempts": attempts,
             }
             with lock:
+                if state["closed"]:  # the caller stopped waiting (a second Ctrl-C): nothing more to report
+                    return
                 results.append(row)
                 state["done"] += 1
                 if progress is not None:
                     with contextlib.suppress(Exception):  # a UI hiccup must never break the measurement
                         progress({"type": "result", "done": state["done"], "total": total, "result": row})
 
-    max_workers = max(1, min(settings["max_parallel_servers"], len(jobs)))
+    # One thread per server, all at once. The load stays bounded: one query in flight per server, at
+    # most 1000/interval queries/s each, and config.MAX_RESOLVERS x MAX_SERVERS_PER_RESOLVER servers.
+    # Daemon threads, not a ThreadPoolExecutor: Python joins executor threads when the process exits,
+    # so a query abandoned by a second Ctrl-C would still hold up the exit for its whole timeout.
     seeds = [rng.getrandbits(64) for _ in jobs]
+    threads = [
+        threading.Thread(target=worker, args=(job, seed), name=f"dnsbench-{i}", daemon=True)
+        for i, (job, seed) in enumerate(zip(jobs, seeds, strict=True))
+    ]
+    for thread in threads:
+        thread.start()
     interrupted = False
-    with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="dnsbench") as pool:
-        futures = [pool.submit(worker, job, seed) for job, seed in zip(jobs, seeds, strict=True)]
-        pending = set(futures)
-        while pending:
-            try:
-                _, pending = wait(pending, timeout=0.2)
-            except KeyboardInterrupt:
+    pending = threads
+    while pending and not stop_waiting.is_set():
+        try:
+            pending[0].join(timeout=0.1)
+        except KeyboardInterrupt:
+            if cancel_event.is_set():
+                stop_waiting.set()
+            else:
                 interrupted = True
                 cancel_event.set()
-    for f in futures:
-        exc = f.exception()
-        if exc is not None:
-            raise exc
+        pending = [thread for thread in pending if thread.is_alive()]
+    with lock:
+        state["closed"] = True  # a worker still in flight drops its row instead of adding it
 
     finished_wall = datetime.now(UTC)
     duration = clock() - t0
     cancelled = (cancel_event.is_set() or interrupted) and len(results) < total
     results.sort(key=lambda r: r["t"])
-    return {
+    record = {
         "id": started_wall.strftime("%Y%m%dT%H%M%SZ"),
         "version": __version__,
         "started_at": _utc_iso(started_wall),
         "finished_at": _utc_iso(finished_wall),
         "duration_s": round(duration, 2),
         "host": socket.gethostname(),
-        "status": "cancelled" if cancelled else "complete",
+        "status": "partial" if state["crash"] else "cancelled" if cancelled else "complete",
         "config": snapshot,
         "results": results,
     }
+    if state["crash"]:
+        record["error"] = state["crash"]
+    return record

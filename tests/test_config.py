@@ -4,6 +4,7 @@ import json
 import os
 import re
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -87,10 +88,35 @@ class NormalizeTest(unittest.TestCase):
         n = C.normalize_config(cfg(domains="a.com\nb.com, c.com  d.com"))
         self.assertEqual(n["domains"], ["a.com", "b.com", "c.com", "d.com"])
 
+    def test_removed_settings_are_dropped(self):
+        # max_parallel_servers existed until every server started being measured at once; configs
+        # that still have it load and save without it.
+        c = cfg()
+        c["settings"]["max_parallel_servers"] = 8
+        n = C.normalize_config(c)
+        self.assertNotIn("max_parallel_servers", n["settings"])
+        self.assertEqual(C.validate_config(c), [])
+        self.assertNotIn("max_parallel_servers", C.SETTING_BOUNDS)
+
     def test_idna(self):
         n = C.normalize_config(cfg(domains=["bücher.de"]))
         self.assertEqual(n["domains"], ["xn--bcher-kva.de"])
         self.assertEqual(C.validate_config(n), [])
+
+    def test_overlong_unicode_names_are_not_idna_encoded(self):
+        # Encoding work grows with the input, which can be a whole 1 MB request body; such a name can
+        # never be valid, so it's left as-is for validation to reject.
+        huge = "é" * 1_000_000 + ".com"
+        t0 = time.perf_counter()
+        n = C.normalize_config(cfg(domains=[huge]))
+        self.assertLess(time.perf_counter() - t0, 0.5)
+        self.assertEqual(n["domains"], [huge])
+        errors = C.validate_config(n)
+        self.assertTrue(any("longer than 253 characters" in e for e in errors), errors)
+        long_but_valid = ".".join(["bücher" + "a" * 50] * 3)  # 170 characters: still encoded
+        encoded = C.normalize_domain(long_but_valid)
+        self.assertTrue(encoded.startswith("xn--"), encoded)
+        self.assertEqual(C.validate_config(cfg(domains=[encoded])), [])
 
     def test_servers_split_and_canonicalised(self):
         c = cfg(resolvers=[{"name": " X ", "servers": "1.1.1.1, 2001:0db8:0000::0001"}])
@@ -145,6 +171,31 @@ class ValidateTest(unittest.TestCase):
 
     def test_no_resolvers(self):
         self.assertInvalid(cfg(resolvers=[]), "at least one resolver")
+
+    def test_at_most_max_resolvers(self):
+        many = [{"name": f"R{i}", "servers": [f"192.0.2.{i}"], "enabled": i == 1} for i in range(1, 22)]
+        self.assertInvalid(cfg(resolvers=many), f"at most {C.MAX_RESOLVERS} resolvers allowed (got 21)")
+        self.assertEqual(C.validate_config(cfg(resolvers=many[: C.MAX_RESOLVERS])), [])
+
+    def test_queries_per_run_are_capped(self):
+        def resolvers(servers, disabled=0):
+            ips = [f"192.0.2.{i}" for i in range(1, servers + disabled + 1)]
+            return [{"name": f"R{i}", "servers": [ip], "enabled": i < servers} for i, ip in enumerate(ips)]
+
+        domains = [f"d{i}.example" for i in range(500)]
+        at_limit = cfg(resolvers=resolvers(10), domains=domains)
+        at_limit["settings"]["rounds"] = 10
+        self.assertEqual(C.validate_config(at_limit), [])  # 10 x 500 x 10 = 50,000
+        # disabled resolvers send nothing, so they don't count
+        with_disabled = cfg(resolvers=resolvers(10, disabled=5), domains=domains)
+        with_disabled["settings"]["rounds"] = 10
+        self.assertEqual(C.validate_config(with_disabled), [])
+        over = cfg(resolvers=resolvers(11), domains=domains)
+        over["settings"]["rounds"] = 10
+        self.assertInvalid(over, "a run would send 55,000 queries (11 servers x 500 domains x 10 rounds)")
+        # reported alongside unrelated problems, not hidden behind them
+        over["settings"]["shuffle"] = "yes"
+        self.assertEqual(len(C.validate_config(over)), 2)
 
     def test_name_required(self):
         self.assertInvalid(cfg(resolvers=[{"name": " ", "servers": ["1.1.1.1"]}]), "name is required")
@@ -478,6 +529,16 @@ class LoadSaveTest(unittest.TestCase):
         self.assertEqual(e["max_qps_per_server"], 4.0)
         self.assertEqual(e["max_qps_total"], 32.0)
         self.assertTrue(14 <= e["est_seconds"] <= 20, e)
+        # More servers: all measured at once, so no extra time (the old estimate added a batch per 8)
+        many = C.default_config()
+        many["resolvers"] = [
+            {"name": f"R{i}", "servers": [f"192.0.2.{2 * i + 1}", f"192.0.2.{2 * i + 2}"], "enabled": True}
+            for i in range(6)
+        ]
+        e12 = C.estimate(many)
+        self.assertEqual(e12["servers"], 12)
+        self.assertEqual(e12["est_seconds"], e["est_seconds"])
+        self.assertEqual(e12["max_qps_total"], 48.0)
 
 
 if __name__ == "__main__":

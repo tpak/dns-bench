@@ -8,6 +8,7 @@ import shutil
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from dnsbench import config as C
 from dnsbench import report, storage
@@ -84,6 +85,42 @@ class StorageTest(unittest.TestCase):
 
     def tearDown(self):
         self.tmp.cleanup()
+
+    def test_check_writable(self):
+        self.assertIsNone(storage.check_writable(self.dir))
+        self.assertTrue(self.dir.is_dir())
+        self.assertEqual(list(self.dir.iterdir()), [])  # the probe file is gone
+        blocker = Path(self.tmp.name) / "file"
+        blocker.write_text("x")
+        self.assertIn("cannot write to", storage.check_writable(blocker / "runs"))
+
+    def test_save_run_safely_saves(self):
+        result = storage.save_run_safely(make_run(), self.dir)
+        self.assertEqual(result, storage.SaveResult(self.dir / "20260925T023456Z.json"))
+
+    def test_save_run_safely_rescues_what_it_cannot_save(self):
+        rescue_dir = Path(self.tmp.name) / "rescue"
+        rescue_dir.mkdir()
+        run = make_run()
+        with (
+            mock.patch.object(storage, "save_run", side_effect=OSError(13, "Permission denied")),
+            mock.patch.object(tempfile, "tempdir", str(rescue_dir)),
+        ):
+            result = storage.save_run_safely(run, self.dir)
+        self.assertIsNone(result.path)
+        self.assertEqual(result.error, f"could not save run to {self.dir}: Permission denied")
+        self.assertEqual(result.rescued.parent, rescue_dir)
+        self.assertEqual(json.loads(result.rescued.read_text(encoding="utf-8"))["results"], run["results"])
+        self.assertIn("recommendation", run)  # finalized, so the caller can still print the report
+
+    def test_save_run_safely_json_saved_but_report_failed(self):
+        with mock.patch.object(storage.os, "replace", side_effect=OSError(28, "No space left on device")):
+            result = storage.save_run_safely(make_run(), self.dir)
+        json_path = self.dir / "20260925T023456Z.json"
+        self.assertEqual(result.path, json_path)
+        self.assertTrue(json_path.is_file())
+        self.assertIn("text report could not be written: No space left on device", result.error)
+        self.assertIsNone(result.rescued)  # the record itself is safe in runs/
 
     def test_valid_run_id(self):
         for good in ("20260925T023456Z", "20260925T023456Z-2", "20260925T023456Z-15"):
@@ -253,6 +290,12 @@ class StorageTest(unittest.TestCase):
         self.assertIn("Recommendation:", text)
         run["status"] = "cancelled"
         self.assertIn("CANCELLED", report.render_text(run))
+        run["status"], run["error"] = "partial", "ValueError: boom\x1b[2J (while measuring 1.1.1.1)"
+        text = report.render_text(run)
+        self.assertIn("[STOPPED BY AN ERROR — partial results]", text)
+        self.assertIn("Error:     ValueError: boom\\x1b[2J (while measuring 1.1.1.1)", text)  # escaped
+        del run["error"]
+        run["status"] = "complete"
         agg = {
             "run_ids": ["20260925T023456Z"],
             "summary": run["summary"],

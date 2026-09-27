@@ -1,8 +1,10 @@
 """Local web UI + JSON API (stdlib ThreadingHTTPServer).
 
 Binds 127.0.0.1 by default. Requests whose Host header is not a loopback
-name are rejected (DNS-rebinding protection) and state-changing requests must
-be ``Content-Type: application/json`` (blocks simple cross-site form posts).
+name are rejected (DNS-rebinding protection). State-changing requests must be
+``Content-Type: application/json``, which a cross-site form can't send and which
+forces a CORS preflight that is never granted. Their ``Origin``, when present,
+must also be this server's own origin.
 """
 
 from __future__ import annotations
@@ -10,6 +12,7 @@ from __future__ import annotations
 import contextlib
 import csv
 import io
+import ipaddress
 import json
 import re
 import socket
@@ -18,6 +21,7 @@ import threading
 import time
 from collections import deque
 from datetime import UTC, datetime
+from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlsplit
@@ -58,6 +62,7 @@ CSV_COLUMNS = [
 ]
 
 LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "[::1]"}
+_PORT_RE = re.compile(r"[0-9]{1,5}")  # ASCII digits only: str.isdigit() also accepts e.g. "²"
 
 
 class HTTPError(Exception):
@@ -138,6 +143,13 @@ class DNSBenchServer(ThreadingHTTPServer):
                     raise HTTPError(400, "Invalid config", exc.errors) from None
             if rounds is not None:
                 cfg["settings"]["rounds"] = rounds
+                errors = config_mod.validate_config(cfg)  # more rounds can take a run past its limits
+                if errors:
+                    raise HTTPError(400, "Invalid run settings", errors)
+            # Before any DNS traffic, like the CLI: a run that can't be saved isn't worth measuring.
+            problem = storage.check_writable(self.runs_dir)
+            if problem:
+                raise HTTPError(500, "Cannot save runs", [problem])
             est = config_mod.estimate(cfg)
             total = sum(len(j["items"]) for j in runner.build_jobs(cfg))
             job.running = True
@@ -181,18 +193,31 @@ class DNSBenchServer(ThreadingHTTPServer):
                 cfg, query_fn=self.query_fn, progress=self._on_progress, cancel_event=cancel_event
             )
             status = run["status"]
-            storage.save_run(run, self.runs_dir)
-            run_id = run["id"]
-        except Exception as exc:  # report, never crash the server
+            if status == "partial":
+                error = f"the benchmark stopped early after an internal error ({run.get('error')})"
+                self.log_line(error)
+            saved = storage.save_run_safely(run, self.runs_dir)
+            if saved.path is not None:
+                run_id = run["id"]
+            if saved.error is not None:
+                problem = saved.error
+                if saved.rescued is not None:
+                    problem += f"; the full run record was written to {saved.rescued} instead"
+                self.log_line(problem)
+                error = f"{error}; {problem}" if error else problem
+            elif error:
+                error += f"; the {len(run['results'])} queries measured before it were saved"
+        except Exception as exc:  # the job's own thread: report the failure, never take the server down
             error = f"{type(exc).__name__}: {exc}"
             self.log_line(f"benchmark failed: {error}")
-        with self.job.lock:
-            self.job.running = False
-            self.job.t_end = time.monotonic()
-            if run_id:
-                self.job.last_run_id = run_id
-            self.job.last_status = status
-            self.job.error = error
+        finally:  # whatever happened, the job is over: never leave the UI showing a run that isn't going
+            with self.job.lock:
+                self.job.running = False
+                self.job.t_end = time.monotonic()
+                if run_id:
+                    self.job.last_run_id = run_id
+                self.job.last_status = status
+                self.job.error = error
 
     def cancel_job(self) -> bool:
         with self.job.lock:
@@ -272,16 +297,28 @@ _ROUTES = [
     (re.compile(r"^/api/status$"), {"GET": "status"}),
 ]
 
+# app.js sets styles only through CSSOM (element.style), which style-src doesn't restrict, so inline styles
+# can stay blocked. Trusted Types make the HTML-parsing sinks (innerHTML and friends) throw, and the UI
+# never needs them; 'none' also stops injected code from creating a policy.
 _HTML_CSP = (
-    "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
+    "default-src 'self'; script-src 'self'; style-src 'self'; "
     "img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; "
-    "form-action 'self'; frame-ancestors 'none'"
+    "form-action 'self'; frame-ancestors 'none'; "
+    "require-trusted-types-for 'script'; trusted-types 'none'"
 )
 
 
 class Handler(BaseHTTPRequestHandler):
     server: DNSBenchServer
     server_version = f"dns-bench/{__version__}"
+    # One request per connection (the base class's default, stated here on purpose). Several responses go
+    # out before the request body is read (403, 404, 405, a 400 for the wrong Content-Type), and only
+    # oversized bodies are drained. With keep-alive, such an unread body would be parsed as the next
+    # request on the connection, so HTTP/1.1 needs every path to drain the body first (SEC-M1).
+    protocol_version = "HTTP/1.0"
+    # Seconds a client gets to send its request (and to take each chunk of the response) before the
+    # connection is dropped, so a stalled or slow-dripping client can't hold a thread forever.
+    timeout = 15
 
     # -- plumbing ------------------------------------------------------------
     def do_GET(self):
@@ -332,6 +369,9 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("X-Frame-Options", "DENY")
         self.send_header("Referrer-Policy", "no-referrer")
+        # Other sites can't embed our responses (e.g. <script src>) or keep a handle on our window.
+        self.send_header("Cross-Origin-Resource-Policy", "same-origin")
+        self.send_header("Cross-Origin-Opener-Policy", "same-origin")
         for k, v in (headers or {}).items():
             self.send_header(k, v)
         self.end_headers()
@@ -342,36 +382,63 @@ class Handler(BaseHTTPRequestHandler):
         body = json.dumps(obj, ensure_ascii=False).encode("utf-8")
         self._send(status, body, "application/json; charset=utf-8", headers)
 
+    def send_error(self, code: int, message: str | None = None, explain: str | None = None) -> None:
+        """The base class calls this for requests it can't parse or route: a malformed request line, an
+        oversized header, an unsupported method or HTTP version. Answer in JSON with the usual security
+        headers, like every other error, instead of its HTML page."""
+        self.close_connection = True
+        try:
+            phrase = HTTPStatus(code).phrase
+        except ValueError:
+            phrase = "Error"
+        with contextlib.suppress(OSError):
+            self._error(code, message or phrase)
+
     def _error(self, status: int, message: str, details=None, headers=None):
         obj: dict[str, object] = {"error": message}
         if details is not None:
             obj["details"] = list(details)
         self._json(status, obj, headers)
 
-    def _host_ok(self) -> bool:
-        host = (self.headers.get("Host") or "").strip().lower()
+    def _request_host(self) -> str | None:
+        """The Host header (lower-cased) if it names this server, else None: DNS-rebinding protection."""
+        values = self.headers.get_all("Host") or []
+        if len(values) != 1:
+            return None
+        host = values[0].strip().lower()
         if not host:
-            return False
+            return None
         if host.startswith("["):
             end = host.find("]")
             if end < 0:
-                return False
+                return None
             name, rest = host[: end + 1], host[end + 1 :]
         else:
             name, sep, port = host.partition(":")
             rest = f":{port}" if sep else ""
         if rest:
             port = rest[1:]
-            if not rest.startswith(":") or not port.isdigit():
-                return False
+            if not rest.startswith(":") or not _PORT_RE.fullmatch(port):
+                return None
             if int(port) != self.server.server_address[1]:
-                return False
-        return name in self.server.allowed_hosts
+                return None
+        return host if name in self.server.allowed_hosts else None
+
+    def _origin_ok(self, host: str) -> bool:
+        """Browsers send Origin with every request that isn't a GET or HEAD, and a page can't remove or
+        forge it, so a cross-site one is refused. A request without Origin is not from a browser page."""
+        origins = self.headers.get_all("Origin") or []
+        if not origins:
+            return True
+        return len(origins) == 1 and origins[0].strip().lower() == f"http://{host}"
 
     def _dispatch(self, method: str):
         try:
-            if not self._host_ok():
+            host = self._request_host()
+            if host is None:
                 raise HTTPError(403, "Forbidden: this server only answers requests for localhost")
+            if method != "GET" and not self._origin_ok(host):  # HEAD is dispatched as GET
+                raise HTTPError(403, "Forbidden: cross-origin request")
             path = urlsplit(self.path).path
             for pattern, methods in _ROUTES:
                 m = pattern.match(path)
@@ -387,8 +454,9 @@ class Handler(BaseHTTPRequestHandler):
             raise HTTPError(404, "Not found")
         except HTTPError as exc:
             self._error(exc.status, exc.message, exc.details, exc.headers)
-        except (BrokenPipeError, ConnectionResetError):
-            pass
+        # The client went away, or stalled for longer than `timeout`: there is no one to answer.
+        except (BrokenPipeError, ConnectionResetError, TimeoutError):
+            self.close_connection = True
         except Exception as exc:  # pragma: no cover - defensive
             self.server.log_line(f"internal error on {method} {self.path}: {exc!r}")
             with contextlib.suppress(OSError):
@@ -592,6 +660,16 @@ def make_server(
     return DNSBenchServer(host, port, config_path, runs_dir, query_fn=query_fn, web_dir=web_dir, quiet=quiet)
 
 
+def is_loopback_host(host: str) -> bool:
+    """True if a server bound to ``host`` accepts connections only from this machine."""
+    if host.strip().lower() == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host.strip().strip("[]")).is_loopback
+    except ValueError:  # "", a hostname, or junk: can't tell, so assume other machines can reach it
+        return False
+
+
 def server_url(server: DNSBenchServer) -> str:
     host, port = str(server.server_address[0]), server.server_address[1]  # always str for AF_INET/6
     if host in ("0.0.0.0", ""):
@@ -616,7 +694,7 @@ def serve(
     httpd = make_server(host, port, config_path, runs_dir, query_fn=query_fn, quiet=quiet)
     url = server_url(httpd)
     print(f"DNS Bench UI: {url}  (Ctrl-C to stop)", flush=True)
-    if host not in ("127.0.0.1", "localhost", "::1"):
+    if not is_loopback_host(host):
         print(
             "warning: listening on a non-loopback address; only loopback Host names are "
             "accepted, and there is no authentication.",

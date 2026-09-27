@@ -8,7 +8,9 @@ import signal
 import subprocess
 import sys
 import tempfile
+import textwrap
 import threading
+import time
 import tomllib
 import unittest
 from pathlib import Path
@@ -175,6 +177,119 @@ class CliTest(unittest.TestCase):
         self.assertLess(rows[0]["n_queries"], 60)
         self.assertIs(signal.getsignal(signal.SIGINT), before)  # handler restored
 
+    def test_a_crashed_run_is_saved_and_exits_1(self):
+        real = self.fake
+
+        def broken(server, domain, **kw):
+            if server == "192.0.2.2":
+                return {"status": "ok", "ms": "garbage"}  # float() of this raises inside the runner
+            return real(server, domain, **kw)
+
+        self.fake = broken
+        code, out, err = self.cli("run")
+        self.assertEqual(code, cli.EXIT_ERROR, err)
+        self.assertIn("STOPPED BY AN ERROR", out)
+        self.assertIn("stopped early after an internal error (ValueError", err)
+        self.assertIn("and were saved", err)
+        self.assertEqual([r["status"] for r in storage.list_runs(self.runs)], ["partial"])
+
+    def test_sigterm_saves_partial_run_like_ctrl_c(self):
+        def terminate(n):
+            if n == 2:
+                os.kill(os.getpid(), signal.SIGTERM)
+
+        self.fake.on_call = terminate
+        cfg = small_config()
+        cfg["domains"] = [f"d{i}.example" for i in range(30)]
+        C.save_config(cfg, self.cfg)
+        before = {sig: signal.getsignal(sig) for sig in (signal.SIGINT, signal.SIGTERM)}
+        code, out, err = self.cli("run")
+        self.assertEqual(code, cli.EXIT_INTERRUPTED, err)
+        self.assertIn("Cancelling", err)
+        self.assertIn("CANCELLED", out)
+        self.assertEqual([r["status"] for r in storage.list_runs(self.runs)], ["cancelled"])
+        self.assertEqual({sig: signal.getsignal(sig) for sig in before}, before)
+
+    def test_second_ctrl_c_saves_without_waiting_for_queries_in_flight(self):
+        # The first Ctrl-C comes while one query is stuck (like a server that never answers, with a
+        # long timeout); the second comes while the run waits for it. The run is saved at once.
+        def stuck(n):
+            if n == 2:
+                os.kill(os.getpid(), signal.SIGINT)
+                threading.Timer(0.3, os.kill, (os.getpid(), signal.SIGINT)).start()
+                time.sleep(3)
+
+        self.fake.on_call = stuck
+        cfg = small_config()
+        cfg["domains"] = [f"d{i}.example" for i in range(30)]
+        C.save_config(cfg, self.cfg)
+        t0 = time.monotonic()
+        code, out, err = self.cli("run")
+        self.assertLess(time.monotonic() - t0, 2.5)
+        self.assertEqual(code, cli.EXIT_INTERRUPTED, err)
+        self.assertIn("Press Ctrl-C again to save it now", err)
+        self.assertIn("CANCELLED", out)
+        rows = storage.list_runs(self.runs)
+        self.assertEqual([r["status"] for r in rows], ["cancelled"])
+        self.assertLess(rows[0]["n_queries"], 60)
+
+    def test_second_ctrl_c_exits_without_waiting_for_the_stuck_query(self):
+        # The in-process test above sees cmd_run return; only a real process shows whether the
+        # interpreter then waits at exit for the stuck query's thread (it must not).
+        script = textwrap.dedent(
+            """
+            import itertools, os, signal, sys, threading, time
+            from dnsbench import cli, resolver
+            from dnsbench.resolver import QueryResult
+
+            calls = itertools.count(1)
+
+            def query(server, domain, **kw):
+                if next(calls) == 2:
+                    os.kill(os.getpid(), signal.SIGINT)
+                    threading.Timer(0.3, os.kill, (os.getpid(), signal.SIGINT)).start()
+                    time.sleep(8)  # a server that never answers, with a long timeout
+                return QueryResult("ok", ms=1.0, rcode="NOERROR", answers=1)
+
+            resolver.query = query
+            sys.exit(cli.main(sys.argv[1:]))
+            """
+        )
+        t0 = time.monotonic()
+        p = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                script,
+                "run",
+                "--quiet",
+                "--config",
+                str(self.cfg),
+                "--runs-dir",
+                str(self.runs),
+            ],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        self.assertLess(time.monotonic() - t0, 5, "the process waited for the stuck query")
+        self.assertEqual(p.returncode, cli.EXIT_INTERRUPTED, p.stderr)
+        self.assertEqual([r["status"] for r in storage.list_runs(self.runs)], ["cancelled"])
+
+    def test_signals_during_the_save_are_ignored(self):
+        real_save = storage.save_run_safely
+
+        def save(run, runs_dir):
+            os.kill(os.getpid(), signal.SIGINT)  # Ctrl-C just as the run is being saved
+            os.kill(os.getpid(), signal.SIGTERM)
+            return real_save(run, runs_dir)
+
+        with mock.patch.object(storage, "save_run_safely", save):
+            code, _, err = self.cli("run")
+        self.assertEqual(code, cli.EXIT_OK, err)
+        self.assertEqual([r["status"] for r in storage.list_runs(self.runs)], ["complete"])
+
     def test_report_errors(self):
         self.assertEqual(self.cli("report")[0], 1)  # no runs yet
         self.assertEqual(self.cli("report", "all")[0], 1)
@@ -214,6 +329,46 @@ class CliTest(unittest.TestCase):
                 self.assertIn("--port", err.getvalue())
         self.assertEqual(parser.parse_args(["serve", "--port", "0"]).port, 0)
         self.assertEqual(parser.parse_args(["serve"]).port, 8053)
+
+    def test_rounds_override_cannot_exceed_the_query_limit(self):
+        cfg = small_config()
+        cfg["domains"] = [f"d{i}.example" for i in range(500)]
+        cfg["resolvers"] = [
+            {"name": f"R{i}", "servers": [f"192.0.2.{4 * i + j}" for j in range(1, 5)], "enabled": True}
+            for i in range(3)
+        ]
+        C.save_config(cfg, self.cfg)
+        code, _, err = self.cli("run", "--rounds", "10")
+        self.assertEqual(code, cli.EXIT_USAGE)
+        self.assertIn("a run would send 60,000 queries", err)
+        self.assertEqual(self.fake.calls, 0)
+
+    def test_serve_refuses_a_reachable_host_without_allow_remote(self):
+        from dnsbench import server
+
+        before = {sig: signal.getsignal(sig) for sig in (signal.SIGINT, signal.SIGTERM)}
+        with mock.patch.object(server, "serve") as serve:
+            for host in ("0.0.0.0", "::", "", "192.0.2.10", "2001:db8::1", "my-laptop.local"):
+                with self.subTest(host=host):
+                    code, _, err = self.cli("serve", "--host", host)
+                    self.assertEqual(code, cli.EXIT_USAGE)
+                    self.assertIn("refusing to listen", err)
+                    self.assertIn("ssh -L 8053:127.0.0.1:8053", err)
+            serve.assert_not_called()
+            for args in (
+                ("--host", "127.0.0.1"),
+                ("--host", "localhost"),
+                ("--host", "::1"),
+                ("--host", "127.0.0.2"),
+                ("--host", "0.0.0.0", "--allow-remote"),
+            ):
+                with self.subTest(args=args):
+                    serve.reset_mock()
+                    code, _, err = self.cli("serve", *args)
+                    self.assertEqual(code, cli.EXIT_OK, err)
+                    self.assertEqual(serve.call_args.args[0], args[1])
+        # serve's Ctrl-C/kill handlers are put back afterwards
+        self.assertEqual({sig: signal.getsignal(sig) for sig in before}, before)
 
     def test_unwritable_runs_dir_fails_before_any_query(self):
         blocker = Path(self.tmp.name) / "not-a-dir"

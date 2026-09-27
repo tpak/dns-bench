@@ -101,7 +101,6 @@ DEFAULT_SETTINGS = {
     "timeout_ms": 1000,
     "tries": 1,
     "rounds": 1,
-    "max_parallel_servers": 8,
     "slow_threshold_ms": 200,
     "record_type": "A",
     "shuffle": True,
@@ -120,15 +119,19 @@ SETTING_BOUNDS = {
     "timeout_ms": (200, 10000),
     "tries": (1, 3),
     "rounds": (1, 10),
-    "max_parallel_servers": (1, 32),
     "slow_threshold_ms": (1, 10000),
 }
 RECORD_TYPES = ("A", "AAAA")
 MIN_INTERVAL_MS = SETTING_BOUNDS["per_server_interval_ms"][0]
 
 MAX_DOMAINS = 500
+MAX_RESOLVERS = 20
 MAX_SERVERS_PER_RESOLVER = 4
 MAX_NAME_LEN = 40
+MAX_HOSTNAME_LEN = 253  # a DNS name in text form, without the trailing dot (RFC 1035)
+# Servers x domains x rounds in one run (the defaults send 480). It bounds a run's duration, its file
+# size (a few hundred bytes per query) and what the web UI has to draw.
+MAX_QUERIES_PER_RUN = 50_000
 
 _LABEL_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
 _SPLIT_RE = re.compile(r"[\s,;]+")
@@ -173,7 +176,9 @@ def default_config() -> dict:
 def normalize_domain(value) -> str:
     """strip, lowercase, drop trailing dot, IDNA-encode unicode names."""
     d = str(value).strip().lower().rstrip(".")
-    if d and not d.isascii():
+    # Encoding takes time in proportion to the input, which can be a whole request body. A name longer
+    # than MAX_HOSTNAME_LEN characters stays too long once encoded, so it is left for validation to reject.
+    if d and not d.isascii() and len(d) <= MAX_HOSTNAME_LEN:
         with contextlib.suppress(UnicodeError):  # left as-is; validation reports it
             d = d.encode("idna").decode("ascii")
     return d
@@ -287,7 +292,8 @@ def normalize_config(cfg) -> dict:
       ``enabled`` defaults to true.
     * domains: strip, lowercase, trailing dot removed, blanks dropped,
       de-duplicated preserving order, unicode IDNA-encoded.
-    * settings: missing keys filled from defaults, unknown keys dropped.
+    * settings: missing keys filled from defaults, unknown keys dropped (so a
+      setting that no longer exists, like max_parallel_servers, just goes away).
     Values of the wrong type are passed through so validation can report them.
     """
     if not isinstance(cfg, dict):
@@ -356,8 +362,8 @@ def _hostname_error(domain) -> str | None:
         return "must be a string"
     if not domain:
         return "is empty"
-    if len(domain) > 253:
-        return "is longer than 253 characters"
+    if len(domain) > MAX_HOSTNAME_LEN:
+        return f"is longer than {MAX_HOSTNAME_LEN} characters"
     for label in domain.split("."):
         if not label:
             return "has an empty label (two dots in a row?)"
@@ -384,6 +390,8 @@ def validate_config(cfg) -> list[str]:
     if not isinstance(resolvers, list) or not resolvers:
         errors.append("resolvers: at least one resolver is required")
     else:
+        if len(resolvers) > MAX_RESOLVERS:
+            errors.append(f"resolvers: at most {MAX_RESOLVERS} resolvers allowed (got {len(resolvers)})")
         names_seen: dict[str, int] = {}
         servers_seen: dict[str, str] = {}
         any_enabled = False
@@ -489,6 +497,22 @@ def validate_config(cfg) -> list[str]:
         if not isinstance(settings.get("shuffle"), bool):
             errors.append(
                 f"settings.shuffle: must be true or false (got {_short_repr(settings.get('shuffle'))})"
+            )
+
+    # -- the run as a whole, when the numbers it depends on are usable ------
+    rounds = settings.get("rounds") if isinstance(settings, dict) else None
+    if isinstance(resolvers, list) and isinstance(domains, list) and type(rounds) is int and rounds > 0:
+        servers = sum(
+            len(r["servers"])
+            for r in resolvers
+            if isinstance(r, dict) and r.get("enabled", True) is True and isinstance(r.get("servers"), list)
+        )
+        queries = servers * len(domains) * rounds
+        if queries > MAX_QUERIES_PER_RUN:
+            errors.append(
+                f"a run would send {queries:,} queries ({servers} servers x {len(domains)} domains x "
+                f"{rounds} rounds); the limit is {MAX_QUERIES_PER_RUN:,}, so enable fewer servers or "
+                "use fewer domains or rounds"
             )
     return errors
 
@@ -637,15 +661,13 @@ def estimate(cfg: dict) -> dict:
     servers = sum(len(r.get("servers", [])) for r in enabled_resolvers(cfg))
     per_server = len(cfg.get("domains", [])) * int(s["rounds"])
     interval = max(MIN_INTERVAL_MS, int(s["per_server_interval_ms"])) / 1000.0
-    parallel = max(1, min(int(s["max_parallel_servers"]), servers or 1))
-    batches = -(-servers // parallel) if servers else 0  # ceil
     per_server_qps = 1.0 / interval
     return {
         "servers": servers,
         "queries": servers * per_server,
         "queries_per_server": per_server,
-        # 5 % average jitter on top of the interval, batches if servers > parallel
-        "est_seconds": round(per_server * interval * 1.05 * batches, 1),
+        # every server is measured at the same time; 5 % average jitter on top of the interval
+        "est_seconds": round(per_server * interval * 1.05, 1) if servers else 0.0,
         "max_qps_per_server": round(per_server_qps, 2),
-        "max_qps_total": round(per_server_qps * min(servers, parallel), 2),
+        "max_qps_total": round(per_server_qps * servers, 2),
     }

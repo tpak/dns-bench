@@ -41,8 +41,10 @@ worker per server IP, and each worker:
 * has a hard 50 ms floor on that interval (at most 20 q/s per server), whatever the
   config says.
 
-All the servers run at the same time, so the wall time is about
-`domains × rounds × interval` (60 × 0.25 s ≈ 15 s) instead of the sum of all the servers.
+All the servers run at the same time, however many there are, so the wall time is about
+`domains × rounds × interval` (60 × 0.25 s ≈ 15 s) instead of the sum of all the servers. It
+also means every server is measured over the same stretch of time, so network conditions
+that change during a run affect them all alike.
 The total load across every server is at most `servers × 1000/interval` queries/s
 (8 × 4 = 32 q/s by default), spread over the four enabled providers. A unit test
 (`tests/test_runner.py`) uses real threads to check both rules: never more than one query
@@ -90,14 +92,15 @@ Recommendation: Use Cloudflare: put 1.0.0.1 first and 8.8.8.8 (Google) second. .
 While a run is going, `[slow]` and `[fail]` lines are printed to stderr, like the original
 did, along with a live progress line showing done/total, elapsed time and ETA. Press Ctrl-C
 to stop early: the queries already done are still saved (with status `cancelled`) and the
-exit code is 130.
+exit code is 130. The first Ctrl-C waits for the queries still in flight, at most one timeout;
+press it again to save straight away. `kill` (SIGTERM) works like Ctrl-C.
 
 ## Commands
 
 | Command | What it does |
 |---|---|
 | `dns-bench run [--rounds N] [--interval-ms N] [--timeout-ms N] [--resolvers A,B] [--no-save] [--quiet] [--json]` | Runs a benchmark. The overrides apply to this run only and are not saved to the config. `--resolvers` picks resolvers by name, even disabled ones (e.g. `--resolvers Quad9,Cloudflare`). `--json` prints the full run record instead of the text report. |
-| `dns-bench serve [--host 127.0.0.1] [--port 8053] [--open]` | Starts the web UI and JSON API. `--open` opens it in your browser. |
+| `dns-bench serve [--host 127.0.0.1] [--port 8053] [--open] [--allow-remote]` | Starts the web UI and JSON API. `--open` opens it in your browser. A `--host` that other machines can reach needs `--allow-remote` (see [The web UI](#the-web-ui)). |
 | `dns-bench list` | Lists saved runs, newest first. |
 | `dns-bench report [latest\|all\|RUN_ID]` | Prints the text report for the latest run, a specific run, or `all` runs combined. |
 | `dns-bench config [--show\|--reset\|--path]` | Shows the config (the default), resets it to the defaults, or prints its path. |
@@ -126,9 +129,20 @@ The dataset picker at the top chooses which data every tab shows: the latest run
 run, or **All runs combined**.
 
 The server listens on 127.0.0.1 only. It rejects requests whose `Host` header isn't
-localhost (protection against DNS rebinding), and state-changing requests must be
-`Content-Type: application/json` (blocks cross-site form posts). There is no
-authentication, so don't expose it with `--host 0.0.0.0` on an untrusted network.
+localhost (protection against DNS rebinding). A state-changing request must be
+`Content-Type: application/json`, and if it comes from a web page, that page must be the UI
+itself (its `Origin` header is checked), so other sites can't change your config or start runs.
+The page runs under a strict Content Security Policy.
+
+There is no authentication, so `serve` refuses a `--host` that other machines can reach, such
+as `0.0.0.0` or a LAN address, unless you add `--allow-remote`. To use the UI from another
+computer, forward the port over SSH instead and keep the default host:
+
+```sh
+ssh -L 8053:127.0.0.1:8053 you@machine-running-dns-bench
+```
+
+Then open http://127.0.0.1:8053/ on the computer you ran `ssh` on.
 
 ## Configuration (`config.json`)
 
@@ -146,7 +160,6 @@ Everything is checked before it is saved. Invalid input is rejected with readabl
     "timeout_ms": 1000,
     "tries": 1,
     "rounds": 1,
-    "max_parallel_servers": 8,
     "slow_threshold_ms": 200,
     "record_type": "A",
     "shuffle": true
@@ -159,6 +172,7 @@ disabled, because the original defined it but left it out of `order`.
 
 | Key | Default | Range | Meaning |
 |---|---|---|---|
+| `resolvers` | 5 providers | 1–20 | The resolvers to compare. One run can send at most 50,000 queries (enabled servers × domains × rounds); a bigger config is rejected with a message saying so. |
 | `resolvers[].name` | – | 1–40 chars, unique | Display name. No commas. |
 | `resolvers[].servers` | – | 1–4 IPv4/IPv6 literals | Each IP can appear only once across all resolvers, however it is spelled (`::ffff:1.1.1.1` is `1.1.1.1`). Multicast, broadcast, reserved and unspecified addresses are rejected, and an IPv6 zone ID (`%en0`) is only allowed on a link-local `fe80::` address. |
 | `resolvers[].enabled` | `true` | bool | At least one resolver must be enabled. |
@@ -167,7 +181,6 @@ disabled, because the original defined it but left it out of `order`.
 | `timeout_ms` | 1000 | 200–10000 | How long to wait for an answer. |
 | `tries` | 1 | 1–3 | Attempts per query. A retry happens only after a timeout, and is paced by the interval like any other query. Each result row records its `attempts`; a query that needed a retry counts as `retried` and is penalised in the score, and its `ms` is the retry's round trip. |
 | `rounds` | 1 | 1–10 | How many times each domain is queried on each server. More rounds give steadier numbers. |
-| `max_parallel_servers` | 8 | 1–32 | How many servers are benchmarked at the same time. |
 | `slow_threshold_ms` | 200 | 1–10000 | Answers slower than this are listed as `[slow]`. |
 | `record_type` | `A` | `A`, `AAAA` | Query type. |
 | `shuffle` | `true` | bool | Shuffle each server's domain order independently. |

@@ -9,7 +9,6 @@ import json
 import os
 import signal
 import sys
-import tempfile
 import threading
 import time
 from datetime import UTC, datetime
@@ -137,30 +136,6 @@ def _apply_run_overrides(cfg: dict, args) -> list[str]:
     return config_mod.validate_config(cfg)
 
 
-def _check_runs_dir(runs_dir: Path) -> str | None:
-    """Make sure a run can be saved BEFORE sending any DNS traffic."""
-    try:
-        runs_dir.mkdir(parents=True, exist_ok=True)
-        fd, probe = tempfile.mkstemp(prefix=".tmp-", suffix=".part", dir=str(runs_dir))
-        os.close(fd)
-        os.unlink(probe)
-    except OSError as exc:
-        return f"cannot write to {runs_dir}: {exc.strerror or exc}"
-    return None
-
-
-def _rescue_run(run: dict) -> Path | None:
-    """Last resort when the runs dir fails mid-save: keep the data in the temp dir."""
-    try:
-        fd, path = tempfile.mkstemp(prefix=f"dns-bench-{run.get('id', 'run')}-", suffix=".json")
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            json.dump(run, fh, indent=2, ensure_ascii=False)
-            fh.write("\n")
-        return Path(path)
-    except OSError:
-        return None
-
-
 def cmd_run(args) -> int:
     cfg = config_mod.load_config(args.config)
     errors = _apply_run_overrides(cfg, args)
@@ -169,7 +144,7 @@ def cmd_run(args) -> int:
             _err(e)
         return EXIT_USAGE
     if not args.no_save:
-        problem = _check_runs_dir(args.runs_dir)
+        problem = storage.check_writable(args.runs_dir)
         if problem:
             _err(problem + " (use --runs-dir DIR, or --no-save)")
             return EXIT_ERROR
@@ -194,33 +169,49 @@ def cmd_run(args) -> int:
 
     progress = Progress(est["queries"], s["slow_threshold_ms"], quiet=args.quiet)
     cancel = threading.Event()
+    stop_waiting = threading.Event()
+    signals = {"count": 0, "measuring": True}
 
-    def on_sigint(signum, frame):
+    def on_signal(signum, frame):
+        # Ctrl-C (SIGINT) and `kill` (SIGTERM) alike. The first stops the run once the queries in flight
+        # are answered or time out; a second stops waiting for them. Neither may interrupt the save.
+        # Events, not exceptions: an exception raised here could land anywhere in the main thread.
+        signals["count"] += 1
+        if not signals["measuring"]:
+            return
+        if signals["count"] > 1:
+            stop_waiting.set()  # run_benchmark returns what it has, without waiting
+            return
         cancel.set()
-        signal.signal(signal.SIGINT, signal.default_int_handler)  # 2nd Ctrl-C: hard interrupt
         if not args.quiet:
             sys.stderr.write("\r\x1b[K" if progress.tty else "\n")
-            sys.stderr.write("Cancelling: waiting for in-flight queries, then saving the partial run...\n")
+            sys.stderr.write(
+                f"Cancelling: waiting up to {s['timeout_ms'] / 1000:g} s for the queries in flight, then "
+                "saving the partial run. Press Ctrl-C again to save it now.\n"
+            )
             sys.stderr.flush()
 
-    previous = signal.signal(signal.SIGINT, on_sigint)
+    previous = {sig: signal.signal(sig, on_signal) for sig in (signal.SIGINT, signal.SIGTERM)}
     try:
-        run = runner.run_benchmark(cfg, progress=progress, cancel_event=cancel)
+        try:
+            run = runner.run_benchmark(cfg, progress=progress, cancel_event=cancel, stop_waiting=stop_waiting)
+        finally:
+            signals["measuring"] = False
+            progress.finish()
+        return _finish_run(args, run, est)
     finally:
-        signal.signal(signal.SIGINT, previous)
-        progress.finish()
+        for sig, handler in previous.items():
+            if handler is not None:  # None: installed outside Python, can't be put back
+                signal.signal(sig, handler)
 
-    saved_path = None
-    save_error = None
+
+def _finish_run(args, run: dict, est: dict) -> int:
+    """Save and report a finished (or stopped) run; returns the exit code."""
+    saved = None
     if args.no_save:
         storage.finalize_run(run)
     else:
-        try:
-            saved_path = storage.save_run(run, args.runs_dir)
-        except OSError as exc:  # full disk, permissions changed mid-run, ...
-            save_error = exc
-            if "summary" not in run or "recommendation" not in run:
-                storage.finalize_run(run)
+        saved = storage.save_run_safely(run, args.runs_dir)
 
     # The report goes out first, so the measurements are never lost.
     if args.json:
@@ -229,23 +220,23 @@ def cmd_run(args) -> int:
     else:
         sys.stdout.write(report.render_text(run))
     sys.stdout.flush()
-    if saved_path is not None:
-        txt = saved_path.with_suffix(".txt")
-        print(f"Saved: {saved_path} (report: {txt.name})", file=sys.stderr)
-    if save_error is not None:
-        why = save_error.strerror or save_error
-        json_path = args.runs_dir / f"{run.get('id')}.json"
-        if storage.valid_run_id(run.get("id")) and json_path.is_file():
-            _err(f"the run was saved as {json_path}, but its text report could not be written: {why}")
-        else:
-            _err(f"could not save run to {args.runs_dir}: {why}")
-        rescued = _rescue_run(run)
-        if rescued is not None:
-            _err(f"the full run record was written to {rescued} instead")
+    if saved is not None and saved.error is None and saved.path is not None:
+        print(f"Saved: {saved.path} (report: {saved.path.with_suffix('.txt').name})", file=sys.stderr)
+    if saved is not None and saved.error is not None:
+        _err(saved.error)
+        if saved.rescued is not None:
+            _err(f"the full run record was written to {saved.rescued} instead")
     if run["status"] == "cancelled":
         print(f"Run cancelled after {len(run['results'])} of {est['queries']} queries.", file=sys.stderr)
         return EXIT_INTERRUPTED
-    if save_error is not None:
+    if run["status"] == "partial":
+        _err(
+            f"the benchmark stopped early after an internal error ({run.get('error')}); "
+            f"the {len(run['results'])} of {est['queries']} queries measured before it are in the report"
+            + ("" if args.no_save or (saved is not None and saved.error) else " and were saved")
+        )
+        return EXIT_ERROR
+    if saved is not None and saved.error is not None:
         return EXIT_ERROR
     overall = (run.get("summary") or {}).get("overall") or {}
     if run.get("results") and not overall.get("ok"):
@@ -264,10 +255,16 @@ def _raise_interrupt(signum, frame):
 def cmd_serve(args) -> int:
     from . import server
 
+    if not args.allow_remote and not server.is_loopback_host(args.host):
+        _err(
+            f"refusing to listen on {args.host or 'every interface'}: other machines could reach it, and "
+            "the web UI has no authentication. To use it from another machine, forward the port over "
+            f"SSH instead (ssh -L {args.port}:127.0.0.1:{args.port} <this machine>), or add --allow-remote"
+        )
+        return EXIT_USAGE
     # Explicit handlers: Ctrl-C and `kill` both stop cleanly (a running job is
     # cancelled and its partial run saved), even if SIGINT was inherited as ignored.
-    signal.signal(signal.SIGINT, _raise_interrupt)
-    signal.signal(signal.SIGTERM, _raise_interrupt)
+    previous = {sig: signal.signal(sig, _raise_interrupt) for sig in (signal.SIGINT, signal.SIGTERM)}
     try:
         server.serve(args.host, args.port, args.config, args.runs_dir, open_browser=args.open, quiet=False)
     except (OSError, OverflowError) as exc:
@@ -276,6 +273,10 @@ def cmd_serve(args) -> int:
     except KeyboardInterrupt:
         print("\nStopped.", file=sys.stderr)
         return EXIT_INTERRUPTED
+    finally:
+        for sig, handler in previous.items():
+            if handler is not None:  # None: installed outside Python, can't be put back
+                signal.signal(sig, handler)
     return EXIT_OK
 
 
@@ -485,6 +486,12 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--host", default="127.0.0.1", help="bind address (default: %(default)s)")
     s.add_argument("--port", type=_port, default=8053, help="port, 0-65535 (default: %(default)s)")
     s.add_argument("--open", action="store_true", help="open the UI in your browser")
+    s.add_argument(
+        "--allow-remote",
+        action="store_true",
+        help="allow a --host that other machines can reach (there is no authentication; "
+        "prefer an SSH tunnel: ssh -L 8053:127.0.0.1:8053 <host>)",
+    )
     s.set_defaults(func=cmd_serve)
 
     ls = sub.add_parser("list", parents=[common], help="list saved runs")
