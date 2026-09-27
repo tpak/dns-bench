@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import csv
 import http.client
 import io
@@ -107,11 +108,12 @@ class ServerTestBase(unittest.TestCase):
 
     def raw_request(self, data: bytes) -> bytes:
         """Send bytes as-is (for requests http.client won't build) and return the whole response."""
+        chunks = []
         with socket.create_connection(("127.0.0.1", self.port), timeout=10) as sock:
             sock.sendall(data)
-            chunks = []
-            while chunk := sock.recv(65536):
-                chunks.append(chunk)
+            with contextlib.suppress(ConnectionResetError):  # a close with unread input may end in a reset
+                while chunk := sock.recv(65536):
+                    chunks.append(chunk)
         return b"".join(chunks)
 
     def jreq(self, method, path, body=None, **kw):
@@ -293,6 +295,70 @@ class SecurityTest(ServerTestBase):
                     + body
                 )
                 self.assertTrue(resp.startswith(b"HTTP/1.0 403 "), resp[:80])
+
+    def test_host_port_must_be_ascii_digits(self):
+        # int() rejects both of these, which used to turn into a 500
+        for host in (
+            "localhost:\u00b2",
+            "localhost:" + "9" * 5000,
+            "localhost:+80",
+            f"localhost:{self.port}0",
+        ):
+            with self.subTest(host=host[:20]):
+                status, data = self.jreq("GET", "/api/status", headers={"Host": host})
+                self.assertEqual(status, 403, data)
+
+    def test_malformed_requests_get_json_errors_with_security_headers(self):
+        host = f"Host: 127.0.0.1:{self.port}\r\n"
+        for request, code in (
+            (f"GET / HTTP/9.9\r\n{host}\r\n", 505),
+            (f"GET / FOO HTTP/1.1\r\n{host}\r\n", 400),
+            (f"BREW /pot HTTP/1.1\r\n{host}\r\n", 501),
+        ):
+            with self.subTest(request=request.split("\r\n")[0]):
+                head, _, body = self.raw_request(request.encode()).partition(b"\r\n\r\n")
+                lines = head.decode("latin-1").split("\r\n")
+                self.assertTrue(lines[0].startswith(f"HTTP/1.0 {code} "), lines[0])
+                headers = {k.lower(): v.strip() for k, _, v in (line.partition(":") for line in lines[1:])}
+                self.assertEqual(headers["content-type"], "application/json; charset=utf-8")
+                self.assertEqual(headers["x-content-type-options"], "nosniff")
+                self.assertEqual(headers["cross-origin-resource-policy"], "same-origin")
+                self.assertTrue(json.loads(body)["error"])
+
+    def test_one_request_per_connection(self):
+        host = f"Host: 127.0.0.1:{self.port}\r\n"
+        # HTTP/1.0 even when the client asks for keep-alive: raw_request reads until the server closes.
+        resp = self.raw_request(f"GET /api/status HTTP/1.1\r\n{host}Connection: keep-alive\r\n\r\n".encode())
+        self.assertTrue(resp.startswith(b"HTTP/1.0 200 "), resp[:40])
+        # A body the server never reads (the 405 goes out first) is never parsed as a second request.
+        smuggled = (
+            f"POST /api/config/reset HTTP/1.1\r\n{host}Content-Type: application/json\r\n"
+            "Content-Length: 2\r\n\r\n{}"
+        )
+        resp = self.raw_request(
+            f"POST /api/status HTTP/1.1\r\n{host}Content-Type: application/json\r\n"
+            f"Content-Length: {len(smuggled)}\r\n\r\n{smuggled}".encode()
+        )
+        self.assertTrue(resp.startswith(b"HTTP/1.0 405 "), resp[:40])
+        self.assertEqual(resp.count(b"HTTP/1.0 "), 1)
+        self.assertEqual(C.load_config(self.cfg_path), C.normalize_config(small_config()))  # not reset
+
+    def test_stalled_clients_are_dropped(self):
+        self.assertEqual(SV.Handler.timeout, 15)
+        host = f"Host: 127.0.0.1:{self.port}\r\n"
+        with mock.patch.object(SV.Handler, "timeout", 0.3):
+            for partial in (
+                f"GET /api/status HTTP/1.1\r\n{host}",  # the headers never end
+                f"PUT /api/config HTTP/1.1\r\n{host}Content-Type: application/json\r\n"
+                'Content-Length: 100\r\n\r\n{"a"',  # the body never arrives
+            ):
+                with self.subTest(partial=partial.split("\r\n")[0]):
+                    t0 = time.monotonic()
+                    resp = self.raw_request(partial.encode())
+                    self.assertLess(time.monotonic() - t0, 5)
+                    self.assertEqual(resp, b"")  # dropped: no response, and no 500
+        self.assertEqual(self.jreq("GET", "/api/status")[0], 200)
+        self.assertEqual(C.load_config(self.cfg_path), C.normalize_config(small_config()))
 
     def test_options_is_405_without_cors_headers(self):
         status, headers, _ = self.req("OPTIONS", "/api/config")

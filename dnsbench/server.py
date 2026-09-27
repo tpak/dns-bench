@@ -20,6 +20,7 @@ import threading
 import time
 from collections import deque
 from datetime import UTC, datetime
+from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlsplit
@@ -60,6 +61,7 @@ CSV_COLUMNS = [
 ]
 
 LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "[::1]"}
+_PORT_RE = re.compile(r"[0-9]{1,5}")  # ASCII digits only: str.isdigit() also accepts e.g. "²"
 
 
 class HTTPError(Exception):
@@ -288,6 +290,14 @@ _HTML_CSP = (
 class Handler(BaseHTTPRequestHandler):
     server: DNSBenchServer
     server_version = f"dns-bench/{__version__}"
+    # One request per connection (the base class's default, stated here on purpose). Several responses go
+    # out before the request body is read (403, 404, 405, a 400 for the wrong Content-Type), and only
+    # oversized bodies are drained. With keep-alive, such an unread body would be parsed as the next
+    # request on the connection, so HTTP/1.1 needs every path to drain the body first (SEC-M1).
+    protocol_version = "HTTP/1.0"
+    # Seconds a client gets to send its request (and to take each chunk of the response) before the
+    # connection is dropped, so a stalled or slow-dripping client can't hold a thread forever.
+    timeout = 15
 
     # -- plumbing ------------------------------------------------------------
     def do_GET(self):
@@ -351,6 +361,18 @@ class Handler(BaseHTTPRequestHandler):
         body = json.dumps(obj, ensure_ascii=False).encode("utf-8")
         self._send(status, body, "application/json; charset=utf-8", headers)
 
+    def send_error(self, code: int, message: str | None = None, explain: str | None = None) -> None:
+        """The base class calls this for requests it can't parse or route: a malformed request line, an
+        oversized header, an unsupported method or HTTP version. Answer in JSON with the usual security
+        headers, like every other error, instead of its HTML page."""
+        self.close_connection = True
+        try:
+            phrase = HTTPStatus(code).phrase
+        except ValueError:
+            phrase = "Error"
+        with contextlib.suppress(OSError):
+            self._error(code, message or phrase)
+
     def _error(self, status: int, message: str, details=None, headers=None):
         obj: dict[str, object] = {"error": message}
         if details is not None:
@@ -375,7 +397,7 @@ class Handler(BaseHTTPRequestHandler):
             rest = f":{port}" if sep else ""
         if rest:
             port = rest[1:]
-            if not rest.startswith(":") or not port.isdigit():
+            if not rest.startswith(":") or not _PORT_RE.fullmatch(port):
                 return None
             if int(port) != self.server.server_address[1]:
                 return None
@@ -411,8 +433,9 @@ class Handler(BaseHTTPRequestHandler):
             raise HTTPError(404, "Not found")
         except HTTPError as exc:
             self._error(exc.status, exc.message, exc.details, exc.headers)
-        except (BrokenPipeError, ConnectionResetError):
-            pass
+        # The client went away, or stalled for longer than `timeout`: there is no one to answer.
+        except (BrokenPipeError, ConnectionResetError, TimeoutError):
+            self.close_connection = True
         except Exception as exc:  # pragma: no cover - defensive
             self.server.log_line(f"internal error on {method} {self.path}: {exc!r}")
             with contextlib.suppress(OSError):
