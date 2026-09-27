@@ -1,17 +1,23 @@
 from __future__ import annotations
 
 import contextlib
+import copy
 import io
 import json
-import sys
+import shutil
 import tempfile
 import unittest
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-
 from dnsbench import config as C
 from dnsbench import report, storage
+
+# Two records written by dns-bench 1.0.0, from real runs, with the hostname, the ISP resolver's IPs and a
+# personal domain replaced (tests/fixtures/README.md). They pin what an old run file looks like, so a
+# change to the run format or to loading (REMEDIATION_PLAN.md Phase 6's migrate()) is tested against
+# real data rather than against records built by today's code.
+V1_FIXTURES = Path(__file__).resolve().parent / "fixtures" / "runs-v1"
+V1_RUN_IDS = ["20260925T091918Z", "20260925T090918Z"]  # newest first
 
 
 def make_run(run_id="20260925T023456Z", started="2026-09-25T02:34:56Z", fast_ms=5.0):
@@ -392,6 +398,58 @@ class StorageTest(unittest.TestCase):
         text = report.render_text(run)
         self.assertIn("Retried", text)
         self.assertIn("retried=1", text)
+
+
+class V1RunFixturesTest(unittest.TestCase):
+    def setUp(self):
+        # A copy, so nothing a test does can change the fixtures.
+        self.tmp = tempfile.TemporaryDirectory()
+        self.runs_dir = Path(self.tmp.name) / "runs"
+        shutil.copytree(V1_FIXTURES, self.runs_dir)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_fixtures_are_v1_records(self):
+        self.assertEqual(sorted(p.stem for p in V1_FIXTURES.glob("*.json")), sorted(V1_RUN_IDS))
+        for run_id in V1_RUN_IDS:
+            with self.subTest(run_id=run_id):
+                run = storage.load_run(run_id, self.runs_dir)
+                self.assertEqual(run["version"], "1.0.0")
+                self.assertEqual(run["host"], "example-host")
+                self.assertNotIn("schema", run)  # v1 records have no schema version
+                self.assertTrue(run["results"])
+                self.assertIn("summary", run)
+                self.assertIn("recommendation", run)
+
+    def test_stored_analysis_matches_a_fresh_one(self):
+        # Today's analysis of the raw results reproduces what 1.0.0 stored. So recomputing the summary
+        # and recommendation on load (Phase 6) changes nothing for these files until the scoring itself
+        # changes on purpose (Phase 8), which must then update this test.
+        for run_id in V1_RUN_IDS:
+            with self.subTest(run_id=run_id):
+                stored = storage.load_run(run_id, self.runs_dir)
+                raw = {
+                    k: copy.deepcopy(v) for k, v in stored.items() if k not in ("summary", "recommendation")
+                }
+                fresh = json.loads(json.dumps(storage.finalize_run(raw)))  # tuples -> lists, as on disk
+                self.assertEqual(fresh["summary"], stored["summary"])
+                self.assertEqual(fresh["recommendation"], stored["recommendation"])
+
+    def test_list_report_and_aggregate(self):
+        rows = storage.list_runs(self.runs_dir)
+        self.assertEqual([r["id"] for r in rows], V1_RUN_IDS)
+        for row in rows:
+            self.assertEqual(row["best"], "Cloudflare")
+            self.assertIsInstance(row["best_median"], float)
+            self.assertEqual(row["host"], "example-host")
+        for run_id in V1_RUN_IDS:
+            text = report.render_text(storage.load_run(run_id, self.runs_dir))
+            self.assertIn("Recommendation:", text)
+        bundle = storage.aggregate(self.runs_dir, "all", current=None)
+        self.assertEqual(bundle["run_ids"], V1_RUN_IDS)
+        self.assertEqual(bundle["coverage"]["ISP"], {"runs": 2, "of": 2, "last_run": V1_RUN_IDS[0]})
+        self.assertIn(bundle["recommendation"]["best"], {r["name"] for r in bundle["config"]["resolvers"]})
 
 
 if __name__ == "__main__":

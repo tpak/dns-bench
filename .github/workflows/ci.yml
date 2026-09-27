@@ -50,7 +50,7 @@ jobs:
       - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
         with:
           python-version: ${{ matrix.python }} # sets UV_PYTHON for every `uv run` below
-          enable-cache: false # stdlib only: nothing to cache
+          enable-cache: false # no dependencies to cache; `uv run` only fetches hatchling to build the project
       - name: Unit tests
         run: uv run python -m unittest discover -s tests -v
       # `uv run` puts the chosen Python first on PATH, so the launcher's `#!/usr/bin/env python3` finds it.
@@ -58,11 +58,16 @@ jobs:
         run: |
           uv run ./dns-bench --version
           ln -s "$PWD/dns-bench" "$RUNNER_TEMP/dns-bench"
-          cd "$RUNNER_TEMP" && uv run ./dns-bench --version
+          cd "$RUNNER_TEMP" && uv run ./dns-bench --version # no project here: a plain interpreter
+      # The command pyproject.toml's [project.scripts] installs into the project environment.
+      - name: Installed dns-bench command
+        run: uv run dns-bench --version
+      # --no-project: otherwise uv itself refuses 3.12 (pyproject.toml's requires-python) before the
+      # launcher gets to run.
       - name: Launcher refuses Python 3.12 with a clear message
         if: matrix.python == '3.13'
         run: |
-          if out=$(uv run --python 3.12 python ./dns-bench --version 2>&1); then
+          if out=$(uv run --no-project --python 3.12 python ./dns-bench --version 2>&1); then
             echo "::error::the launcher ran under Python 3.12: $out"
             exit 1
           fi

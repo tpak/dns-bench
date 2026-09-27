@@ -6,7 +6,7 @@
     "useIgnoreFile": true
   },
   "files": {
-    "includes": ["**", "!archive", "!config.json"]
+    "includes": ["**", "!archive", "!config.json", "!tests/fixtures"]
   },
   "formatter": {
     "indentStyle": "space",

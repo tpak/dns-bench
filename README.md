@@ -2,7 +2,7 @@
 
 [![ci](https://github.com/tpak/dns-bench/actions/workflows/ci.yml/badge.svg)](https://github.com/tpak/dns-bench/actions/workflows/ci.yml)
 
-A fast, polite DNS resolver benchmark with a local web UI. It replaces `../archive/dns-test.sh`,
+A fast, polite DNS resolver benchmark with a local web UI. It replaces `archive/dns-test.sh`,
 which is left unchanged.
 
 It times how quickly each DNS resolver (OpenDNS, Cloudflare, Google, your ISP, …) answers
@@ -62,7 +62,21 @@ cd ~/bin/dns-bench
 ```
 
 The launcher also works from any directory and through a symlink. For example,
-`ln -s ~/bin/dns-bench/dns-bench ~/bin/dnsb`.
+`ln -s ~/bin/dns-bench/dns-bench ~/bin/dnsb`. From the checkout, `python3 -m dnsbench` works too.
+
+### Installing a `dns-bench` command (optional)
+
+Nothing needs installing: `./dns-bench` runs straight from the checkout. To put a `dns-bench` command
+on your PATH instead, install the checkout with [uv](https://docs.astral.sh/uv/):
+
+```sh
+cd ~/bin/dns-bench
+uv tool install --editable .
+```
+
+Only editable installs (`--editable`) are supported. dns-bench keeps `config.json` and `runs/` in
+the checkout, so the command has to run the checkout's own code. Undo it with
+`uv tool uninstall dns-bench`.
 
 Example output:
 
@@ -241,7 +255,10 @@ dns-bench            launcher (python3)
 config.json          your config (defaults committed)
 CHANGELOG.md         what changed in each release
 runs/                every saved run (git-ignored)
+pyproject.toml       packaging (the `dns-bench` command) and mypy settings
+uv.lock              uv's lock file (there are no dependencies to pin yet)
 dnsbench/
+  __main__.py        `python -m dnsbench`
   resolver.py        pure-Python UDP DNS client (random ID, ID/source checks, IPv4+IPv6)
   runner.py          rate-limited concurrent scheduler
   stats.py           nearest-rank stats; summaries by resolver / server / domain
@@ -251,10 +268,11 @@ dnsbench/
   server.py          HTTP server, JSON API, background job
   cli.py             command line
   web/               the UI (plain HTML/CSS/JS, hand-drawn SVG charts)
-tests/               unittest suite
+tests/               unittest suite, one test_<module>.py per module (test_web.py for web/)
+  fixtures/          sanitized run files written by older versions (see its README)
 ruff.toml            Python lint and format settings
 biome.json           JS, CSS and JSON lint and format settings
-.pre-commit-config.yaml  git hooks that run ruff and Biome on every commit
+.pre-commit-config.yaml  git hooks that run ruff, mypy and Biome on every commit
 .github/             CI and release workflows (GitHub Actions), Dependabot settings
 ```
 
@@ -271,8 +289,9 @@ uv run python -m unittest discover -s tests -v
 uv run --isolated --python 3.13 python -m unittest discover -s tests -v
 ```
 
-The tests don't need the network: they use fakes, local UDP mock servers and a server
-started on a random localhost port. A single optional live query to 1.1.1.1 runs only when
+The first `uv run` creates the project environment in `.venv/` (git-ignored). The tests don't need
+the network: they use fakes, local UDP mock servers and a server started on a random localhost
+port. A single optional live query to 1.1.1.1 runs only when
 you ask for it:
 
 ```sh
@@ -281,9 +300,10 @@ DNSBENCH_LIVE=1 uv run python -m unittest discover -s tests -p test_resolver.py 
 
 ## Development
 
-Every commit is linted and formatted by [pre-commit](https://pre-commit.com) hooks:
-[ruff](https://docs.astral.sh/ruff/) for Python and [Biome](https://biomejs.dev/) for the web UI's
-JavaScript, CSS and JSON. A commit is refused until they pass; most problems are fixed
+Every commit is checked by [pre-commit](https://pre-commit.com) hooks:
+[ruff](https://docs.astral.sh/ruff/) lints and formats Python, [mypy](https://mypy-lang.org/)
+type-checks it, and [Biome](https://biomejs.dev/) lints and formats the web UI's JavaScript, CSS and
+JSON. A commit is refused until they pass; most problems are fixed
 automatically, so re-stage and commit again. One-time setup in each clone, with
 [uv](https://docs.astral.sh/uv/):
 
@@ -295,19 +315,23 @@ pre-commit install
 | Task | Command |
 |---|---|
 | Check the whole repo | `pre-commit run --all-files` |
+| Type-check only | `pre-commit run mypy --all-files` |
 | Update the pinned tool versions | `pre-commit autoupdate` |
 | Make `git blame` skip the one-off reformat commit | `git config blame.ignoreRevsFile .git-blame-ignore-revs` |
 
-Settings live in `ruff.toml` and `biome.json`.
+Settings live in `ruff.toml`, `biome.json` and `pyproject.toml` (`[tool.mypy]`). mypy runs with
+its default, lenient settings for now: it skips the bodies of functions without type annotations.
 
 ### Continuous integration
 
 GitHub Actions (`.github/workflows/ci.yml`) runs on every push to `main` and every pull request:
 
-- `lint`: the same pre-commit hooks, at the same pinned versions, over the whole repo. If it fails
+- `lint`: the same pre-commit hooks (ruff, mypy, Biome), at the same pinned versions, over the whole
+  repo. If it fails
   on a PR, run `pre-commit run --all-files` locally and commit what it fixes.
 - `test`: the unit tests on Linux and macOS with Python 3.13 and 3.14, plus the `./dns-bench`
-  launcher, run directly and through a symlink, and refusing Python 3.12.
+  launcher, run directly and through a symlink, and refusing Python 3.12, and the `dns-bench`
+  command that `pyproject.toml` defines.
 - `ci-passed`: succeeds only if both jobs did. It is the check `main`'s branch protection requires,
   so a pull request can't merge until CI is green.
 

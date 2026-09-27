@@ -1,0 +1,41 @@
+# Packaging and mypy settings. Ruff's settings are in ruff.toml.
+# dns-bench has no runtime dependencies; hatchling is needed only to build it (for example by
+# `uv run` and `uv tool install --editable .`).
+
+[project]
+name = "dns-bench"
+dynamic = ["version"] # read from dnsbench.__version__, the one place a release bumps
+description = "A fast, polite DNS resolver benchmark with a local web UI."
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Chris Tirpak" }]
+requires-python = ">=3.13"
+dependencies = []
+
+[project.scripts]
+dns-bench = "dnsbench.cli:main"
+
+[project.urls]
+Repository = "https://github.com/tpak/dns-bench"
+Changelog = "https://github.com/tpak/dns-bench/blob/main/CHANGELOG.md"
+
+[build-system]
+requires = ["hatchling>=1.27,<2"] # 1.27 added the SPDX `license` expression used above
+build-backend = "hatchling.build"
+
+[tool.hatch.version]
+path = "dnsbench/__init__.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["dnsbench"] # includes dnsbench/web/, the UI's static files
+
+[tool.hatch.build.targets.sdist]
+include = ["/dnsbench", "/tests", "/dns-bench", "/README.md", "/CHANGELOG.md", "/LICENSE"]
+
+# mypy runs from pre-commit (.pre-commit-config.yaml), so CI checks it too. Lenient for now: default
+# settings, which skip the bodies of unannotated functions. REMEDIATION_PLAN.md Phase 6 tightens it.
+[tool.mypy]
+python_version = "3.13"
+files = ["dnsbench", "tests"]
+warn_unused_ignores = true

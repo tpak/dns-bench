@@ -103,13 +103,12 @@ def _ordered(present: list, preferred) -> list:
     present_set = set(present)
     out = [x for x in (preferred or []) if x in present_set]
     seen = set(out)
-    out += [x for x in present if x not in seen and not seen.add(x)]
+    out += [x for x in dict.fromkeys(present) if x not in seen]
     return out
 
 
 def _first_seen(values) -> list:
-    seen = set()
-    return [v for v in values if not (v in seen or seen.add(v))]
+    return list(dict.fromkeys(values))
 
 
 def orders_from_config(config: dict | None) -> dict:
@@ -178,9 +177,9 @@ def summarize(
     for row in slow_all:
         name = row["resolver"]
         slow_count_by_resolver[name] = slow_count_by_resolver.get(name, 0) + 1
-        per = slow_by_resolver.setdefault(name, [])
-        if len(per) < SLOW_PER_RESOLVER_MAX:
-            per.append(row)
+        capped = slow_by_resolver.setdefault(name, [])
+        if len(capped) < SLOW_PER_RESOLVER_MAX:
+            capped.append(row)
 
     return {
         "overall": latency_stats(results),

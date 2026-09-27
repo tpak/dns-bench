@@ -9,16 +9,16 @@ import subprocess
 import sys
 import tempfile
 import threading
+import tomllib
 import unittest
 from pathlib import Path
 from unittest import mock
 
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT))
+from dnsbench import __version__, cli, resolver, storage
+from dnsbench import config as C
+from dnsbench.resolver import QueryResult
 
-from dnsbench import __version__, cli, resolver, storage  # noqa: E402
-from dnsbench import config as C  # noqa: E402
-from dnsbench.resolver import QueryResult  # noqa: E402
+ROOT = Path(__file__).resolve().parents[1]
 
 
 def small_config():
@@ -311,6 +311,36 @@ class WrapperTest(unittest.TestCase):
                 [str(link), "config", "--path"], cwd=tmp, capture_output=True, text=True, timeout=30
             )
             self.assertEqual(p.stdout.strip(), str(ROOT / "config.json"))
+
+    def test_installed_command_runs_cli_main(self):
+        # `uv tool install --editable .` creates the dns-bench command from this entry, so a typo here
+        # would only show up at install time.
+        project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]
+        self.assertEqual(project["scripts"], {"dns-bench": "dnsbench.cli:main"})
+        self.assertEqual(project["requires-python"], ">=3.13")
+        self.assertEqual(project["dynamic"], ["version"])  # from dnsbench.__version__, as release.yml checks
+
+    def test_python_dash_m(self):
+        # From the checkout (python -m puts the cwd on sys.path), so it needs no install.
+        p = subprocess.run(
+            [sys.executable, "-m", "dnsbench", "--version"],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertEqual(p.stdout.strip(), f"dns-bench {__version__}")
+        with tempfile.TemporaryDirectory() as tmp:
+            p = subprocess.run(
+                [sys.executable, "-m", "dnsbench", "report", "not-a-run-id", "--runs-dir", tmp],
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+        self.assertEqual(p.returncode, cli.EXIT_USAGE, "the exit code must reach the shell")
+        self.assertIn("dns-bench: invalid run id", p.stderr)
 
 
 if __name__ == "__main__":
