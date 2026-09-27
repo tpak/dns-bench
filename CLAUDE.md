@@ -182,6 +182,14 @@ This is non-negotiable for new features. For pure bug fixes with an obvious root
 - Never amend or rebase commits that have been pushed 
 - Branches: `feat/`, `fix/`, `chore/`, `docs/`, `phase-N-{description}`
 - Main branch is always deployable. Never commit broken code to main.
+- **After every merge, clean up and resync.** A task that ends in a merged PR isn't done until:
+  1. `main` actually contains the work: `git fetch --prune`, then `git merge-base --is-ancestor <branch tip> origin/main`.
+  2. Local `main` is fast-forwarded (`git switch main && git pull --ff-only`) and `git status` reports it up to date with `origin/main`. Do this before step 3: `git branch -d` checks against local `main`, so it refuses while `main` is behind.
+  3. The merged branch is deleted on GitHub (`git push origin --delete <branch>`) and locally (`git branch -d <branch>`; use `-d`, never `-D`, so git refuses if anything is unmerged).
+  4. `git branch -vv` shows no `[gone]` branches, and `git branch -r` shows no merged branches left on GitHub.
+
+  Only delete a branch whose commits are all in `main`. Check `git log origin/main..<branch>` first, and ask Chris before deleting anything that shows up there.
+- **Stacked PRs: retarget before merging.** When a parent PR merges, move the child PR's base to `main` (`gh pr edit <n> --base main`) before the child is merged. GitHub only does this by itself when the parent branch is deleted. Happened 2026-09-27: PR #2 merged into its stale parent branch instead of `main`, and PR #3 had to land it again.
 
 ---
 
