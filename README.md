@@ -8,8 +8,13 @@ for a list of popular domains. It then recommends which resolver to use, which I
 first, and which to use as the backup. Every run is saved. Results can be viewed as text,
 or as charts in a browser (averages, per resolver, per domain and over time).
 
-It needs only Python 3.9+ (standard library only, no `pip install`). It doesn't need `dig`,
+It needs only Python 3.13+ (standard library only, no `pip install`). It doesn't need `dig`,
 and the web UI doesn't load anything from the internet.
+
+If your `python3` is older (macOS ships 3.9, Debian 12 and Raspberry Pi OS bookworm ship
+3.11, Ubuntu 24.04 ships 3.12), run dns-bench with a newer interpreter, for example
+`python3.13 ./dns-bench`, or let [uv](https://docs.astral.sh/uv/) fetch one:
+`uv run --python 3.13 ./dns-bench`.
 
 ## Why it's faster, and why it's still polite
 
