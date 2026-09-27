@@ -8,6 +8,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import textwrap
 import threading
 import time
 import tomllib
@@ -231,6 +232,50 @@ class CliTest(unittest.TestCase):
         rows = storage.list_runs(self.runs)
         self.assertEqual([r["status"] for r in rows], ["cancelled"])
         self.assertLess(rows[0]["n_queries"], 60)
+
+    def test_second_ctrl_c_exits_without_waiting_for_the_stuck_query(self):
+        # The in-process test above sees cmd_run return; only a real process shows whether the
+        # interpreter then waits at exit for the stuck query's thread (it must not).
+        script = textwrap.dedent(
+            """
+            import itertools, os, signal, sys, threading, time
+            from dnsbench import cli, resolver
+            from dnsbench.resolver import QueryResult
+
+            calls = itertools.count(1)
+
+            def query(server, domain, **kw):
+                if next(calls) == 2:
+                    os.kill(os.getpid(), signal.SIGINT)
+                    threading.Timer(0.3, os.kill, (os.getpid(), signal.SIGINT)).start()
+                    time.sleep(8)  # a server that never answers, with a long timeout
+                return QueryResult("ok", ms=1.0, rcode="NOERROR", answers=1)
+
+            resolver.query = query
+            sys.exit(cli.main(sys.argv[1:]))
+            """
+        )
+        t0 = time.monotonic()
+        p = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                script,
+                "run",
+                "--quiet",
+                "--config",
+                str(self.cfg),
+                "--runs-dir",
+                str(self.runs),
+            ],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        self.assertLess(time.monotonic() - t0, 5, "the process waited for the stuck query")
+        self.assertEqual(p.returncode, cli.EXIT_INTERRUPTED, p.stderr)
+        self.assertEqual([r["status"] for r in storage.list_runs(self.runs)], ["cancelled"])
 
     def test_signals_during_the_save_are_ignored(self):
         real_save = storage.save_run_safely

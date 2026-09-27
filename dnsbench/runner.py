@@ -27,7 +27,6 @@ import random
 import socket
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor, wait
 from datetime import UTC, datetime
 
 from . import __version__, resolver
@@ -204,32 +203,28 @@ def run_benchmark(
 
     # One thread per server, all at once. The load stays bounded: one query in flight per server, at
     # most 1000/interval queries/s each, and config.MAX_RESOLVERS x MAX_SERVERS_PER_RESOLVER servers.
-    max_workers = max(1, len(jobs))
+    # Daemon threads, not a ThreadPoolExecutor: Python joins executor threads when the process exits,
+    # so a query abandoned by a second Ctrl-C would still hold up the exit for its whole timeout.
     seeds = [rng.getrandbits(64) for _ in jobs]
+    threads = [
+        threading.Thread(target=worker, args=(job, seed), name=f"dnsbench-{i}", daemon=True)
+        for i, (job, seed) in enumerate(zip(jobs, seeds, strict=True))
+    ]
+    for thread in threads:
+        thread.start()
     interrupted = False
-    abandoned = False  # a second interrupt: don't wait for the queries still in flight
-    pool = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="dnsbench")
-    try:
-        futures = [pool.submit(worker, job, seed) for job, seed in zip(jobs, seeds, strict=True)]
-        pending = set(futures)
-        while pending:
-            try:
-                _, pending = wait(pending, timeout=0.2)
-            except KeyboardInterrupt:
-                if cancel_event.is_set():
-                    abandoned = True
-                    break
-                interrupted = True
-                cancel_event.set()
-    finally:
-        pool.shutdown(wait=not abandoned, cancel_futures=True)
+    pending = threads
+    while pending:
+        try:
+            pending[0].join(timeout=0.2)
+        except KeyboardInterrupt:
+            if cancel_event.is_set():  # a second interrupt: stop waiting for the queries in flight
+                break
+            interrupted = True
+            cancel_event.set()
+        pending = [thread for thread in pending if thread.is_alive()]
     with lock:
-        state["closed"] = True
-    if not abandoned:  # an abandoned future may still be running: .exception() would wait for it
-        for f in futures:
-            exc = f.exception()
-            if exc is not None:
-                raise exc
+        state["closed"] = True  # a worker still in flight drops its row instead of adding it
 
     finished_wall = datetime.now(UTC)
     duration = clock() - t0

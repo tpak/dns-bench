@@ -238,8 +238,10 @@ cli.py:
 - **Crashes**: a crashed run comes back as `status: "partial"`, with a new `error` field; the report
   and the UI show both. `dns-bench run` exits 1 for it.
 - **Signals**: the second Ctrl-C makes the runner stop waiting for queries in flight and return at
-  once; rows that finish later are dropped. Signals during the save are ignored. After a second
-  Ctrl-C the process can still take up to one timeout to exit, while the stuck queries finish.
+  once; rows that finish later are dropped. Signals during the save are ignored. Workers are daemon
+  threads, not a `ThreadPoolExecutor`: Python joins executor threads at exit, which held the process
+  open for a full timeout after the save. The independent review caught this, and a subprocess test
+  now pins the exit time.
 - **Interleaving** changes timing only for configs with more than 8 servers. That covers 8 of the 9
   saved runs in `runs/`: each had 10 servers, so 2 of them were measured in a later window. New runs
   of that config measure every server together. A live run with all 10 servers measured every server
