@@ -2,6 +2,19 @@
  * DNS Bench — web UI.
  * Vanilla ES2022, no dependencies, no build step. Charts are hand-built SVG.
  *
+ * How it fits together:
+ * - The server owns every rule (GET /api/schema, POST /api/config/validate, /api/estimate) and
+ *   every analysis; this file keeps presentation only.
+ * - `state` is the app's state. Actions (event handlers, the async loaders, ensureDraft, ...) change
+ *   it and then call scheduleRender(), which draws once per animation frame.
+ * - View builders (viewOverview, viewResolver, viewDomain, viewHistory, viewSettings) read state and
+ *   return DOM. They register handles to what they drew in `viewHooks`, never in `state`.
+ *
+ * Sections, in order: constants, state, DOM helpers, utilities (schema, formatting, scales), API,
+ * banners & toasts, colours, tooltip, chart infrastructure, generic pieces, dataset helpers,
+ * estimate, run controls & progress, dataset loading, trend, the five views, empty & shell,
+ * drawing, routing, bootstrap.
+ *
  * Safety: every piece of text that can come from data (resolver names,
  * domains, IPs, error messages) is inserted through the h()/s() helpers,
  * which use createElement + textContent / createTextNode. innerHTML is
@@ -93,7 +106,6 @@
     dsToken: 0,
     colors: new Map(),
     route: { tab: 'overview', arg: null },
-    viewUpdate: null,
     focusAfterRender: null, // a selector in the view to focus once it is drawn (an action's own control)
     tabKeyNav: false, // the arrow keys moved between tabs: focus stays on the tab
     job: { running: false },
@@ -104,14 +116,19 @@
     roundsTouched: false,
     sorts: {},
     ui: { domainQuery: '', domainSort: 'list', lastResolver: null, showAllDomains: false },
-    trendSlot: null,
     draft: null,
     dirty: false,
     saving: false,
     saveErrors: null,
-    settingsHooks: null,
   };
   const els = {};
+  // Handles into the view on screen, set by the view builders and cleared by render(). They are not
+  // app state: they only let an update reach the DOM that is already drawn.
+  const viewHooks = {
+    update: null, // (arg) => true if the view updated itself in place for a new route arg
+    settings: null, // Settings: { refresh() } redraws its status line and estimate
+    trendSlot: null, // Overview: the trend chart's box, filled when the run history arrives
+  };
   let FONT = 'system-ui, -apple-system, "Segoe UI", sans-serif';
 
   // ================================================================ DOM helpers
@@ -1635,7 +1652,7 @@
       const est = await api('/api/estimate', { method: 'POST', body: { rounds } });
       if (seq !== runEstimateSeq) return;
       state.runEstimate = est;
-      updateRunControls();
+      scheduleRender({ controls: true });
     } catch (err) {
       console.warn('estimate unavailable:', err); // the header keeps the last one; a run reports real errors
     }
@@ -1709,14 +1726,14 @@
       state.job = { running: true, done: 0, total: res?.total || 0, elapsed_s: 0, eta_s: null };
       state.cancelling = false;
       resetLive();
-      renderProgress();
+      scheduleRender({ progress: true });
       schedulePoll(POLL_MS);
     } catch (e) {
       if (e.status === 409) {
         toast('A benchmark is already running — showing its progress.', 'info');
         state.job = { running: true, done: 0, total: 0 };
         resetLive();
-        renderProgress();
+        scheduleRender({ progress: true });
         schedulePoll(0);
       } else if (e.status === 400 && e.details && e.details.length && /config/i.test(e.message)) {
         showBanner(
@@ -1727,20 +1744,20 @@
         );
       } else showBanner(`Could not start the benchmark: ${e.message}`, 'error', e.details);
     } finally {
-      updateRunControls();
+      scheduleRender({ controls: true });
     }
   }
 
   async function cancelRun() {
     if (!state.job.running || state.cancelling) return;
     state.cancelling = true;
-    renderProgress();
+    scheduleRender({ progress: true });
     try {
       await api('/api/run/cancel', { method: 'POST', body: {} });
     } catch (e) {
       if (e.status !== 409) showBanner(`Could not cancel: ${e.message}`);
       state.cancelling = false;
-      renderProgress();
+      scheduleRender({ progress: true });
     }
   }
 
@@ -1791,12 +1808,12 @@
     const wasRunning = !!state.job.running;
     ingestRecent(st?.recent);
     state.job = { ...(st || {}), running: !!st?.running };
-    renderProgress();
+    scheduleRender({ progress: true });
     if (state.job.running) {
       schedulePoll(POLL_MS);
     } else {
       state.cancelling = false;
-      updateRunControls();
+      scheduleRender({ controls: true });
       if (wasRunning) await onJobFinished(st || {});
     }
   }
@@ -1816,9 +1833,9 @@
         rerender: 'auto',
       });
     } else if (state.route.tab === 'settings') {
-      updateTabs(); // never rebuild the Settings form under the user
+      scheduleRender({ tabs: true }); // never rebuild the Settings form under the user
     } else {
-      render();
+      scheduleRender();
     }
   }
 
@@ -1853,8 +1870,7 @@
         (key === 'latest' && newest !== newestBefore) ||
         (key !== 'latest' && key !== 'all' && !runRow(key));
       if (datasetStale) await selectDataset(key, { rerender: 'auto' });
-      else if (state.route.tab === 'settings') updateTabs();
-      else render();
+      else scheduleRender(state.route.tab === 'settings' ? { tabs: true } : { view: true });
     } finally {
       runsRefreshing = false;
     }
@@ -1975,12 +1991,8 @@
    */
   async function selectDataset(key, opts = {}) {
     const background = opts.rerender === 'auto';
-    const finish = () => {
-      if (background && state.route.tab === 'settings') {
-        updateTabs();
-        renderDatasetBar();
-      } else render();
-    };
+    const finish = () =>
+      scheduleRender(background && state.route.tab === 'settings' ? { tabs: true } : { view: true });
     if (key !== 'latest' && key !== 'all' && !runRow(key)) key = 'latest';
     state.datasetKey = key;
     state.datasetError = null;
@@ -2069,7 +2081,7 @@
   function trendCard(ds) {
     if (state.runs.length < 2) return null;
     const slot = h('div', { class: 'trend-slot' });
-    state.trendSlot = slot;
+    viewHooks.trendSlot = slot;
     fillTrend(slot, ds);
     const n = Math.min(state.runs.length, TREND_MAX_RUNS);
     return card(
@@ -2466,17 +2478,23 @@
   }
 
   // ================================================================ views: by resolver
+  /** The resolver the By resolver view shows: the route's, else the last one shown, else the best. */
+  function selectedResolver(ds) {
+    const names = resolverNames(ds.summary || {});
+    const arg = state.route.arg;
+    if (arg && names.includes(arg)) return arg;
+    if (state.ui.lastResolver && names.includes(state.ui.lastResolver)) return state.ui.lastResolver;
+    const best = ds.recommendation?.best;
+    return best && names.includes(best) ? best : names[0] || null;
+  }
+
   function viewResolver(ds) {
     const sum = ds.summary || {};
     const rec = ds.recommendation || {};
     const names = resolverNames(sum);
     if (!names.length)
       return emptyPanel('No resolver data', 'This dataset does not contain any resolver results.');
-    const arg = state.route.arg;
-    let sel = arg && names.includes(arg) ? arg : null;
-    if (!sel && state.ui.lastResolver && names.includes(state.ui.lastResolver)) sel = state.ui.lastResolver;
-    if (!sel) sel = rec.best && names.includes(rec.best) ? rec.best : names[0];
-    state.ui.lastResolver = sel;
+    const sel = selectedResolver(ds);
     const byRes = sum.by_resolver || {};
     const st = byRes[sel] || {};
     const rank = rankMap(rec).get(sel) || null;
@@ -2700,7 +2718,7 @@
               onClick: () => {
                 state.ui.showAllDomains = !state.ui.showAllDomains;
                 state.focusAfterRender = '[data-focus="show-all"]';
-                render();
+                scheduleRender();
               },
             },
             showAll ? `Show slowest ${DOMAIN_CHART_LIMIT}` : `Show all ${fmtInt(domainItems.length)}`,
@@ -3348,7 +3366,7 @@
 
     drawTable();
     drawDetail();
-    state.viewUpdate = (arg) => {
+    viewHooks.update = (arg) => {
       drawDetail();
       if (arg && window.matchMedia('(max-width: 1080px)').matches)
         detail.scrollIntoView({ behavior: scrollBehavior(), block: 'start' });
@@ -3658,7 +3676,7 @@
       const res = await api('/api/config/validate', { method: 'POST', body: draftToRaw(d) });
       if (seq !== draftCheckSeq || state.draft !== d) return; // a newer edit or another draft
       state.draftCheck = res;
-      if (state.settingsHooks) state.settingsHooks.refresh();
+      if (viewHooks.settings) viewHooks.settings.refresh();
     } catch (err) {
       console.warn('draft check unavailable:', err); // the form keeps the last check; Save re-validates
     }
@@ -3667,8 +3685,8 @@
   function onDraftChange() {
     state.dirty = computeDirty();
     checkDraft();
-    if (state.settingsHooks) state.settingsHooks.refresh();
-    updateTabs();
+    if (viewHooks.settings) viewHooks.settings.refresh();
+    scheduleRender({ tabs: true });
   }
   function discardDraft() {
     state.draft = null;
@@ -3676,7 +3694,7 @@
     state.dirty = false;
     state.saveErrors = null;
     state.configInvalid = false;
-    updateTabs();
+    scheduleRender({ tabs: true });
   }
   /**
    * Forget the errors of a field the user has just edited (scope 'settings' + key,
@@ -3704,36 +3722,32 @@
   async function saveSettings() {
     if (!state.draft || state.saving) return;
     state.saving = true;
-    if (state.settingsHooks) state.settingsHooks.refresh();
+    if (viewHooks.settings) viewHooks.settings.refresh();
     try {
       setConfig(await api('/api/config', { method: 'PUT', body: draftToRaw(state.draft) }));
       if (state.info) state.info.config_exists = true;
       discardDraft();
       resetColors();
       state.roundsTouched = false;
-      updateRunControls();
       clearBanners('Could not start the benchmark');
       toast('Settings saved.');
-      render();
+      scheduleRender({ view: true, controls: true });
     } catch (e) {
       if (e.status === 400 && e.details && e.details.length) {
         state.saveErrors = groupErrors(e.details.map(errorTarget));
-        render();
-        focusFirstError();
+        scheduleRender({ view: true }, focusFirstError);
       } else showBanner(`Could not save settings: ${e.message}`);
     } finally {
       state.saving = false;
-      if (state.settingsHooks) state.settingsHooks.refresh();
+      if (viewHooks.settings) viewHooks.settings.refresh();
     }
   }
-  /** After a failed save: move the keyboard (and the screen) to the list of problems. */
+  /** After a failed save (once the form is redrawn): move the keyboard and the screen to the problems. */
   function focusFirstError() {
-    requestAnimationFrame(() => {
-      const el = document.querySelector('.error-summary') || document.querySelector('.has-error');
-      if (!el) return;
-      el.focus({ preventScroll: true });
-      el.scrollIntoView({ behavior: scrollBehavior(), block: 'center' });
-    });
+    const el = document.querySelector('.error-summary') || document.querySelector('.has-error');
+    if (!el) return;
+    el.focus({ preventScroll: true });
+    el.scrollIntoView({ behavior: scrollBehavior(), block: 'center' });
   }
   async function revertSettings() {
     if (state.dirty && !window.confirm('Discard your unsaved changes?')) return;
@@ -3743,8 +3757,7 @@
       showBanner(`Could not reload the configuration: ${e.message}`);
     }
     discardDraft();
-    updateRunControls();
-    render();
+    scheduleRender({ view: true, controls: true });
   }
   async function resetSettings() {
     if (
@@ -3759,13 +3772,29 @@
       discardDraft();
       resetColors();
       state.roundsTouched = false;
-      updateRunControls();
       clearBanners('Could not start the benchmark');
       toast('Configuration reset to defaults.');
-      render();
+      scheduleRender({ view: true, controls: true });
     } catch (e) {
       showBanner(`Could not reset the configuration: ${e.message}`);
     }
+  }
+
+  /** Start editing Settings: a draft of the saved config, showing its problems if it has any. */
+  function ensureDraft() {
+    if (state.draft || !state.config || !state.schema) return;
+    state.draft = draftFromConfig(state.config);
+    state.draftCheck = {
+      config: state.config,
+      errors: state.configErrors,
+      estimate: state.estimate,
+      duplicate_domains: 0,
+    };
+    // A hand-edited config.json can be invalid (the server still returns it so it
+    // can be fixed here). Show its problems inline and let the user save a fix.
+    state.configInvalid = state.configErrors.length > 0;
+    if (state.configInvalid && !state.saveErrors)
+      state.saveErrors = { ...groupErrors(state.configErrors.map(errorTarget)), fromLoad: true };
   }
 
   function viewSettings() {
@@ -3780,20 +3809,6 @@
           'Try again',
         ),
       );
-    }
-    if (!state.draft) {
-      state.draft = draftFromConfig(state.config);
-      state.draftCheck = {
-        config: state.config,
-        errors: state.configErrors,
-        estimate: state.estimate,
-        duplicate_domains: 0,
-      };
-      // A hand-edited config.json can be invalid (the server still returns it so it
-      // can be fixed here). Show its problems inline and let the user save a fix.
-      state.configInvalid = state.configErrors.length > 0;
-      if (state.configInvalid && !state.saveErrors)
-        state.saveErrors = { ...groupErrors(state.configErrors.map(errorTarget)), fromLoad: true };
     }
     const d = state.draft;
     const limits = state.schema.limits || {};
@@ -4265,7 +4280,7 @@
       updateEstimate();
       updateDomainInfo();
     };
-    state.settingsHooks = { refresh };
+    viewHooks.settings = { refresh };
     refresh();
 
     summaryEl = state.saveErrors?.all.length
@@ -4499,6 +4514,31 @@
     el.scrollTop = f.scrollTop;
   }
 
+  // ================================================================ drawing
+  // Anything that changes what is on screen asks for it here. Requests made in the same tick are drawn
+  // once, in the next animation frame, in a fixed order: the view (with the tabs and the dataset bar),
+  // the progress card, the run controls, then any `after` callbacks (focus, scrolling) (FE-1).
+  const pendingDraw = { view: false, tabs: false, progress: false, controls: false, after: [] };
+  let drawFrame = 0;
+  function scheduleRender(parts = { view: true }, after) {
+    for (const k of ['view', 'tabs', 'progress', 'controls']) if (parts[k]) pendingDraw[k] = true;
+    if (after) pendingDraw.after.push(after);
+    if (!drawFrame) drawFrame = requestAnimationFrame(drawNow);
+  }
+  function drawNow() {
+    drawFrame = 0;
+    const p = { ...pendingDraw, after: pendingDraw.after.splice(0) };
+    pendingDraw.view = pendingDraw.tabs = pendingDraw.progress = pendingDraw.controls = false;
+    if (p.view) render();
+    else if (p.tabs) {
+      updateTabs();
+      renderDatasetBar();
+    }
+    if (p.progress) renderProgress();
+    if (p.controls) updateRunControls();
+    for (const fn of p.after) fn();
+  }
+
   function render() {
     const focus = captureFocus();
     hideTip();
@@ -4506,9 +4546,9 @@
     renderDatasetBar();
     if (chartRO) chartRO.disconnect();
     pendingCharts = [];
-    state.viewUpdate = null;
-    state.trendSlot = null;
-    if (state.route.tab !== 'settings') state.settingsHooks = null;
+    viewHooks.update = null;
+    viewHooks.trendSlot = null;
+    if (state.route.tab !== 'settings') viewHooks.settings = null;
     let view;
     try {
       view = renderView();
@@ -4541,7 +4581,11 @@
   function renderView() {
     const tab = state.route.tab;
     if (!state.bootstrapped) return loadingPanel('Loading DNS Bench…');
-    if (tab === 'settings') return viewSettings();
+    // The actions a view needs run first; the view builders below only read state.
+    if (tab === 'settings') {
+      ensureDraft();
+      return viewSettings();
+    }
     if (tab === 'history') return viewHistory();
     if (!state.runs.length) return emptyRunsPanel();
     const ds = state.dataset;
@@ -4561,7 +4605,10 @@
       return loadingPanel('Loading results…');
     }
     if (tab === 'overview') return viewOverview(ds);
-    if (tab === 'resolver') return viewResolver(ds);
+    if (tab === 'resolver') {
+      state.ui.lastResolver = selectedResolver(ds) ?? state.ui.lastResolver;
+      return viewResolver(ds);
+    }
     return viewDomain(ds);
   }
 
@@ -4595,18 +4642,17 @@
     state.route = next;
     const byKeys = state.tabKeyNav;
     state.tabKeyNav = false;
-    if (prev.tab === next.tab && state.viewUpdate && state.viewUpdate(next.arg)) {
-      updateTabs();
-      applyFocusTarget();
+    if (prev.tab === next.tab && viewHooks.update && viewHooks.update(next.arg)) {
+      scheduleRender({ tabs: true }, applyFocusTarget);
       return;
     }
-    render();
-    if (prev.tab !== next.tab) {
+    scheduleRender({ view: true }, () => {
+      if (prev.tab === next.tab) return;
       window.scrollTo(0, 0);
       // A new view: take the keyboard to it, unless the arrow keys are moving along the tabs.
       if (!byKeys && !document.activeElement?.closest?.('#view')) els.view.focus({ preventScroll: true });
       refreshRuns();
-    }
+    });
   }
 
   // ================================================================ bootstrap
@@ -4640,15 +4686,14 @@
     else showBanner(`Could not load saved runs: ${runsR.reason.message}`);
     state.bootstrapped = true;
     resetColors();
-    updateRunControls();
+    scheduleRender({ controls: true });
     if (state.runs.length) await selectDataset('latest');
-    else render();
+    else scheduleRender();
     if (stR.status === 'fulfilled' && stR.value && stR.value.running) {
       state.job = { ...stR.value, running: true };
       resetLive();
       ingestRecent(stR.value.recent);
-      renderProgress();
-      updateRunControls();
+      scheduleRender({ progress: true, controls: true });
       schedulePoll(POLL_MS);
     }
   }
@@ -4676,7 +4721,7 @@
     els.runBtn.addEventListener('click', startRun);
     els.rounds.addEventListener('input', () => {
       state.roundsTouched = true;
-      updateRunControls();
+      scheduleRender({ controls: true });
     });
     els.tabs.addEventListener('keydown', (e) => {
       const keys = ['ArrowLeft', 'ArrowRight', 'Home', 'End'];
@@ -4715,12 +4760,12 @@
 
     state.route = parseHash();
     if (!location.hash) history.replaceState(null, '', '#overview');
-    render();
+    scheduleRender();
     bootstrap().catch((err) => {
       console.error(err);
       showBanner(`DNS Bench failed to start: ${err?.message ? err.message : err}`);
       state.bootstrapped = true;
-      render();
+      scheduleRender();
     });
   }
 
