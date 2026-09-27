@@ -157,7 +157,7 @@ Before claiming a Python change is done:
 - `index.html` loads `app.js` as a classic script, not a module. Keep its `'use strict'`: Biome assumes modules and calls it redundant, hence the `biome-ignore` above it.
 - Suppressions carry their reason: `// biome-ignore lint/<group>/<rule>: <why>` in JS, `/* biome-ignore ... */` in CSS.
 - Check every site before accepting a fix Biome marks unsafe. `a && a.b` → `a?.b` returns `undefined` instead of `null`, and `x + y + 'z'` → a template literal stops adding `x + y` as numbers first.
-- `noDescendingSpecificity` is off: its fixes reorder CSS rules, which can change which rule wins. Re-enable it only with a visual check of every view (REMEDIATION_PLAN.md Phase 7).
+- `noDescendingSpecificity` is on (since Phase 7). Satisfying it means reordering CSS rules, which can change which rule wins: move a rule only past rules of other specificities or other properties, and prove nothing moved with screenshot hashes of every view in both themes, before and after (`.project/research/2026-09-27-headless-browser-ui-check.md`).
 
 ---
 

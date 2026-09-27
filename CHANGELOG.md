@@ -72,6 +72,20 @@ release notes.
 - Web API (breaking for scripts that use it): a recommendation's notes are
   `{"code", "params", "text"}` objects instead of strings.
 - The text report states the score formula in the same words as the README.
+- Web UI, keyboard and screen readers: sorting a table, picking a resolver, "Show all" and closing
+  a domain's details keep the keyboard where it was, and changing tabs moves it to the new view.
+  Each chart is a single Tab stop, with the arrow keys moving between its bars. The page's main
+  landmark is back (the tab panel used to replace it). In Settings, a field with a problem is marked
+  invalid and linked to its message, and after a failed save the list of problems gets the focus,
+  each problem leading to its field.
+- Web UI: the Failed queries table shows at most 200 rows, says how many there are, and links to the
+  CSV of every result (a run can have thousands of failures).
+- Web UI: a request the server doesn't answer within 15 s gives up instead of hanging, and while a
+  benchmark runs the page keeps checking on it (less and less often) after losing contact, then
+  carries on when the server answers again. It used to give up after six tries.
+- Web UI, light theme: chart axis labels and links have more contrast (WCAG AA). Reduced motion now
+  also turns off button transitions and smooth scrolling. A resolver's dot in Settings has the
+  resolver's own colour.
 
 - Every enabled server is now measured at the same time. With more than 8 servers (the default
   config has 8, so enabling Quad9 makes 10), the rest used to wait for a second batch, so they were timed at a different time from the others and the results

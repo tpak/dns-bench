@@ -173,6 +173,24 @@ print("finished:", done.is_set())
 srv.shutdown()
 ```
 
+## Addendum (2026-09-28): screenshots are deterministic, so hashes prove "no visual change"
+
+Phase 7 reordered CSS rules and had to show that nothing moved. Two runs of the same UI, with the
+same fixed data and a fixed data directory, gave byte-identical PNGs for every view in both themes.
+So a change meant to be invisible is checked by comparing SHA-256 hashes before and after, not by
+eye. The script used took the screenshot method above and added:
+
+- the fixture runs copied to a **fixed** directory (Settings shows the config path, so a random temp
+  dir changes the picture), a fixed port, and a fake `detect_fn`;
+- one Firefox profile per theme, with `user.js` setting `ui.systemUsesDarkTheme` and
+  `layout.css.prefers-color-scheme.content-override`;
+- `--window-size=1280,2400`, so long views are captured whole;
+- a SHA-256 of each PNG printed next to the route and theme.
+
+The injected-script method also checks keyboard behaviour: dispatch `KeyboardEvent('keydown', {key,
+bubbles: true})`, call `.focus()` and `.click()`, then report `document.activeElement`. `focus()`
+works in headless mode even though the window never has the system focus.
+
 ## Sources
 
 - Firefox headless mode and `--screenshot`: https://firefox-source-docs.mozilla.org/testing/headless/index.html

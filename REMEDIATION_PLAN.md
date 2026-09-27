@@ -19,7 +19,8 @@ review findings below are kept as recorded.
 **Status (2026-09-28):** Phase 0 is done (PRs #2/#3). Phase 1 is done (PRs #5/#6); see its
 "As built" notes, which differ from the plan in two places. v1.1.0 is the first release through the
 new release workflow. Phase 2 is done (PR #8). Phase 3 is done (PR #9). Phase 4 is done (PR #10).
-Phase 5 is done (PR #11). Phase 6 is done (PR #12). Next is Phase 7.
+Phase 5 is done (PR #11). Phase 6 is done (PR #12). Phase 7 is done (PR #13). Phase 8 changes results, so it
+ships on its own, and it hasn't started.
 
 ## Verdict: would a distinguished engineer approve? **No, not as-is.**
 The problems are structural, not rot. The Python core is better than typical one-shot output: an
@@ -415,7 +416,7 @@ Done before the layering so the error format changes only once.
   started from the UI ran through `JobManager`, was saved as schema 1 with analysis v1 and coded
   notes, and showed up in History.
 
-### Phase 7 — Frontend, single file (M)
+### Phase 7 — Frontend, single file (M) — ✅ done (PR #13)
 - Organize app.js into clear sections. A single rAF-batched `scheduleRender()` replaces the
   scattered `render()`/`updateTabs()`/`renderProgress()` calls. View builders stop mutating state;
   small action functions do that instead (FE-1, within one file).
@@ -432,6 +433,42 @@ Done before the layering so the error format changes only once.
   reordering style.css, checking every view visually before and after.
 - Python tests: the real-UI smoke tests from Phase 2, plus an API-contract test for every endpoint
   app.js calls (the endpoint names are grepped from app.js).
+
+**As built (2026-09-28)**, where it differs from the plan above or adds to it:
+- **Drawing.** `scheduleRender(parts, after)` draws the view (with the tabs and the dataset bar), the
+  progress card and the run controls once per animation frame, then runs the `after` callbacks
+  (focus, scrolling). Nothing else calls `render()`, `updateTabs()`, `renderProgress()` or
+  `updateRunControls()`. Creating the Settings draft (`ensureDraft`) and remembering the selected
+  resolver (`selectedResolver`) are actions that run before the view builder. The handles views
+  leave for later updates (`update`, `settings`, `trendSlot`) moved from `state` to `viewHooks`.
+  The file's header maps its sections. The colour cache still fills lazily as views ask for
+  colours; it is a memo, not state a view decides.
+- **Focus.** `state.focusAfterRender` puts the keyboard back on the control an action redrew: a
+  table's sort button, a resolver chip, Show all/slowest, and the heat-table row whose details were
+  closed. A tab change focuses the tab panel (the ARIA tabs pattern) rather than a heading.
+- **Landmarks.** `<main>` had `role="tabpanel"`, which removed the main landmark; the panel is now
+  `<div id="view">` inside `<main>`.
+- **Charts.** A roving tabindex makes each chart one tab stop: Up/Down for bar charts, Left/Right
+  for the histogram, plus Home/End. The trend chart already had one focusable overlay.
+- **Settings.** Invalid fields get `aria-invalid` and `aria-describedby` (their help and their
+  error). The error summary is focusable and takes focus after a failed save, and each problem is a
+  button to its field. Row dots use the resolver's colour, neutral until a new name is saved.
+- **Fetching.** Requests time out after 15 s. Polling backs off 1, 2, 4 … 10 s, warns after the
+  third failure, and clears the warning when the server answers again.
+- **Contrast and motion.** In the light theme, `--axis-text` became #6c6a65 and `--accent`
+  #2464cc; measured, they give at least 4.5:1 and 5:1 on every surface they are used on. The dark
+  theme already passed. Reduced motion also covers button transitions and scrolling done from JS.
+  A `theme-color` meta was added for each scheme. The Failed queries table is capped at 200 rows,
+  with "showing N of M" and a CSV link.
+- **CSS order.** Eleven rules moved. The domain detail's table rules keep a `biome-ignore`: they
+  never match the heat table, but no order satisfies the rule on both sides of them. Screenshots of
+  every view, light and dark, were byte-identical before and after. Rendering turned out to be
+  deterministic, so hashes compare them.
+- **Tests.** `ApiContractTest` checks that every UI call has a route with the right method, and that
+  every `/api` route is used. `PageStructureTest` pins the landmarks.
+- **Checked** in headless Firefox by an injected script: focus after sorting, chips, Show all, a
+  closed detail, tab clicks and arrow keys; one tab stop per chart; "200 of 300" failed queries;
+  the error summary and its links after a failed save; no script errors.
 
 ### Phase 8 — Measurement validity (M) — changes results; ship separately
 - **Failure accounting** (COR-1, COR-M2):

@@ -22,7 +22,7 @@
     "rules": {
       "preset": "recommended",
       "style": {
-        "noDescendingSpecificity": "off"
+        "noDescendingSpecificity": "error"
       }
     }
   }

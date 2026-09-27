@@ -224,5 +224,56 @@ class NoRuleCopiesTest(unittest.TestCase):
                     self.assertNotIn(ip, self.js)
 
 
+class PageStructureTest(unittest.TestCase):
+    def test_main_stays_a_landmark_and_the_tabs_control_the_panel(self):
+        # role="tabpanel" on <main> hid the page's main landmark from screen readers (FE-9).
+        html = (paths.WEB_DIR / "index.html").read_text(encoding="utf-8")
+        main = re.search(r"<main\b[^>]*>", html)
+        self.assertIsNotNone(main)
+        self.assertNotIn("role=", main.group(0))
+        self.assertRegex(html, r'<div id="view" role="tabpanel"')
+        tabs = re.findall(r'<a role="tab"[^>]*>', html)
+        self.assertEqual(len(tabs), 5)
+        self.assertTrue(all('aria-controls="view"' in tab for tab in tabs), tabs)
+
+
+class ApiContractTest(unittest.TestCase):
+    """Every endpoint app.js calls exists, with the method it uses (REMEDIATION_PLAN.md Phase 7)."""
+
+    # api('/api/x'), api(`/api/runs/${id}`), with an optional { method: 'POST' } after the path
+    CALL_RE = re.compile(r"api\(\s*(['`])(/api/[^'`]*)\1\s*(?:,\s*\{\s*method:\s*'([A-Z]+)')?")
+    LINK_RE = re.compile(r"href:\s*`(/api/[^`]*)`")
+
+    @staticmethod
+    def concrete(path: str) -> str:
+        """A template path with every ${...} filled in with a valid run id, and no query string."""
+        return re.sub(r"\$\{[^}]*\}", "20260101T000000Z", path).split("?", 1)[0]
+
+    def calls(self) -> set[tuple[str, str]]:
+        js = (paths.WEB_DIR / "app.js").read_text(encoding="utf-8")
+        found = {(m[3] or "GET", self.concrete(m[2])) for m in self.CALL_RE.finditer(js)}
+        found |= {("GET", self.concrete(m[1])) for m in self.LINK_RE.finditer(js)}  # CSV downloads
+        return found
+
+    def test_every_call_has_a_route_with_its_method(self):
+        calls = self.calls()
+        self.assertGreaterEqual(len(calls), 12, calls)  # the regexes still find the calls
+        for method, path in sorted(calls):
+            with self.subTest(call=f"{method} {path}"):
+                routes = [methods for pattern, methods in SV._ROUTES if pattern.match(path)]
+                self.assertTrue(routes, "no route")
+                self.assertIn(method, routes[0])
+
+    def test_no_route_is_left_unused_by_the_ui(self):
+        # Not a rule for the API as a whole (curl users may call anything), but a check that the UI
+        # still uses what it was built for; a route the UI dropped should be a deliberate decision.
+        used = {path for _, path in self.calls()}
+        unused = []
+        for pattern, _methods in SV._ROUTES:
+            if pattern.pattern.startswith("^/api/") and not any(pattern.match(p) for p in used):
+                unused.append(pattern.pattern)
+        self.assertEqual(unused, [])
+
+
 if __name__ == "__main__":
     unittest.main()
