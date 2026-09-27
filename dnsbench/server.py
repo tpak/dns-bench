@@ -16,14 +16,13 @@ import sys
 import threading
 import time
 from collections import deque
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlsplit
 
-from . import __version__
+from . import __version__, runner, storage
 from . import config as config_mod
-from . import runner, storage
 
 MAX_BODY = 1024 * 1024  # 1 MB request body cap
 _DRAIN_LIMIT = 8 * 1024 * 1024  # read (and discard) oversized bodies up to this so the 413 arrives
@@ -70,7 +69,7 @@ class HTTPError(Exception):
 
 
 def _now_iso() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _csv_safe(value):

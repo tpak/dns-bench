@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import os
 import socket
 import struct
@@ -9,7 +11,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from dnsbench import resolver as R  # noqa: E402
+from dnsbench import resolver as R
 
 
 def make_response(query: bytes, rcode=0, ancount=1, qid=None, qr=True, tc=False) -> bytes:
@@ -43,7 +45,7 @@ class MockDNS:
         while not self._stop.is_set():
             try:
                 data, addr = self.sock.recvfrom(4096)
-            except socket.timeout:
+            except TimeoutError:
                 continue
             except OSError:
                 return

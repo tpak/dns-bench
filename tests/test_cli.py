@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import contextlib
 import io
 import json
@@ -148,9 +150,8 @@ class CliTest(unittest.TestCase):
                 self.assertEqual(cm.exception.code, 2)
                 self.assertIn(flag, err.getvalue())
                 self.assertIn(rng, err.getvalue())
-        with contextlib.redirect_stderr(io.StringIO()):
-            with self.assertRaises(SystemExit) as cm:
-                cli.main(["run", "--rounds", "zero"])
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as cm:
+            cli.main(["run", "--rounds", "zero"])
         self.assertEqual(cm.exception.code, 2)
         self.assertEqual(self.fake.calls, 0)
 

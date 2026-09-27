@@ -1,12 +1,13 @@
 /*
  * DNS Bench — web UI.
- * Vanilla ES2020, no dependencies, no build step. Charts are hand-built SVG.
+ * Vanilla ES2022, no dependencies, no build step. Charts are hand-built SVG.
  *
  * Safety: every piece of text that can come from data (resolver names,
  * domains, IPs, error messages) is inserted through the h()/s() helpers,
  * which use createElement + textContent / createTextNode. innerHTML is
  * never used anywhere in this file.
  */
+// biome-ignore lint/suspicious/noRedundantUseStrict: index.html loads this as a classic script, not a module, so strict mode is not implied.
 'use strict';
 
 (() => {
@@ -384,9 +385,9 @@
   function niceCeil(x) {
     if (!(x > 0)) return 1;
     const e = Math.floor(Math.log10(x));
-    const f = x / Math.pow(10, e);
+    const f = x / 10 ** e;
     const nf = f <= 1 ? 1 : f <= 2 ? 2 : f <= 2.5 ? 2.5 : f <= 5 ? 5 : 10;
-    return nf * Math.pow(10, e);
+    return nf * 10 ** e;
   }
   function niceTicks(max, target = 5, minMax = 0, integer = false) {
     let m = Math.max(isNum(max) ? max : 0, minMax || 0);
@@ -2196,10 +2197,9 @@
       // Suggested IPs come from the best and backup resolvers; ask them first, since in
       // combined runs a renamed resolver can list the same IP under its old name.
       for (const name of [rec.best, rec.backup])
-        if (name && bs[name] && Object.prototype.hasOwnProperty.call(bs[name], ip)) return name;
+        if (name && bs[name] && Object.hasOwn(bs[name], ip)) return name;
       for (const r of ranking) if (r.fastest_server === ip) return r.resolver;
-      for (const name of Object.keys(bs))
-        if (bs[name] && Object.prototype.hasOwnProperty.call(bs[name], ip)) return name;
+      for (const name of Object.keys(bs)) if (bs[name] && Object.hasOwn(bs[name], ip)) return name;
       return null;
     };
     const roles = ['Primary DNS', 'Secondary DNS', 'Third DNS', 'Fourth DNS'];

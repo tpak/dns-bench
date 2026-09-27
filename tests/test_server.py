@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import csv
 import http.client
 import io
@@ -12,10 +14,10 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from dnsbench import config as C  # noqa: E402
-from dnsbench import server as SV  # noqa: E402
-from dnsbench import storage  # noqa: E402
-from dnsbench.resolver import QueryResult  # noqa: E402
+from dnsbench import config as C
+from dnsbench import server as SV
+from dnsbench import storage
+from dnsbench.resolver import QueryResult
 
 SECRET = "TOP-SECRET-DO-NOT-SERVE"
 

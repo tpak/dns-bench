@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import contextlib
 import io
 import json
@@ -8,8 +10,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from dnsbench import config as C  # noqa: E402
-from dnsbench import report, storage  # noqa: E402
+from dnsbench import config as C
+from dnsbench import report, storage
 
 
 def make_run(run_id="20260925T023456Z", started="2026-09-25T02:34:56Z", fast_ms=5.0):

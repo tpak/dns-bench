@@ -10,12 +10,11 @@ import sys
 import tempfile
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
-from . import __version__
+from . import __version__, report, runner, storage
 from . import config as config_mod
-from . import report, runner, storage
 
 EXIT_OK, EXIT_ERROR, EXIT_USAGE, EXIT_INTERRUPTED = 0, 1, 2, 130
 
@@ -282,7 +281,7 @@ def _local(iso: str | None) -> str:
     if not iso:
         return "?"
     try:
-        dt = datetime.strptime(iso, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+        dt = datetime.strptime(iso, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC)
         return dt.astimezone().strftime("%Y-%m-%d %H:%M")
     except ValueError:
         return iso

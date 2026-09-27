@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import random
 import sys
 import threading
@@ -8,8 +10,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from dnsbench import runner  # noqa: E402
-from dnsbench.resolver import QueryResult  # noqa: E402
+from dnsbench import runner
+from dnsbench.resolver import QueryResult
 
 # Physical timestamps are taken inside the fake query_fn, a few microseconds
 # after the scheduler's own start timestamp; allow that much slack for them.

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from .config import DEFAULT_SETTINGS
 
@@ -31,7 +31,7 @@ def _local_time(iso: str | None) -> str:
     if not iso:
         return "?"
     try:
-        dt = datetime.strptime(iso, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+        dt = datetime.strptime(iso, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC)
     except ValueError:
         return iso
     return dt.astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")

@@ -143,7 +143,7 @@ def _attempt(sockaddr, family, target_ip, port, packet, qid, timeout_s) -> Query
             sock.settimeout(remaining)
             try:
                 data, src = sock.recvfrom(4096)
-            except socket.timeout:
+            except TimeoutError:
                 return QueryResult("timeout", error="timeout")
             except OSError as exc:  # e.g. ICMP port unreachable
                 return QueryResult("error", error=f"recv: {exc}")

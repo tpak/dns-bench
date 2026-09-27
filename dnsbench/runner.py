@@ -25,10 +25,9 @@ import socket
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, wait
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
-from . import __version__
-from . import resolver
+from . import __version__, resolver
 from .config import DEFAULT_SETTINGS, MIN_INTERVAL_MS, normalize_server, server_key
 
 JITTER = 0.10  # up to +10 % on top of the interval, never negative
@@ -120,7 +119,7 @@ def run_benchmark(
     lock = threading.Lock()
     state = {"done": 0}
 
-    started_wall = datetime.now(timezone.utc)
+    started_wall = datetime.now(UTC)
     t0 = clock()
 
     def wait_until(deadline: float) -> bool:
@@ -200,7 +199,7 @@ def run_benchmark(
         if exc is not None:
             raise exc
 
-    finished_wall = datetime.now(timezone.utc)
+    finished_wall = datetime.now(UTC)
     duration = clock() - t0
     cancelled = (cancel_event.is_set() or interrupted) and len(results) < total
     results.sort(key=lambda r: r["t"])

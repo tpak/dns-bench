@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import json
 import os
 import re
@@ -8,7 +10,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from dnsbench import config as C  # noqa: E402
+from dnsbench import config as C
 
 
 def cfg(**changes):
