@@ -351,6 +351,20 @@ class ConfigApiTest(ServerTestBase):
                 status, data = self.jreq("PUT", "/api/config", raw=raw)
                 self.assertEqual((status, data["error"]), (400, "Malformed JSON"))
 
+    def test_deeply_nested_values_are_400_not_500(self):
+        # Python 3.14 parses nesting that 3.13 rejects; validating it then overflowed the stack (a 500).
+        nested = b"[" * 100000 + b"]" * 100000
+        for method, path, raw in (
+            ("PUT", "/api/config", b'{"settings": {"rounds": ' + nested + b"}}"),
+            ("PUT", "/api/config", b'{"domains": ' + nested + b"}"),
+            ("POST", "/api/run", b'{"settings": {"rounds": ' + nested + b"}}"),
+        ):
+            with self.subTest(path=path, raw=raw[:14]):
+                status, data = self.jreq(method, path, raw=raw)
+                self.assertEqual((status, data["error"]), (400, "Malformed JSON"))
+                self.assertEqual(data["details"], [f"nested more than {C.MAX_JSON_DEPTH} levels deep"])
+        self.assertFalse(self.jreq("GET", "/api/status")[1]["running"])
+
     def test_bad_number_in_config_file_keeps_settings_usable(self):
         bad = small_config()
         bad["settings"]["rounds"] = "--5"

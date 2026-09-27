@@ -149,6 +149,7 @@ Before claiming a Python change is done:
 2. **Check the 3.13 floor.** `uv run` uses the newest Python uv manages, so once a newer one is installed, 3.14-only syntax passes locally and breaks for users. Run the suite under 3.13 as well: `uv run --isolated --python 3.13 python -m unittest discover -s tests -v`. uv downloads 3.13 if it's missing, and `--isolated` leaves the project `.venv/` alone.
 3. **Do a real run if you touched the query path.** Tests use fakes, so changes to `resolver.py`, `runner.py`, `server.py` or `cli.py` also need a short live run: `uv run ./dns-bench run --rounds 1 --resolvers Cloudflare --no-save`. For UI changes, run `uv run ./dns-bench serve` and check the page in a browser.
 4. **Lint the whole repo.** `pre-commit run --all-files` must pass. The hook also runs on every commit; if it fails, fix the code (hard rule 2: never `--no-verify`, never `SKIP=`).
+5. **CI must be green on the PR.** `gh pr checks <n>` shows lint, plus tests on Linux and macOS × 3.13 and 3.14. `main` only accepts a merge once the `ci-passed` check succeeds. GitHub's macOS runners are much slower than a laptop, so a timing test that fails only there is usually one whose slack is too tight (§4.2.5).
 
 ### 4.3 JavaScript and CSS (web UI)
 
@@ -182,6 +183,8 @@ This is non-negotiable for new features. For pure bug fixes with an obvious root
 - Never amend or rebase commits that have been pushed 
 - Branches: `feat/`, `fix/`, `chore/`, `docs/`, `phase-N-{description}`
 - Main branch is always deployable. Never commit broken code to main.
+- **Every user-visible change adds a line to `CHANGELOG.md`** under `## [Unreleased]`, in the same PR. Those lines become the release notes.
+- **Releases** follow README.md "Releasing": bump `__version__` and the CHANGELOG in a PR, merge, then push a `vX.Y.Z` tag. `release.yml` checks both and publishes. Pushing a tag publishes a release, so ask Chris before tagging.
 - **After every merge, clean up and resync.** A task that ends in a merged PR isn't done until:
   1. `main` actually contains the work: `git fetch --prune`, then `git merge-base --is-ancestor <branch tip> origin/main`.
   2. Local `main` is fast-forwarded (`git switch main && git pull --ff-only`) and `git status` reports it up to date with `origin/main`. Do this before step 3: `git branch -d` checks against local `main`, so it refuses while `main` is behind.

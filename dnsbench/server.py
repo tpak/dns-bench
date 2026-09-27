@@ -423,9 +423,9 @@ class Handler(BaseHTTPRequestHandler):
                 raise HTTPError(400, "Request body required")
             return None
         try:
-            return json.loads(raw.decode("utf-8"))
-        except (UnicodeDecodeError, ValueError, RecursionError) as exc:
-            # ValueError also covers >4300-digit integers; RecursionError deep nesting
+            return config_mod.loads_json(raw.decode("utf-8"))
+        except ValueError as exc:
+            # bad UTF-8, bad JSON, a >4300-digit integer, or nesting past config_mod.MAX_JSON_DEPTH
             raise HTTPError(400, "Malformed JSON", [str(exc)[:200]]) from None
 
     # -- static --------------------------------------------------------------

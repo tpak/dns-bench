@@ -519,6 +519,38 @@ def dumps_config(cfg: dict) -> str:
     return json.dumps(cfg, indent=2, ensure_ascii=False) + "\n"
 
 
+# A real config nests 4 levels (object > resolvers > resolver > servers). Python 3.13's parser gives up
+# on absurd nesting by running out of recursion; 3.14's parses it, and validation then overflowed the
+# stack formatting the value. Enforcing a limit here makes every Python reject the same input.
+MAX_JSON_DEPTH = 32
+
+
+def _nesting_exceeds(value: object, limit: int) -> bool:
+    """True if ``value`` nests containers more than ``limit`` deep. Iterative, so it can't overflow."""
+    stack = [(value, 1)] if isinstance(value, (dict, list)) else []
+    while stack:
+        node, depth = stack.pop()
+        if depth > limit:
+            return True
+        for child in node.values() if isinstance(node, dict) else node:
+            if isinstance(child, (dict, list)):
+                stack.append((child, depth + 1))
+    return False
+
+
+def loads_json(text: str) -> object:
+    """``json.loads`` for untrusted input: every failure is a ValueError, including nesting deeper than
+    ``MAX_JSON_DEPTH`` (which Python 3.13 reports as RecursionError)."""
+    too_deep = f"nested more than {MAX_JSON_DEPTH} levels deep"
+    try:
+        value = json.loads(text)
+    except RecursionError:
+        raise ValueError(too_deep) from None
+    if _nesting_exceeds(value, MAX_JSON_DEPTH):
+        raise ValueError(too_deep)
+    return value
+
+
 def load_config(path=DEFAULT_CONFIG_PATH, strict: bool = True) -> dict:
     """Load, normalise and (if ``strict``) validate the config at ``path``.
 
@@ -532,11 +564,11 @@ def load_config(path=DEFAULT_CONFIG_PATH, strict: bool = True) -> dict:
         _atomic_write_text(path, dumps_config(cfg))
         return cfg
     try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
+        raw = loads_json(path.read_text(encoding="utf-8"))
     except OSError as exc:
         raise ConfigError(f"Cannot read {path}: {exc}") from exc
-    except (ValueError, RecursionError) as exc:
-        # JSONDecodeError, a >4300-digit integer literal, absurdly deep nesting
+    except ValueError as exc:
+        # JSONDecodeError, a >4300-digit integer literal, absurdly deep nesting, bad UTF-8
         msg = str(exc)
         msg = msg if len(msg) <= 200 else msg[:197] + "..."
         raise ConfigError(f"{path} is not valid JSON: {msg}") from exc

@@ -18,6 +18,10 @@ from dnsbench.resolver import QueryResult
 # after the scheduler's own start timestamp; allow that much slack for them.
 # The scheduler's own timestamps are checked with NO slack.
 PHYS_TOL_S = 0.002
+# How much later than scheduled a worker may actually start. Only a stall should
+# exceed it: a loaded machine wakes sleeping threads late (CI's macOS runners have
+# measured 130 ms late), so precise spacing is checked on the requested sleeps.
+STALL_TOL_S = 0.5
 
 
 def make_config(
@@ -56,10 +60,17 @@ def make_config(
 
 class RecordingClock:
     """time.monotonic, remembering the last value each thread read. The worker's
-    last clock() read before calling query_fn is exactly its scheduled start."""
+    last clock() read before calling query_fn is exactly its scheduled start.
+
+    ``sleep`` (pass it to run_benchmark with the clock) records what the runner
+    *asked* for: the latest wake-up any worker requested, measured from that
+    worker's last scheduled start. Unlike measured gaps, that doesn't depend on
+    how late a loaded machine wakes the thread (CI's macOS runners: 100+ ms)."""
 
     def __init__(self):
         self.local = threading.local()
+        self.lock = threading.Lock()  # guards max_wait_after_query
+        self.max_wait_after_query = 0.0
 
     def __call__(self):
         now = time.monotonic()
@@ -68,6 +79,14 @@ class RecordingClock:
 
     def last(self):
         return getattr(self.local, "last", None)
+
+    def sleep(self, seconds):
+        # The runner reads clock() just before each sleep, so last() is when it asked.
+        sched = getattr(self.local, "query_sched", None)
+        if sched is not None:
+            with self.lock:
+                self.max_wait_after_query = max(self.max_wait_after_query, self.last() + seconds - sched)
+        time.sleep(seconds)
 
 
 class FakeDNS:
@@ -87,6 +106,8 @@ class FakeDNS:
     def __call__(self, server, domain, record_type="A", timeout_s=1.0, tries=1):
         start = time.monotonic()
         sched = self.clock.last() if self.clock else None
+        if self.clock:
+            self.clock.local.query_sched = sched  # the start RecordingClock.sleep measures from
         with self.lock:
             self.inflight[server] += 1
             self.max_inflight[server] = max(self.max_inflight[server], self.inflight[server])
@@ -129,11 +150,14 @@ class RateLimitTest(unittest.TestCase):
                 self.assertGreaterEqual(
                     cur[3] - prev[3], interval_s - PHYS_TOL_S, f"queries too close on {server}"
                 )
-                # and not needlessly spaced either: jitter is at most +10 %, or
-                # the previous query itself took longer than the interval
+                # and no stalls: the measured gap includes however late the OS woke the
+                # worker, so this only catches gross delays; precision is checked below
                 prev_took = prev[4] - prev[2]
-                self.assertLess(cur[2] - prev[2], max(interval_s * 1.1, prev_took) + 0.03)
+                self.assertLess(cur[2] - prev[2], max(interval_s * 1.1, prev_took) + STALL_TOL_S)
             self.assertEqual(fake.max_inflight[server], 1)
+        # not needlessly spaced either: no worker ever asked to sleep past its last
+        # scheduled start + the interval + 10 % jitter (exact: no tolerance for load)
+        self.assertLessEqual(fake.clock.max_wait_after_query, interval_s * 1.1 + 1e-9)
 
     def test_per_server_limit_and_cross_server_concurrency(self):
         interval_s = 0.05
@@ -141,7 +165,7 @@ class RateLimitTest(unittest.TestCase):
         clock = RecordingClock()
         fake = FakeDNS(clock=clock, latency=0.005)
         t0 = time.monotonic()
-        run = runner.run_benchmark(cfg, query_fn=fake, clock=clock)
+        run = runner.run_benchmark(cfg, query_fn=fake, clock=clock, sleep=clock.sleep)
         wall = time.monotonic() - t0
 
         self.assertEqual(run["status"], "complete")
@@ -186,7 +210,7 @@ class RateLimitTest(unittest.TestCase):
             latency_fn=lambda d: 0.08 if d in slow else 0.0,
             outcome=lambda s, d, n: "timeout" if d in slow else "ok",
         )
-        run = runner.run_benchmark(cfg, query_fn=fake, clock=clock)
+        run = runner.run_benchmark(cfg, query_fn=fake, clock=clock, sleep=clock.sleep)
         self.check_spacing(fake, 0.05)
         statuses = Counter(r["status"] for r in run["results"])
         self.assertEqual(statuses, {"ok": 6, "timeout": 4})
@@ -207,7 +231,7 @@ class RateLimitTest(unittest.TestCase):
                 "timeout" if d == "d0.example" or (d == "d1.example" and n == 0) else "ok"
             ),
         )
-        run = runner.run_benchmark(cfg, query_fn=fake, clock=clock)
+        run = runner.run_benchmark(cfg, query_fn=fake, clock=clock, sleep=clock.sleep)
         self.assertEqual(fake.calls[("10.0.0.1", "d0.example")], 3)
         self.assertEqual(fake.calls[("10.0.0.1", "d1.example")], 2)
         self.assertEqual(fake.calls[("10.0.0.1", "d2.example")], 1)
@@ -232,7 +256,7 @@ class RateLimitTest(unittest.TestCase):
         cfg = make_config(resolvers=1, servers_per=1, domains=4, interval_ms=5)  # below 50 ms floor
         clock = RecordingClock()
         fake = FakeDNS(clock=clock, latency=0.0)
-        run = runner.run_benchmark(cfg, query_fn=fake, clock=clock)
+        run = runner.run_benchmark(cfg, query_fn=fake, clock=clock, sleep=clock.sleep)
         self.check_spacing(fake, 0.05)
         self.assertEqual(run["config"]["settings"]["per_server_interval_ms"], 50)
 

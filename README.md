@@ -1,5 +1,7 @@
 # dns-bench
 
+[![ci](https://github.com/tpak/dns-bench/actions/workflows/ci.yml/badge.svg)](https://github.com/tpak/dns-bench/actions/workflows/ci.yml)
+
 A fast, polite DNS resolver benchmark with a local web UI. It replaces `../archive/dns-test.sh`,
 which is left unchanged.
 
@@ -234,6 +236,7 @@ request body limit is 1 MB.
 ```
 dns-bench            launcher (python3)
 config.json          your config (defaults committed)
+CHANGELOG.md         what changed in each release
 runs/                every saved run (git-ignored)
 dnsbench/
   resolver.py        pure-Python UDP DNS client (random ID, ID/source checks, IPv4+IPv6)
@@ -249,13 +252,20 @@ tests/               unittest suite
 ruff.toml            Python lint and format settings
 biome.json           JS, CSS and JSON lint and format settings
 .pre-commit-config.yaml  git hooks that run ruff and Biome on every commit
+.github/             CI and release workflows (GitHub Actions), Dependabot settings
 ```
 
 ## Running the tests
 
 ```sh
-cd ~/bin/dns-bench
-python3 -m unittest discover -s tests -v
+uv run python -m unittest discover -s tests -v
+```
+
+`uv run` uses the newest Python that uv manages. To check the 3.13 minimum too (CI tests 3.13 and
+3.14 on Linux and macOS):
+
+```sh
+uv run --isolated --python 3.13 python -m unittest discover -s tests -v
 ```
 
 The tests don't need the network: they use fakes, local UDP mock servers and a server
@@ -263,7 +273,7 @@ started on a random localhost port. A single optional live query to 1.1.1.1 runs
 you ask for it:
 
 ```sh
-DNSBENCH_LIVE=1 python3 -m unittest discover -s tests -p test_resolver.py -v
+DNSBENCH_LIVE=1 uv run python -m unittest discover -s tests -p test_resolver.py -v
 ```
 
 ## Development
@@ -286,3 +296,43 @@ pre-commit install
 | Make `git blame` skip the one-off reformat commit | `git config blame.ignoreRevsFile .git-blame-ignore-revs` |
 
 Settings live in `ruff.toml` and `biome.json`.
+
+### Continuous integration
+
+GitHub Actions (`.github/workflows/ci.yml`) runs on every push to `main` and every pull request:
+
+- `lint`: the same pre-commit hooks, at the same pinned versions, over the whole repo. If it fails
+  on a PR, run `pre-commit run --all-files` locally and commit what it fixes.
+- `test`: the unit tests on Linux and macOS with Python 3.13 and 3.14, plus the `./dns-bench`
+  launcher, run directly and through a symlink, and refusing Python 3.12.
+- `ci-passed`: succeeds only if both jobs did. It is the check `main`'s branch protection requires,
+  so a pull request can't merge until CI is green.
+
+Actions are pinned to commit SHAs. Dependabot opens one grouped PR a month to update them, and
+skips releases younger than a week.
+
+## Releasing
+
+Versions are `MAJOR.MINOR.PATCH`:
+
+- **patch** for bug fixes;
+- **minor** for new features or behaviour changes, including different results from the same
+  measurements and a higher minimum Python;
+- **major** for changes that break existing `config.json` or saved run files.
+
+To release:
+
+1. In a pull request, set `__version__` in `dnsbench/__init__.py`, and in `CHANGELOG.md` rename
+   `## [Unreleased]` to `## [X.Y.Z] - YYYY-MM-DD`, add a fresh `## [Unreleased]` above it and
+   update the compare links at the bottom. Merge it.
+2. Optional dry run: Actions > release > Run workflow, on `main`. It runs every check and shows the
+   release notes in the run summary without publishing anything.
+3. Tag the merge commit and push the tag:
+
+   ```sh
+   git switch main && git pull --ff-only
+   git tag -a vX.Y.Z -m "vX.Y.Z" && git push origin vX.Y.Z
+   ```
+
+The release workflow re-runs lint and tests, fails unless the tag matches `__version__` and
+`CHANGELOG.md` has notes for it, then publishes the GitHub release with those notes.
