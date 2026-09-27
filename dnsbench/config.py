@@ -3,6 +3,11 @@
 The config file is plain JSON (see README.md for the schema). The web UI
 overwrites it on save, so everything that reaches disk goes through
 ``normalize_config`` + ``validate_config`` first.
+
+Loading never writes. A missing file loads as the defaults plus this computer's own resolvers
+(``initial_config``); the file itself is created by an explicit step: saving, resetting, or
+``ensure_config`` when a run or the web UI starts. So the "System" entry is detected once and then
+stays fixed (see sysdns.py for why).
 """
 
 from __future__ import annotations
@@ -14,16 +19,14 @@ import json
 import os
 import re
 import tempfile
+from collections.abc import Callable
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-PACKAGE_DIR = Path(__file__).resolve().parent
-PROJECT_DIR = PACKAGE_DIR.parent
-WEB_DIR = PACKAGE_DIR / "web"
-DEFAULT_CONFIG_PATH = PROJECT_DIR / "config.json"
-DEFAULT_RUNS_DIR = PROJECT_DIR / "runs"
+from . import sysdns
 
-# The 60 domains from the original dns-test.sh, in the same order.
+# Popular sites across several countries, in a fixed order (README "History" says where they came from).
 DEFAULT_DOMAINS = [
     "google.com",
     "bbc.co.uk",
@@ -87,14 +90,15 @@ DEFAULT_DOMAINS = [
     "realestate.com.au",
 ]
 
-# Quad9 is disabled because the original script defined it but left it out of `order`.
+# Public resolvers that anyone can reach. A new config also gets a "System" entry with this computer's
+# own resolvers (initial_config), which is usually the ISP's or the router's.
 DEFAULT_RESOLVERS = [
     {"name": "OpenDNS", "servers": ["208.67.222.222", "208.67.220.220"], "enabled": True},
     {"name": "Cloudflare", "servers": ["1.1.1.1", "1.0.0.1"], "enabled": True},
     {"name": "Google", "servers": ["8.8.8.8", "8.8.4.4"], "enabled": True},
     {"name": "Quad9", "servers": ["9.9.9.9", "149.112.112.112"], "enabled": False},
-    {"name": "ISP", "servers": ["61.9.134.49", "61.9.133.193"], "enabled": True},
 ]
+SYSTEM_NAME = "System"
 
 DEFAULT_SETTINGS = {
     "per_server_interval_ms": 250,
@@ -129,8 +133,8 @@ MAX_RESOLVERS = 20
 MAX_SERVERS_PER_RESOLVER = 4
 MAX_NAME_LEN = 40
 MAX_HOSTNAME_LEN = 253  # a DNS name in text form, without the trailing dot (RFC 1035)
-# Servers x domains x rounds in one run (the defaults send 480). It bounds a run's duration, its file
-# size (a few hundred bytes per query) and what the web UI has to draw.
+# Servers x domains x rounds in one run (the defaults send a few hundred). It bounds a run's duration,
+# its file size (a few hundred bytes per query) and what the web UI has to draw.
 MAX_QUERIES_PER_RUN = 50_000
 
 _LABEL_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
@@ -518,7 +522,7 @@ def validate_config(cfg) -> list[str]:
 
 
 # --------------------------------------------------------------------------- #
-# Load / save
+# Writing and parsing
 # --------------------------------------------------------------------------- #
 
 
@@ -581,18 +585,123 @@ def loads_json(text: str) -> object:
     return value
 
 
-def load_config(path=DEFAULT_CONFIG_PATH, strict: bool = True) -> dict:
-    """Load, normalise and (if ``strict``) validate the config at ``path``.
+# --------------------------------------------------------------------------- #
+# The "System" resolver
+# --------------------------------------------------------------------------- #
 
-    A missing file is created with the defaults. Invalid JSON raises
-    ConfigError. With ``strict=False`` a structurally-invalid (but parseable)
-    config is returned anyway so the UI can show and fix it.
+Detect = Callable[[], sysdns.Detected]
+
+
+@dataclass
+class SystemResolver:
+    """What to do with this computer's resolvers, given the other resolvers in a config."""
+
+    resolver: dict | None  # the entry to add or update; None if there is nothing usable to add
+    message: str  # one line for the user saying what was found and what happens
+    detected: sysdns.Detected = field(default_factory=lambda: sysdns.Detected([]))
+
+
+def _is_system(r: object) -> bool:
+    return isinstance(r, dict) and isinstance(r.get("name"), str) and r["name"].strip().casefold() == "system"
+
+
+def system_resolver(resolvers: object, detected: sysdns.Detected) -> SystemResolver:
+    """The "System" entry for ``detected``, leaving out servers another resolver already has.
+
+    ``resolvers`` may be anything a hand-edited config holds; entries that aren't resolvers are
+    ignored. A server another resolver has would make the config invalid (each IP may appear once),
+    and it would be measured twice anyway.
+    """
+    used: dict[str, str] = {}
+    for r in resolvers if isinstance(resolvers, list) else []:
+        if not isinstance(r, dict) or _is_system(r) or not isinstance(r.get("servers"), list):
+            continue
+        for s in r["servers"]:
+            key = server_key(s) if isinstance(s, str) else None
+            if key is not None:
+                name = r.get("name")
+                used.setdefault(key, name if isinstance(name, str) and name else "another resolver")
+    keep: list[str] = []
+    kept: set[str] = set()
+    taken: dict[str, str] = {}
+    extra: list[str] = []  # usable, but over the per-resolver limit
+    for s in detected.servers:
+        try:
+            ip = ipaddress.ip_address(s)
+        except ValueError:
+            continue
+        key = _host_key(ip)
+        if _server_problem(ip) or key in kept:
+            continue
+        if key in used:
+            taken[s] = used[key]
+        elif len(keep) < MAX_SERVERS_PER_RESOLVER:
+            keep.append(normalize_server(s))
+            kept.add(key)
+        else:
+            extra.append(s)
+    source = f" (from {detected.source})" if detected.source else ""
+    if not detected.servers:
+        return SystemResolver(None, f"No system resolvers found: {detected.describe_empty()}.", detected)
+    if not keep:
+        owners = sorted(set(taken.values()))
+        return SystemResolver(
+            None,
+            f"This computer's resolvers ({', '.join(taken)}){source} are already in the list as "
+            f"{', '.join(owners)}, so there is no System entry to add.",
+            detected,
+        )
+    message = f"{SYSTEM_NAME}: {', '.join(keep)}{source}."
+    if extra:
+        message += f" Left out, over the limit of {MAX_SERVERS_PER_RESOLVER} servers: {', '.join(extra)}."
+    if taken:
+        message += (
+            " Left out: " + ", ".join(f"{s} (already used by {name})" for s, name in taken.items()) + "."
+        )
+    return SystemResolver({"name": SYSTEM_NAME, "servers": keep, "enabled": True}, message, detected)
+
+
+def with_system_resolver(cfg: dict, entry: dict) -> dict:
+    """A copy of ``cfg`` whose "System" resolver has ``entry``'s servers (added at the end if missing).
+
+    An existing entry keeps its name's spelling and its enabled flag: the user may have turned it off.
+    """
+    out = copy.deepcopy(cfg)
+    resolvers = out.get("resolvers")
+    if not isinstance(resolvers, list):
+        out["resolvers"] = resolvers = []
+    for r in resolvers:
+        if _is_system(r):
+            r["servers"] = list(entry["servers"])
+            return out
+    resolvers.append(copy.deepcopy(entry))
+    return out
+
+
+def initial_config(detect: Detect | None = None) -> tuple[dict, SystemResolver]:
+    """The config a new config.json starts with: the defaults plus this computer's own resolvers."""
+    cfg = default_config()
+    system = system_resolver(cfg["resolvers"], (detect or sysdns.detect)())
+    if system.resolver is not None:
+        cfg = with_system_resolver(cfg, system.resolver)
+    return cfg, system
+
+
+# --------------------------------------------------------------------------- #
+# Load / save
+# --------------------------------------------------------------------------- #
+
+
+def load_config(path: str | os.PathLike[str], strict: bool = True, detect: Detect | None = None) -> dict:
+    """Load, normalise and (if ``strict``) validate the config at ``path``. Never writes.
+
+    A missing file loads as ``initial_config()``, without creating it. Invalid JSON raises
+    ConfigError. With ``strict=False`` a structurally-invalid (but parseable) config is returned
+    anyway so the UI can show and fix it.
     """
     path = Path(path)
     if not path.exists():
-        cfg = default_config()
-        _atomic_write_text(path, dumps_config(cfg))
-        return cfg
+        return initial_config(detect)[0]
     try:
         raw = loads_json(path.read_text(encoding="utf-8"))
     except OSError as exc:
@@ -612,7 +721,22 @@ def load_config(path=DEFAULT_CONFIG_PATH, strict: bool = True) -> dict:
     return cfg
 
 
-def save_config(cfg: dict, path=DEFAULT_CONFIG_PATH) -> dict:
+def ensure_config(path: str | os.PathLike[str], detect: Detect | None = None) -> SystemResolver | None:
+    """Create the config at ``path`` from ``initial_config()`` if it doesn't exist yet.
+
+    Returns what system-resolver detection found for the new file, or None if the file was already
+    there. Called when a run or the web UI starts, so every run of a new config uses the same System
+    entry instead of detecting it afresh.
+    """
+    path = Path(path)
+    if path.exists():
+        return None
+    cfg, system = initial_config(detect)
+    _atomic_write_text(path, dumps_config(cfg))
+    return system
+
+
+def save_config(cfg: dict, path: str | os.PathLike[str]) -> dict:
     """Normalise + validate, then atomically write. Returns the saved config."""
     norm = normalize_config(cfg)
     errors = validate_config(norm)
@@ -622,17 +746,18 @@ def save_config(cfg: dict, path=DEFAULT_CONFIG_PATH) -> dict:
     return norm
 
 
-def reset_config(path=DEFAULT_CONFIG_PATH) -> dict:
-    cfg = default_config()
+def reset_config(path: str | os.PathLike[str], detect: Detect | None = None) -> tuple[dict, SystemResolver]:
+    """Overwrite the config at ``path`` with ``initial_config()``; returns it and what detection found."""
+    cfg, system = initial_config(detect)
     _atomic_write_text(Path(path), dumps_config(cfg))
-    return cfg
+    return cfg, system
 
 
 def enabled_resolvers(cfg: dict) -> list[dict]:
     return [r for r in cfg.get("resolvers", []) if r.get("enabled", True)]
 
 
-def current_resolver_names(path=DEFAULT_CONFIG_PATH) -> list[str] | None:
+def current_resolver_names(path: str | os.PathLike[str]) -> list[str] | None:
     """Names of the resolvers enabled in the config at ``path``, read-only.
 
     None if the file is missing or unreadable (callers then fall back to the

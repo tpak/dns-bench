@@ -16,11 +16,17 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from dnsbench import __version__, cli, resolver, storage
+from dnsbench import __version__, cli, paths, resolver, storage, sysdns
 from dnsbench import config as C
 from dnsbench.resolver import QueryResult
 
 ROOT = Path(__file__).resolve().parents[1]
+HOME_NET = sysdns.Detected(["192.0.2.53"], "a test")
+
+
+def env_without_home() -> dict[str, str]:
+    """The environment for a subprocess that must use the checkout, whatever the caller's DNSBENCH_HOME."""
+    return {k: v for k, v in os.environ.items() if k != paths.HOME_ENV}
 
 
 def small_config():
@@ -63,6 +69,9 @@ class CliTest(unittest.TestCase):
         self.runs = root / "runs"
         C.save_config(small_config(), self.cfg)
         self.fake = FakeQuery()
+        detect = mock.patch.object(sysdns, "detect", return_value=HOME_NET)  # never this computer's own
+        detect.start()
+        self.addCleanup(detect.stop)
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -300,14 +309,94 @@ class CliTest(unittest.TestCase):
         self.assertIn("No runs saved yet", out)
 
     def test_config_commands(self):
-        code, out, _ = self.cli("config", "--path")
+        code, out, err = self.cli("config", "--path")
         self.assertEqual((code, out.strip()), (0, str(self.cfg)))
+        self.assertIn(str(self.runs), err)  # stdout stays just the config path, for scripts
         code, out, _ = self.cli("config")
         self.assertEqual(code, 0)
         self.assertEqual(json.loads(out)["domains"], small_config()["domains"])
         code, out, _ = self.cli("config", "--reset")
         self.assertEqual(code, 0)
-        self.assertEqual(C.load_config(self.cfg), C.default_config())
+        self.assertIn("System: 192.0.2.53 (from a test).", out)
+        self.assertEqual(C.load_config(self.cfg), C.initial_config(lambda: HOME_NET)[0])
+
+    def test_config_show_never_creates_the_file(self):
+        self.cfg.unlink()
+        code, out, err = self.cli("config")
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(out), C.initial_config(lambda: HOME_NET)[0])
+        self.assertIn("doesn't exist yet", err)
+        self.assertFalse(self.cfg.exists())
+
+    def test_config_detect_adds_or_updates_system(self):
+        code, out, _ = self.cli("config", "--detect")
+        self.assertEqual(code, 0, out)
+        self.assertIn(f"Saved to {self.cfg}", out)
+        cfg = C.load_config(self.cfg)
+        self.assertEqual(cfg["resolvers"][:3], small_config()["resolvers"])
+        self.assertEqual(cfg["resolvers"][3], {"name": "System", "servers": ["192.0.2.53"], "enabled": True})
+        # On another network: the same entry gets the new servers.
+        with mock.patch.object(sysdns, "detect", return_value=sysdns.Detected(["198.51.100.53"])):
+            self.assertEqual(self.cli("config", "--detect")[0], 0)
+        cfg = C.load_config(self.cfg)
+        self.assertEqual(len(cfg["resolvers"]), 4)
+        self.assertEqual(cfg["resolvers"][3]["servers"], ["198.51.100.53"])
+
+    def test_config_detect_with_nothing_to_add(self):
+        before = self.cfg.read_text()
+        with mock.patch.object(sysdns, "detect", return_value=sysdns.Detected([], "/etc/resolv.conf")):
+            code, _, err = self.cli("config", "--detect")
+        self.assertEqual(code, 1)
+        self.assertIn("No system resolvers found: /etc/resolv.conf lists no DNS servers", err)
+        with mock.patch.object(sysdns, "detect", return_value=sysdns.Detected(["192.0.2.1"])):
+            code, out, _ = self.cli("config", "--detect")  # already configured as "Fast"
+        self.assertEqual(code, 0)
+        self.assertIn("already in the list as Fast", out)
+        self.assertEqual(self.cfg.read_text(), before)
+
+    # A new config has the 60 default domains, 4 queries/s per server: 2 domains keep these tests quick.
+    @mock.patch.dict(C.DEFAULT_CONFIG, {"domains": ["a.example", "b.example"]})
+    def test_first_run_creates_the_config(self):
+        self.cfg.unlink()
+        code, _, err = self.cli("run", "--resolvers", "Cloudflare")
+        self.assertEqual(code, 0, err)
+        self.assertIn(f"Created {self.cfg} with the default resolvers. System: 192.0.2.53", err)
+        self.assertEqual(C.load_config(self.cfg), C.initial_config(lambda: HOME_NET)[0])
+        run = storage.load_run(storage.latest_run_id(self.runs), self.runs)
+        self.assertIn("System", [r["name"] for r in run["config"]["resolvers"]])
+
+    @mock.patch.dict(C.DEFAULT_CONFIG, {"domains": ["a.example", "b.example"]})
+    def test_no_save_run_writes_no_config_either(self):
+        self.cfg.unlink()
+        code, out, _ = self.cli("run", "--no-save", "--json", "--quiet", "--resolvers", "System")
+        self.assertEqual(code, 0)
+        self.assertEqual({r["server"] for r in json.loads(out)["results"]}, {"192.0.2.53"})
+        self.assertFalse(self.cfg.exists())
+        self.assertFalse(self.runs.exists())
+
+    def test_dnsbench_home_holds_the_data(self):
+        home = Path(self.tmp.name) / "home"
+        out = io.StringIO()
+        with (
+            mock.patch.dict(os.environ, {paths.HOME_ENV: str(home)}),
+            contextlib.redirect_stdout(out),
+            contextlib.redirect_stderr(err := io.StringIO()),
+        ):
+            self.assertEqual(cli.main(["config", "--path"]), 0)
+        self.assertEqual(out.getvalue().strip(), str(home / "config.json"))
+        self.assertIn(str(home / "runs"), err.getvalue())
+
+    def test_outside_a_checkout_without_dnsbench_home_is_a_clear_error(self):
+        err = io.StringIO()
+        with (
+            mock.patch.object(paths, "CHECKOUT_DIR", Path(self.tmp.name)),
+            mock.patch.dict(os.environ, {paths.HOME_ENV: ""}),
+            contextlib.redirect_stderr(err),
+        ):
+            self.assertEqual(cli.main(["list"]), 1)
+            self.assertIn("$DNSBENCH_HOME/config.json", cli.build_parser().format_help() + err.getvalue())
+        self.assertIn("dns-bench: dns-bench is installed outside its checkout", err.getvalue())
+        self.assertIn("Set DNSBENCH_HOME", err.getvalue())
 
     def test_invalid_config_file(self):
         self.cfg.write_text("{ nope")
@@ -424,8 +513,8 @@ class CliTest(unittest.TestCase):
         try:
             for args in (
                 ["config", "--reset", "--config", str(ro / "cfg.json")],
-                ["config", "--config", str(ro / "missing.json")],
-                ["run", "--config", str(ro / "missing.json")],
+                ["config", "--detect", "--config", str(ro / "cfg.json")],
+                ["run", "--config", str(ro / "missing.json")],  # a first run creates the config
             ):
                 with self.subTest(args=args):
                     out, err = io.StringIO(), io.StringIO()
@@ -457,15 +546,25 @@ class WrapperTest(unittest.TestCase):
             for exe in (wrapper, link):
                 with self.subTest(exe=exe):
                     p = subprocess.run(
-                        [str(exe), "--version"], cwd=tmp, capture_output=True, text=True, timeout=30
+                        [str(exe), "--version"],
+                        cwd=tmp,
+                        capture_output=True,
+                        text=True,
+                        timeout=30,
+                        env=env_without_home(),
                     )
                     self.assertEqual(p.returncode, 0, p.stderr)
                     self.assertIn(f"dns-bench {__version__}", p.stdout)
                     self.assertEqual(p.stderr, "")
             p = subprocess.run(
-                [str(link), "config", "--path"], cwd=tmp, capture_output=True, text=True, timeout=30
+                [str(link), "config", "--path"],
+                cwd=tmp,
+                capture_output=True,
+                text=True,
+                timeout=30,
+                env=env_without_home(),
             )
-            self.assertEqual(p.stdout.strip(), str(ROOT / "config.json"))
+            self.assertEqual(p.stdout.strip(), str(ROOT / "config.json"))  # the checkout's, not the cwd's
 
     def test_installed_command_runs_cli_main(self):
         # `uv tool install --editable .` creates the dns-bench command from this entry, so a typo here

@@ -234,13 +234,13 @@ class ServerChoiceTest(unittest.TestCase):
     def test_flaky_primary_of_best_resolver(self):
         # ISP still wins overall, but its flaky IP must not be the primary
         s = summary(
-            rows_for("ISP", "61.9.134.49", [2.0] * 48, timeouts=12),
-            rows_for("ISP", "61.9.133.193", [2.3] * 60),
+            rows_for("ISP", "192.0.2.53", [2.0] * 48, timeouts=12),
+            rows_for("ISP", "192.0.2.54", [2.3] * 60),
             rows_for("Google", "8.8.8.8", [300.0] * 60),
         )
         rec = RC.recommend(s, SETTINGS)
         self.assertEqual(rec["best"], "ISP")
-        self.assertEqual(rec["suggested_servers"][0], "61.9.133.193")
+        self.assertEqual(rec["suggested_servers"][0], "192.0.2.54")
 
     def test_servers_within_noise_use_config_order(self):
         # 0.1 ms apart is noise: keep config order instead of flipping run to run
@@ -286,7 +286,7 @@ class DeadServerTest(unittest.TestCase):
             rows_for("Cloudflare", "1.1.1.1", [7] * 60),
             rows_for("Cloudflare", "1.0.0.1", [], timeouts=60),
             rows_for("Google", "8.8.8.8", [31] * 60),
-            rows_for("ISP", "61.9.134.49", [26] * 60),
+            rows_for("ISP", "192.0.2.53", [26] * 60),
         )
         rec = RC.recommend(s, SETTINGS)
         self.assertEqual(rec["best"], "Cloudflare")
@@ -341,36 +341,36 @@ class RedundancyTest(unittest.TestCase):
     def test_renamed_resolver_is_not_the_backup(self):
         # combined runs: ISP was renamed Telstra, same IPs (one spelled IPv4-mapped)
         s = summary(
-            rows_for("Telstra", "61.9.134.49", [10.0] * 40),
-            rows_for("Telstra", "61.9.133.193", [11.0] * 40),
-            rows_for("ISP", "::ffff:61.9.134.49", [10.1] * 40),
-            rows_for("ISP", "61.9.133.193", [11.1] * 40),
+            rows_for("Telstra", "192.0.2.53", [10.0] * 40),
+            rows_for("Telstra", "192.0.2.54", [11.0] * 40),
+            rows_for("ISP", "::ffff:192.0.2.53", [10.1] * 40),
+            rows_for("ISP", "192.0.2.54", [11.1] * 40),
             rows_for("Google", "8.8.8.8", [30.0] * 40),
         )
         rec = RC.recommend(s, SETTINGS)
         self.assertEqual(rec["best"], "Telstra")
         self.assertEqual(rec["backup"], "Google")
-        self.assertEqual(rec["suggested_servers"], ["61.9.134.49", "8.8.8.8"])
+        self.assertEqual(rec["suggested_servers"], ["192.0.2.53", "8.8.8.8"])
         self.assertNotIn("ISP", rec["tied_with"])
         self.assertTrue(any("share server IPs" in n and "ISP" in n for n in rec["notes"]))
 
     def test_only_alias_left_gives_distinct_ips(self):
         s = summary(
-            rows_for("Telstra", "61.9.134.49", [10.0] * 40),
-            rows_for("Telstra", "61.9.133.193", [11.0] * 40),
-            rows_for("ISP", "61.9.134.49", [10.1] * 40),
-            rows_for("ISP", "61.9.133.193", [11.1] * 40),
+            rows_for("Telstra", "192.0.2.53", [10.0] * 40),
+            rows_for("Telstra", "192.0.2.54", [11.0] * 40),
+            rows_for("ISP", "192.0.2.53", [10.1] * 40),
+            rows_for("ISP", "192.0.2.54", [11.1] * 40),
         )
         rec = RC.recommend(s, SETTINGS)
         self.assertIsNone(rec["backup"])
-        self.assertEqual(rec["suggested_servers"], ["61.9.134.49", "61.9.133.193"])
+        self.assertEqual(rec["suggested_servers"], ["192.0.2.53", "192.0.2.54"])
         self.assertFalse(any("Only one resolver" in n for n in rec["notes"]))
         self.assertTrue(any("shares servers with Telstra" in n for n in rec["notes"]))
 
     def test_single_resolver_single_server(self):
-        s = summary(rows_for("ISP", "61.9.134.49", [10] * 60))
+        s = summary(rows_for("ISP", "192.0.2.53", [10] * 60))
         rec = RC.recommend(s, SETTINGS)
-        self.assertEqual(rec["suggested_servers"], ["61.9.134.49"])
+        self.assertEqual(rec["suggested_servers"], ["192.0.2.53"])
         self.assertFalse(any("both suggested servers" in n for n in rec["notes"]))
         self.assertTrue(any("no secondary server" in n for n in rec["notes"]))
 

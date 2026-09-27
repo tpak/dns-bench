@@ -16,9 +16,10 @@ No finding was refuted; several were downgraded. Severities below are the verifi
 phases after them are renumbered. The floor is now Python 3.13, and uv replaces pip/pyenv. The
 review findings below are kept as recorded.
 
-**Status (2026-09-27):** Phase 0 is done (PRs #2/#3). Phase 1 is done (PRs #5/#6); see its
+**Status (2026-09-28):** Phase 0 is done (PRs #2/#3). Phase 1 is done (PRs #5/#6); see its
 "As built" notes, which differ from the plan in two places. v1.1.0 is the first release through the
-new release workflow. Phase 2 is done (PR #8). Phase 3 is done (PR #9). Next is Phase 4.
+new release workflow. Phase 2 is done (PR #8). Phase 3 is done (PR #9). Phase 4 is done (PR #10).
+Next is Phase 5.
 
 ## Verdict: would a distinguished engineer approve? **No, not as-is.**
 The problems are structural, not rot. The Python core is better than typical one-shot output: an
@@ -250,7 +251,7 @@ cli.py:
   over the same 15.8 s, where the batches took about 31 s. The analysis code is untouched, so
   recomputing all 9 saved runs reproduces their stored summaries and recommendations exactly.
 
-### Phase 4 — Data hygiene & defaults (M)
+### Phase 4 — Data hygiene & defaults (M) — ✅ done (PR #10)
 - `git rm --cached config.json`, add it to .gitignore, and delete `runs/.gitkeep` (runs/ is created
   on demand). Defaults come only from code. Release note: pulling this commit deletes an unmodified
   `config.json` in other clones; your local file is kept.
@@ -271,6 +272,34 @@ cli.py:
 - Move the script-history comments and the "vs dns-test.sh" UI copy (`ORIGINAL_SECONDS_PER_QUERY`)
   into a README history section. Fix README paths, quick start and layout; extend the Development
   section (added in Phase 0); link BACKGROUND.md; reconcile the README API table with `_ROUTES`.
+
+**As built (2026-09-28)**, where it differs from the plan above or adds to it:
+- **When the config file is created.** Loading never writes. A missing config loads as the defaults
+  plus the detected System entry (`config.initial_config`). The file is created by a Settings save
+  or reset and `config --reset`, as planned, and also by `config --detect`, by `dns-bench serve` at
+  startup and by the first saved run (`config.ensure_config`). Without those last two, a user who
+  never opens Settings would get System detected afresh on every run, which the plan rules out.
+  `run --no-save` writes nothing, so it uses the in-memory defaults.
+- **System resolver.** It goes last in the list. Detected servers that another resolver already has
+  are left out (validation would reject them, and they would be measured twice); at most 4 are kept.
+  If nothing usable is left, there is no entry, and the message says why. `config --detect` and
+  Settings' **Add system resolvers** update an existing System entry's servers but keep its name's
+  spelling and its on/off flag. Settings gets the entry from `POST /api/config/system-resolver`,
+  which returns it for the draft without saving, so the de-duplication rules stay in Python.
+  On macOS a link-local IPv6 server with no zone gets its `scutil` block's interface.
+- **Paths.** `paths.resolve()` treats the package's parent directory as a checkout only if it holds
+  both `pyproject.toml` and the `dns-bench` launcher. `config --path` still prints only the config
+  path on stdout (scripts use it); the runs dir goes to stderr. Settings reads the paths from a new
+  `GET /api/info`. The serve banner prints them to stderr.
+- **Tests.** New `test_paths.py` and `test_sysdns.py`. A test checks that README's API table lists
+  exactly the `/api` routes in `_ROUTES`. Tests that pinned the old behaviour were changed on purpose
+  (see the commit message). The test that read the repo's own `config.json` is gone. The ISP IPs in
+  `test_recommend.py` became TEST-NET addresses.
+- **Upgrading.** Pulling the commit that untracks `config.json` deletes an unmodified copy. A
+  modified one (any clone that saved Settings) makes `git pull` refuse to merge; moving it aside
+  while pulling works (tested). The CHANGELOG has an "Upgrading" note with the commands.
+- `pre-commit run --all-files` only checks tracked files, so new files must be `git add`ed before it
+  covers them.
 
 ### Phase 5 — One source of truth: validation & API contract (M)
 Done before the layering so the error format changes only once.

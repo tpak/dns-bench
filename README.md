@@ -3,10 +3,10 @@
 [![ci](https://github.com/tpak/dns-bench/actions/workflows/ci.yml/badge.svg)](https://github.com/tpak/dns-bench/actions/workflows/ci.yml)
 
 A fast, polite DNS resolver benchmark with a local web UI. It replaces `archive/dns-test.sh`,
-which is left unchanged.
+which is left unchanged ([History](#history)).
 
-It times how quickly each DNS resolver (OpenDNS, Cloudflare, Google, your ISP, …) answers
-for a list of popular domains. It then recommends which resolver to use, which IP to put
+It times how quickly each DNS resolver (Cloudflare, Google, OpenDNS, the one your computer
+already uses, …) answers for a list of popular domains. It then recommends which resolver to use, which IP to put
 first, and which to use as the backup. Every run is saved. Results can be viewed as text,
 or as charts in a browser (averages, per resolver, per domain and over time).
 
@@ -21,17 +21,11 @@ If your `python3` is older (macOS ships 3.9, Debian 12 and Raspberry Pi OS bookw
 `python3.13 ./dns-bench`, or let [uv](https://docs.astral.sh/uv/) fetch one:
 `uv run --python 3.13 ./dns-bench`.
 
-## Why it's faster, and why it's still polite
+## Fast, and still polite
 
-| | `dns-test.sh` (original) | `dns-bench` (default settings) |
-|---|---|---|
-| Scheduling | every query one after another, with a 0.8 s sleep after each | servers are queried **in parallel**, and each server's queries are **strictly paced** |
-| 4 resolvers × 2 servers × 60 domains = 480 queries | about **6.5 minutes** (480 × 0.8 s plus query time) | about **15–20 seconds** |
-| Load on any one server | about 1 query/s, in bursts per provider | at most **4 queries/s** (≥ 250 ms apart), and never more than **1 in flight** |
-| Timeouts | counted as **0 ms**, which made failing resolvers look *faster* | left out of the latency stats and reported as a failure rate |
-
-The original was slow because of its global sleep, not because of DNS. `dns-bench` runs one
-worker per server IP, and each worker:
+A run with the default settings (about 7 servers × 60 domains) takes 15–20 seconds, yet no
+server ever gets more than 4 queries a second from it. `dns-bench` runs one worker per server
+IP, and each worker:
 
 * sends **one query at a time**, so a server never has more than one outstanding query
   from us;
@@ -46,7 +40,7 @@ All the servers run at the same time, however many there are, so the wall time i
 also means every server is measured over the same stretch of time, so network conditions
 that change during a run affect them all alike.
 The total load across every server is at most `servers × 1000/interval` queries/s
-(8 × 4 = 32 q/s by default), spread over the four enabled providers. A unit test
+(about 7 × 4 = 28 q/s by default), spread over the enabled providers. A unit test
 (`tests/test_runner.py`) uses real threads to check both rules: never more than one query
 in flight per server, and never less than the interval between starts. It also checks that
 servers really do run concurrently.
@@ -58,13 +52,17 @@ cache.
 ## Quick start
 
 ```sh
-cd ~/bin/dns-bench
+git clone https://github.com/tpak/dns-bench.git
+cd dns-bench
 ./dns-bench run              # benchmark now (~15-20 s), print a report, save it under runs/
 ./dns-bench serve --open     # web UI at http://127.0.0.1:8053/
 ```
 
+The first run creates `config.json` in the checkout, with the default resolvers plus the ones
+your computer already uses, listed as **System** (see [Configuration](#configuration-configjson)).
+
 The launcher also works from any directory and through a symlink. For example,
-`ln -s ~/bin/dns-bench/dns-bench ~/bin/dnsb`. From the checkout, `python3 -m dnsbench` works too.
+`ln -s ~/dns-bench/dns-bench ~/bin/dnsb`. From the checkout, `python3 -m dnsbench` works too.
 
 ### Installing a `dns-bench` command (optional)
 
@@ -72,13 +70,14 @@ Nothing needs installing: `./dns-bench` runs straight from the checkout. To put 
 on your PATH instead, install the checkout with [uv](https://docs.astral.sh/uv/):
 
 ```sh
-cd ~/bin/dns-bench
+cd ~/dns-bench
 uv tool install --editable .
 ```
 
 Only editable installs (`--editable`) are supported. dns-bench keeps `config.json` and `runs/` in
-the checkout, so the command has to run the checkout's own code. Undo it with
-`uv tool uninstall dns-bench`.
+the checkout, so the command has to run the checkout's own code. A non-editable install stops with
+a message asking you to set `DNSBENCH_HOME` ([Where your data is kept](#where-your-data-is-kept)).
+Undo the install with `uv tool uninstall dns-bench`.
 
 Example output:
 
@@ -103,10 +102,10 @@ press it again to save straight away. `kill` (SIGTERM) works like Ctrl-C.
 | `dns-bench serve [--host 127.0.0.1] [--port 8053] [--open] [--allow-remote]` | Starts the web UI and JSON API. `--open` opens it in your browser. A `--host` that other machines can reach needs `--allow-remote` (see [The web UI](#the-web-ui)). |
 | `dns-bench list` | Lists saved runs, newest first. |
 | `dns-bench report [latest\|all\|RUN_ID]` | Prints the text report for the latest run, a specific run, or `all` runs combined. |
-| `dns-bench config [--show\|--reset\|--path]` | Shows the config (the default), resets it to the defaults, or prints its path. |
+| `dns-bench config [--show\|--reset\|--detect\|--path]` | Shows the config (the default), resets it to the defaults, adds or updates the **System** resolver with the ones your computer uses now (`--detect`), or prints the config file's path (and the runs folder's, on stderr). Showing a config that doesn't exist yet prints what it would start with, without creating it. |
 
 Every command accepts `--config PATH` and `--runs-dir DIR`, either before or after the
-command name. Exit codes are: 0 ok, 1 error (including a run in which no query succeeded; that
+command name ([Where your data is kept](#where-your-data-is-kept)). Exit codes are: 0 ok, 1 error (including a run in which no query succeeded; that
 run is still saved), 2 usage error, 130 interrupted (Ctrl-C). `run` checks that it can write to
 the runs directory before sending any queries.
 
@@ -123,7 +122,8 @@ the runs directory before sending any queries.
 * **History** – every saved run, with a CSV download for each.
 * **Settings** – edit the resolver list, the domain list and the tuning settings, then save
   them to `config.json`. The page shows the estimated run time and the maximum load before
-  you save.
+  you save, and where the config and the runs are kept. **Add system resolvers** adds (or
+  updates) a **System** row with the resolvers your computer uses now.
 
 The dataset picker at the top chooses which data every tab shows: the latest run, any single
 run, or **All runs combined**.
@@ -148,6 +148,8 @@ Then open http://127.0.0.1:8053/ on the computer you ran `ssh` on.
 
 The Settings tab edits this file, and so can you (the web UI overwrites it when you save).
 Everything is checked before it is saved. Invalid input is rejected with readable messages.
+The file is yours: it is not part of the repository, and nothing but a save, a reset or
+`config --detect` ever writes it.
 
 ```json
 {
@@ -167,12 +169,22 @@ Everything is checked before it is saved. Invalid input is rejected with readabl
 }
 ```
 
-The defaults are the five resolvers and 60 domains from `dns-test.sh`. Quad9 is included but
-disabled, because the original defined it but left it out of `order`.
+A new config starts with OpenDNS, Cloudflare, Google and Quad9 (Quad9 disabled), 60 popular
+domains, and the settings below. It also gets a **System** resolver: the servers your computer is
+set up to use, which are usually your ISP's or your router's. On macOS they come from
+`scutil --dns`; on Linux from `/etc/resolv.conf`, or from `/run/systemd/resolve/resolv.conf` when
+that only lists systemd-resolved's local stub. Local stubs (127.x, ::1) are left out, and so is any
+server another resolver in the list already has. If nothing usable is found, there is no System
+entry.
+
+The System servers are looked up once, when the config is created or reset, and then stay in the
+file. They are not looked up again for every run: on a laptop that moves between networks, that
+would mix different networks' resolvers under one name. After moving to another network, run
+`dns-bench config --detect` (or **Add system resolvers** in Settings) to update them.
 
 | Key | Default | Range | Meaning |
 |---|---|---|---|
-| `resolvers` | 5 providers | 1–20 | The resolvers to compare. One run can send at most 50,000 queries (enabled servers × domains × rounds); a bigger config is rejected with a message saying so. |
+| `resolvers` | 4 providers + System | 1–20 | The resolvers to compare. One run can send at most 50,000 queries (enabled servers × domains × rounds); a bigger config is rejected with a message saying so. |
 | `resolvers[].name` | – | 1–40 chars, unique | Display name. No commas. |
 | `resolvers[].servers` | – | 1–4 IPv4/IPv6 literals | Each IP can appear only once across all resolvers, however it is spelled (`::ffff:1.1.1.1` is `1.1.1.1`). Multicast, broadcast, reserved and unspecified addresses are rejected, and an IPv6 zone ID (`%en0`) is only allowed on a link-local `fe80::` address. |
 | `resolvers[].enabled` | `true` | bool | At least one resolver must be enabled. |
@@ -236,7 +248,18 @@ resolver seen only in older runs that is no longer enabled in `config.json` (dis
 removed or renamed since) is still ranked but never suggested, and a note says so. The
 "Runs" column and a note show when a resolver was measured in only some of the runs.
 
-## Where the outputs are kept
+## Where your data is kept
+
+Your config and your runs live in the checkout: `config.json` and `runs/`, next to the
+`dns-bench` launcher, whatever directory you run it from. Neither is part of the repository
+(both are git-ignored), so `git pull` never touches them.
+
+* `DNSBENCH_HOME=/some/dir` moves both, to `/some/dir/config.json` and `/some/dir/runs/`.
+* `--config PATH` and `--runs-dir DIR` move one each, and win over `DNSBENCH_HOME`.
+* A non-editable install (not in a checkout) needs `DNSBENCH_HOME`, or both flags.
+
+`dns-bench serve` prints both paths when it starts, `dns-bench config --path` prints them, and
+the Settings tab shows them.
 
 Every run is saved in `runs/` and is **never deleted or overwritten** by the tool. Each run
 produces two files:
@@ -247,13 +270,15 @@ produces two files:
 * `runs/<id>.txt` – the same text report that `run` prints.
 
 Raw results can also be downloaded as CSV from the History tab, or from
-`/api/runs/<id>/csv`. `runs/` is git-ignored, so the data stays local.
+`/api/runs/<id>/csv`.
 
 ## JSON API (used by the UI)
 
 | Method & path | Purpose |
 |---|---|
-| `GET /api/config` · `PUT /api/config` · `POST /api/config/reset` · `GET /api/defaults` | Read, validate and save, reset, or get the defaults. |
+| `GET /api/config` · `PUT /api/config` · `POST /api/config/reset` · `GET /api/defaults` | Read, validate and save, reset, or get the defaults. Reading a config that doesn't exist yet returns what it would start with, without creating it. |
+| `POST /api/config/system-resolver` | Body: a Settings draft (`{"resolvers": [...]}`). Returns this computer's resolvers as a System entry for it (`resolver`, or `null` if there is nothing to add) and a `message`. Saves nothing. |
+| `GET /api/info` | The version, and where the config file (and whether it exists yet) and the runs folder are. |
 | `GET /api/runs` · `GET /api/runs/<id>` · `GET /api/runs/<id>/csv` | List runs, get one run in full, or download its raw results as CSV. |
 | `GET /api/aggregate?runs=all` or `?runs=id1,id2` | Merged summary and recommendation for several runs, plus `coverage` (how many of the runs measured each resolver). |
 | `POST /api/run` (`{"rounds": N}` optional) · `GET /api/status` · `POST /api/run/cancel` | Start a background benchmark, poll its progress, or cancel it. |
@@ -265,13 +290,18 @@ request body limit is 1 MB.
 
 ```
 dns-bench            launcher (python3)
-config.json          your config (defaults committed)
+config.json          your config (created on first use; git-ignored)
+runs/                every saved run (created on first use; git-ignored)
 CHANGELOG.md         what changed in each release
-runs/                every saved run (git-ignored)
+BACKGROUND.md        why dns-bench exists (the original request)
+archive/dns-test.sh  the script dns-bench replaced, unchanged
 pyproject.toml       packaging (the `dns-bench` command) and mypy settings
 uv.lock              uv's lock file (there are no dependencies to pin yet)
 dnsbench/
   __main__.py        `python -m dnsbench`
+  paths.py           where config.json and runs/ are (checkout, DNSBENCH_HOME, flags)
+  config.py          defaults, validation, load / save
+  sysdns.py          finds this computer's own resolvers (the System entry)
   resolver.py        pure-Python UDP DNS client (random ID, ID/source checks, IPv4+IPv6)
   runner.py          rate-limited concurrent scheduler
   stats.py           nearest-rank stats; summaries by resolver / server / domain
@@ -331,6 +361,8 @@ pre-commit install
 | Type-check only | `pre-commit run mypy --all-files` |
 | Update the pinned tool versions | `pre-commit autoupdate` |
 | Make `git blame` skip the one-off reformat commit | `git config blame.ignoreRevsFile .git-blame-ignore-revs` |
+| Run one test module, or one test | `uv run python -m unittest tests/test_config.py`, `uv run python -m unittest tests.test_cli.CliTest.test_config_commands` |
+| Try the UI on sample data, away from your own | `DNSBENCH_HOME=$(mktemp -d) ./dns-bench serve --runs-dir tests/fixtures/runs-v1` |
 
 Settings live in `ruff.toml`, `biome.json` and `pyproject.toml` (`[tool.mypy]`). mypy runs with
 its default, lenient settings for now: it skips the bodies of functions without type annotations.
@@ -389,3 +421,22 @@ If the release run fails:
   ```sh
   git push origin :refs/tags/vX.Y.Z && git tag -d vX.Y.Z
   ```
+
+## History
+
+dns-bench started as `archive/dns-test.sh`, a zsh script its author used for years to compare
+resolvers after an ISP change or just to check. [BACKGROUND.md](BACKGROUND.md) has the request
+that turned it into this tool. The script is kept, unchanged, in `archive/`.
+
+| | `dns-test.sh` | `dns-bench` (default settings) |
+|---|---|---|
+| Scheduling | every query one after another, with a 0.8 s sleep after each | servers are queried **in parallel**, and each server's queries are **strictly paced** |
+| 4 resolvers × 2 servers × 60 domains = 480 queries | about **6.5 minutes** (480 × 0.8 s plus query time) | about **15–20 seconds** |
+| Load on any one server | about 1 query/s, in bursts per provider | at most **4 queries/s** (≥ 250 ms apart), and never more than **1 in flight** |
+| Timeouts | counted as **0 ms**, which made failing resolvers look *faster* | left out of the latency stats and reported as a failure rate |
+
+The script was slow because of its global sleep, not because of DNS. Some of its choices live
+on: the 60 default domains are its list, in its order; Quad9 is disabled by default because the
+script defined it but left it out of its `order` list; and percentiles use its awk program's
+nearest-rank method, which a test checks. Its fifth resolver was its author's ISP; a new config
+gets your own computer's resolvers in that place, as **System**.

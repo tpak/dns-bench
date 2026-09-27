@@ -40,7 +40,7 @@
 ```python
 import shutil, subprocess, sys, tempfile, threading, time
 from pathlib import Path
-from dnsbench import config as C, server as SV
+from dnsbench import paths, server as SV
 
 out = Path(sys.argv[1])
 out.mkdir(parents=True, exist_ok=True)
@@ -50,7 +50,7 @@ routes = (
 tmp = Path(tempfile.mkdtemp())
 shutil.copytree(Path("tests/fixtures/runs-v1"), tmp / "runs")
 web = tmp / "web"
-shutil.copytree(C.WEB_DIR, web)
+shutil.copytree(paths.WEB_DIR, web)
 html = (web / "index.html").read_text()
 (web / "index.html").write_text(
     html.replace("</body>", '<img src="/static/slow.png" alt="" width="1" height="1"></body>')
