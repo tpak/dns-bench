@@ -11,3 +11,9 @@ Append-only. One line per decision: `YYYY-MM-DD: [Topic] [Decision] — [Rationa
 2026-09-27: [Lint] Ruff uses an explicit rule list (E, W, F, I, B, UP, SIM, A, RUF), not its defaults — a ruff upgrade can't silently change what is checked.
 2026-09-27: [Lint] Tool versions are pinned in .pre-commit-config.yaml, not as uv dev dependencies — no pyproject.toml/uv.lock is needed before Phase 2 packaging, and CI can run the same pinned hooks.
 2026-09-27: [Lint] Biome's noDescendingSpecificity is off — its fixes reorder CSS rules, which can change which rule wins; revisit with a visual check (REMEDIATION_PLAN.md Phase 7).
+2026-09-27: [JSON] Untrusted JSON (the config file, API request bodies) goes through config.loads_json, which rejects nesting deeper than 32 levels — Python 3.14's parser accepts nesting that 3.13's rejects, so the limit lives in code; the two tests the plan expected to relax were right and stay unchanged.
+2026-09-27: [Tests] The rate-limit tests check the sleeps the runner requests, not measured wake-up times; real-time bounds keep only 0.5 s of slack for stalls — CI's macOS runners wake threads 60–130 ms late, and the requested sleep is exact.
+2026-09-27: [CI] A single gate job, `ci-passed`, is the check branch protection requires — its name doesn't change when the test matrix does.
+2026-09-27: [CI] Actions are pinned to commit SHAs, and a pin is at least 7 days old: setup-uv v10.1.0, not the 6-day-old v10.2.0; Dependabot's monthly grouped updates use a 7-day cooldown — time for a compromised or broken release to be noticed.
+2026-09-27: [Release] release.yml re-runs ci.yml through workflow_call, and run by hand it is a dry run that publishes nothing — one definition of the checks, and a way to preview the release notes before tagging.
+2026-09-27: [Versioning] A higher minimum Python is a minor version bump — it changes what users must install, not their config or run files (README "Releasing").

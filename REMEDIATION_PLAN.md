@@ -16,6 +16,9 @@ No finding was refuted; several were downgraded. Severities below are the verifi
 phases after them are renumbered. The floor is now Python 3.13, and uv replaces pip/pyenv. The
 review findings below are kept as recorded.
 
+**Status (2026-09-27):** Phase 0 is done (PRs #2/#3). Phase 1 is done (PR #5); see its "As built"
+notes, which differ from the plan in two places. Next is Phase 2.
+
 ## Verdict: would a distinguished engineer approve? **No, not as-is.**
 The problems are structural, not rot. The Python core is better than typical one-shot output: an
 acyclic import graph, pure leaf modules (resolver, stats), good injection seams
@@ -78,7 +81,7 @@ Each phase lands as its own PR(s) with the suite green; from Phase 1 on, CI must
 Behaviour-preserving refactors are kept separate from behaviour changes. The runtime stays
 stdlib-only. POSIX (macOS/Linux) only, stated in the README.
 
-### Phase 0 — Lint & format (S)
+### Phase 0 — Lint & format (S) — ✅ done (PRs #2/#3)
 Housekeeping. It comes first so that every later diff is linted and formatted from the start.
 - `ruff.toml`:
   - `target-version = "py313"`, `line-length = 110`, rules `E, W, F, I, B, UP, SIM, A, RUF`.
@@ -106,7 +109,7 @@ Housekeeping. It comes first so that every later diff is linted and formatted fr
 - Done when `pre-commit run --all-files` is clean, the suite is green on 3.13, a short live run
   works (the fixes touch runner.py and resolver.py), and the UI loads with no console errors.
 
-### Phase 1 — CI: lint, test, release (S)
+### Phase 1 — CI: lint, test, release (S) — ✅ done (PR #5)
 - Fix the 2 tests that fail on Python 3.14 before 3.14 joins the matrix. They are
   `test_unparseable_json_values` and `test_unconvertible_numbers_are_400_not_500`. Both assume that
   100,000-deep JSON raises `RecursionError`, but 3.14 parses it. The code still rejects it, just
@@ -129,6 +132,24 @@ Housekeeping. It comes first so that every later diff is linted and formatted fr
   config/run-file changes. To release: bump `__version__` and the CHANGELOG in a PR, merge, tag.
 - Actions are pinned to commit SHAs; `.github/dependabot.yml` keeps them updated.
 
+**As built (2026-09-27)**, where it differs from the plan above:
+- **The 3.14 failures were a real bug, not stale tests.** On 3.14 a deeply nested value *inside* a
+  config got past parsing, and validation's `repr()` then overflowed the stack. `PUT /api/config`
+  returned 500, and `POST /api/run` accepted the body. `config.loads_json()` now rejects nesting
+  deeper than 32 levels on every Python. The two tests are unchanged.
+- **macOS runners exposed load-sensitive timing tests.** Four `RateLimitTest` tests measured
+  real-time gaps with 30 ms of slack, and the runners wake threads 60–130 ms late. The tests now
+  check the sleeps the runner requests (exact, and stronger). The real-time bound keeps only 0.5 s
+  of slack, for stalls. This was a deliberate test fix, with the reason in the commit.
+- Branch protection is a repository ruleset on `main`:
+  - a pull request is required (0 approvals);
+  - the `ci-passed` gate job (lint and every test leg) must pass, as reported by GitHub Actions;
+  - no force-push or deletion.
+- release.yml also runs by hand (`workflow_dispatch`) as a dry run that publishes nothing.
+- The CHANGELOG starts at 1.0.0, with the changes since under Unreleased. The README has CI and
+  Releasing sections. The versioning policy counts a higher minimum Python as a minor bump.
+- Research notes: `.project/research/2026-09-27-ci-actions.md`.
+
 ### Phase 2 — Safety net (S)
 - `pyproject.toml`: dynamic version from `dnsbench.__version__`, `requires-python>=3.13`,
   `[project.scripts] dns-bench = "dnsbench.cli:main"`, package-data `web/*`, and mypy config
@@ -145,6 +166,7 @@ Housekeeping. It comes first so that every later diff is linted and formatted fr
   document.write` under `dnsbench/web` (FE-2, FE-12).
 - Sanitized copies of 2 real v1 run files as fixtures (hostname and ISP IPs stripped), to pin the
   Phase 6 `migrate()`.
+- Add `.venv/` to `.gitignore` (`uv sync` creates it once `pyproject.toml` exists; CLAUDE.md §7.2).
 
 ### Phase 3 — Security hardening + correctness bug fixes (S–M)
 server.py:
@@ -225,6 +247,8 @@ Done before the layering so the error format changes only once.
   - Typed `RunNotFound`, `NoRuns` and `CorruptRun(StorageError)`; bare `KeyError` is no longer
     caught at the boundaries.
   - One `migrate(raw)` entry point, pinned by the Phase 2 fixtures.
+  - Parse run files with `config.loads_json` (added in Phase 1), so a corrupt or absurdly nested
+    file is a `CorruptRun` on every Python, not a `RecursionError`.
   - No imports of stats/recommend/report. Replaces the `runs_dir / f"{id}.json"` checks
     (server.py:525, cli.py).
 - `dnsbench/analysis.py`: `finalize` and `aggregate` move out of storage.
