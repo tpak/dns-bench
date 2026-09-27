@@ -7,13 +7,43 @@ release notes.
 
 ## [Unreleased]
 
+### Upgrading
+
+- `config.json` is no longer part of the repository (see Changed). If you have changed your config
+  (saving Settings in the web UI does), move it aside while you pull, or `git pull` stops with "Your
+  local changes to the following files would be overwritten by merge: config.json":
+
+  ```sh
+  mv config.json config.json.mine && git pull && mv config.json.mine config.json
+  ```
+
+  If you never changed it, pulling deletes it, and the next run creates a new one. Your saved runs
+  are not affected.
+
 ### Added
 
 - `python3 -m dnsbench` runs dns-bench from the checkout, just like `./dns-bench`.
 - An optional `dns-bench` command on your PATH: run `uv tool install --editable .` in the checkout
   (README, "Installing a `dns-bench` command"). `./dns-bench` still needs no install.
+- A **System** resolver: the DNS servers your computer is set up to use (from `scutil --dns` on
+  macOS, `/etc/resolv.conf` on Linux). A new config gets it automatically. After moving to another
+  network, `dns-bench config --detect`, or **Add system resolvers** in Settings, updates it.
+- `DNSBENCH_HOME=/some/dir` keeps `config.json` and `runs/` in that directory instead of the checkout.
+  `dns-bench serve` prints where both are when it starts, and the Settings tab shows them.
 
 ### Changed
+
+- `config.json` and `runs/` are created on first use and are git-ignored. A new config's defaults
+  no longer include "ISP", whose two addresses only worked on the original author's network (anyone
+  else saw it as unreachable); the System resolver takes its place. An existing `config.json` is
+  not changed.
+- Reading the config never creates or rewrites it. `dns-bench config` shows what a missing config
+  would start with, without writing it. The file is created by the first saved run, by
+  `dns-bench serve`, by saving or resetting Settings, or by `dns-bench config --reset` or `--detect`.
+- A non-editable install, which has no checkout to keep data in, stops with a message asking you to
+  set `DNSBENCH_HOME`.
+- The Settings estimate no longer compares the run time with the old `dns-test.sh`. The README's
+  new History section does.
 
 - Every enabled server is now measured at the same time. With more than 8 servers (the default
   config has 8, so enabling Quad9 makes 10), the rest used to wait for a second batch, so they were timed at a different time from the others and the results
