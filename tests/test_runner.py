@@ -283,6 +283,7 @@ class RunnerBehaviourTest(unittest.TestCase):
         self.assertRegex(run["started_at"], r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$")
         self.assertRegex(run["finished_at"], r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$")
         self.assertEqual(run["version"], __version__)
+        self.assertEqual((run["schema"], run["kind"]), (1, "run"))
         self.assertEqual(run["status"], "complete")
         self.assertIsInstance(run["duration_s"], float)
         self.assertTrue(run["host"])
@@ -301,9 +302,11 @@ class RunnerBehaviourTest(unittest.TestCase):
                 "error",
                 "t",
                 "attempts",
+                "truncated",
             },
         )
         self.assertEqual(r["attempts"], 1)
+        self.assertIs(r["truncated"], False)
         self.assertEqual(r["ms"], 0.123)  # rounded to 3 dp
         self.assertEqual(r["resolver"], "R0")
         self.assertGreaterEqual(r["t"], 0)
@@ -480,9 +483,26 @@ class RunnerBehaviourTest(unittest.TestCase):
         run = runner.run_benchmark(cfg, query_fn=FakeDNS(latency=0.0), progress=progress, cancel_event=cancel)
         self.assertEqual(run["status"], "complete")
 
+    def test_truncated_answers_are_recorded(self):
+        cfg = make_config(resolvers=1, servers_per=1, domains=1, interval_ms=50)
+
+        def tc(server, domain, record_type="A", timeout_s=1.0, tries=1):
+            return QueryResult("ok", ms=3.0, rcode="NOERROR", answers=0, attempts=1, truncated=True)
+
+        run = runner.run_benchmark(cfg, query_fn=tc)
+        self.assertIs(run["results"][0]["truncated"], True)
+
+    def test_prebuilt_jobs_are_measured_as_given(self):
+        cfg = make_config(resolvers=2, servers_per=1, domains=3, interval_ms=50)
+        jobs = runner.build_jobs(cfg)
+        jobs[0]["items"] = jobs[0]["items"][:1]  # whatever the caller planned is what runs
+        run = runner.run_benchmark(cfg, query_fn=FakeDNS(latency=0.0), jobs=jobs)
+        self.assertEqual(len(run["results"]), 1 + 3)
+
     def test_default_expected_wall_time(self):
         """Default settings: 60 domains x 250 ms per server => ~15-17 s, not 6.5 min."""
-        from dnsbench.config import default_config, estimate
+        from dnsbench.config import default_config
+        from dnsbench.service import estimate
 
         e = estimate(default_config())
         self.assertLess(e["est_seconds"], 20)

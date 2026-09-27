@@ -1,11 +1,18 @@
 from __future__ import annotations
 
 import unittest
+from pathlib import Path
 
 from dnsbench import recommend as RC
 from dnsbench import stats as S
 
 SETTINGS = {"timeout_ms": 1000}
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def notes(rec):
+    """The notes' text, as the report and the UI show them."""
+    return [n["text"] for n in rec["notes"]]
 
 
 def rows_for(resolver, server, latencies, timeouts=0, domain_prefix="d"):
@@ -93,7 +100,7 @@ class RecommendTest(unittest.TestCase):
         self.assertIn("8.8.8.8 (Mid) second", rec["summary"])
         self.assertIn("lowest median", rec["summary"])
         self.assertIn("no failures", rec["summary"])
-        self.assertTrue(any("steadier" in n for n in rec["notes"]))
+        self.assertTrue(any("steadier" in n for n in notes(rec)))
 
     def test_failures_penalised(self):
         # "Flaky" is faster when it answers but drops 10% of queries.
@@ -104,7 +111,7 @@ class RecommendTest(unittest.TestCase):
         self.assertEqual(rec["best"], "Solid")
         flaky = next(e for e in rec["ranking"] if e["resolver"] == "Flaky")
         self.assertAlmostEqual(flaky["failure_rate"], 0.1)
-        self.assertTrue(any("Flaky" in n and "failed" in n for n in rec["notes"]))
+        self.assertTrue(any("Flaky" in n and "failed" in n for n in notes(rec)))
 
     def test_tie_detection(self):
         s = summary(
@@ -115,7 +122,7 @@ class RecommendTest(unittest.TestCase):
         rec = RC.recommend(s, SETTINGS)
         self.assertEqual(rec["best"], "A")
         self.assertEqual(rec["tied_with"], ["B"])  # within max(2 ms, 10 %)
-        self.assertTrue(any("within noise" in n for n in rec["notes"]))
+        self.assertTrue(any("within noise" in n for n in notes(rec)))
 
     def test_tie_relative_margin(self):
         # best score 100 -> margin 10; 109 is tied, 111 is not
@@ -143,8 +150,8 @@ class RecommendTest(unittest.TestCase):
     def test_low_sample_note(self):
         s = summary(rows_for("A", "1.1.1.1", [10] * 5), rows_for("B", "8.8.8.8", [20] * 40))
         rec = RC.recommend(s, SETTINGS)
-        self.assertTrue(any("A" in n and "low sample size" in n for n in rec["notes"]))
-        self.assertFalse(any(n.startswith("B:") and "low sample" in n for n in rec["notes"]))
+        self.assertTrue(any("A" in n and "low sample size" in n for n in notes(rec)))
+        self.assertFalse(any(n.startswith("B:") and "low sample" in n for n in notes(rec)))
 
     def test_single_resolver(self):
         s = summary(rows_for("Only", "1.1.1.1", [10] * 40), rows_for("Only", "1.0.0.1", [12] * 40))
@@ -152,13 +159,13 @@ class RecommendTest(unittest.TestCase):
         self.assertEqual(rec["best"], "Only")
         self.assertIsNone(rec["backup"])
         self.assertEqual(rec["suggested_servers"], ["1.1.1.1", "1.0.0.1"])
-        self.assertTrue(any("same provider" in n for n in rec["notes"]))
+        self.assertTrue(any("same provider" in n for n in notes(rec)))
 
     def test_resolver_with_no_answers_excluded(self):
         s = summary(rows_for("Dead", "10.0.0.1", [], timeouts=20), rows_for("Live", "1.1.1.1", [9] * 40))
         rec = RC.recommend(s, SETTINGS)
         self.assertEqual([e["resolver"] for e in rec["ranking"]], ["Live"])
-        self.assertTrue(any("Dead" in n and "no successful answers" in n for n in rec["notes"]))
+        self.assertTrue(any("Dead" in n and "no successful answers" in n for n in notes(rec)))
 
     def test_no_ok_samples(self):
         s = summary(rows_for("A", "1.1.1.1", [], timeouts=5), rows_for("B", "8.8.8.8", [], timeouts=5))
@@ -229,7 +236,7 @@ class ServerChoiceTest(unittest.TestCase):
         rec = RC.recommend(s, SETTINGS)
         self.assertEqual(rec["suggested_servers"], ["8.8.8.8", "1.1.1.1"])
         # the note names the IP that failed, not just the provider
-        self.assertTrue(any("1.0.0.1" in n and "prefer 1.1.1.1" in n for n in rec["notes"]), rec["notes"])
+        self.assertTrue(any("1.0.0.1" in n and "prefer 1.1.1.1" in n for n in notes(rec)), rec["notes"])
 
     def test_flaky_primary_of_best_resolver(self):
         # ISP still wins overall, but its flaky IP must not be the primary
@@ -252,7 +259,7 @@ class ServerChoiceTest(unittest.TestCase):
         rec = RC.recommend(s, SETTINGS)
         self.assertEqual(rec["ranking"][0]["fastest_server"], "1.1.1.1")
         self.assertTrue(
-            any("within noise of each other" in n and "1.0.0.1" in n for n in rec["notes"]), rec["notes"]
+            any("within noise of each other" in n and "1.0.0.1" in n for n in notes(rec)), rec["notes"]
         )
 
     def test_tied_server_with_more_failures_not_first(self):
@@ -275,11 +282,11 @@ class DeadServerTest(unittest.TestCase):
         cf = rec["ranking"][0]
         self.assertEqual(cf["score"], 4.0)
         self.assertEqual(cf["failure_rate"], 0.5)  # resolver-level numbers unchanged
-        self.assertTrue(any("2606:4700:4700::1111" in n and "never answered" in n for n in rec["notes"]))
+        self.assertTrue(any("2606:4700:4700::1111" in n and "never answered" in n for n in notes(rec)))
         self.assertNotIn("50%", rec["summary"])
         self.assertIn("not counting 2606:4700:4700::1111", rec["summary"])
         # instant errors are not described as costing a timeout
-        self.assertFalse(any("Cloudflare" in n and "timeout" in n for n in rec["notes"]), rec["notes"])
+        self.assertFalse(any("Cloudflare" in n and "timeout" in n for n in notes(rec)), rec["notes"])
 
     def test_dead_sibling_does_not_bury_fastest_server(self):
         s = summary(
@@ -291,7 +298,7 @@ class DeadServerTest(unittest.TestCase):
         rec = RC.recommend(s, SETTINGS)
         self.assertEqual(rec["best"], "Cloudflare")
         self.assertEqual(rec["suggested_servers"][0], "1.1.1.1")
-        self.assertTrue(any("1.0.0.1" in n and "never answered" in n for n in rec["notes"]))
+        self.assertTrue(any("1.0.0.1" in n and "never answered" in n for n in notes(rec)))
 
     def test_error_only_failures_note_does_not_claim_timeouts(self):
         s = summary(
@@ -299,7 +306,7 @@ class DeadServerTest(unittest.TestCase):
             rows_for("B", "8.8.8.8", [500] * 100),
         )
         rec = RC.recommend(s, SETTINGS)
-        note = next(n for n in rec["notes"] if n.startswith("A:") and "failed" in n)
+        note = next(n for n in notes(rec) if n.startswith("A:") and "failed" in n)
         self.assertNotIn("timeout", note)
 
 
@@ -313,7 +320,7 @@ class RetryTest(unittest.TestCase):
         self.assertEqual(rec["best"], "Clean")
         lossy = next(e for e in rec["ranking"] if e["resolver"] == "Lossy")
         self.assertEqual(lossy["retry_rate"], 1.0)
-        self.assertTrue(any("Lossy" in n and "retry" in n for n in rec["notes"]))
+        self.assertTrue(any("Lossy" in n and "retry" in n for n in notes(rec)))
         self.assertIn("no failures", rec["summary"])  # about Clean
 
     def test_retrying_sibling_not_put_first(self):
@@ -327,7 +334,7 @@ class RetryTest(unittest.TestCase):
         self.assertEqual(a["fastest_server"], "1.0.0.1")
         self.assertEqual(rec["suggested_servers"], ["8.8.8.8", "1.0.0.1"])
         self.assertTrue(
-            any("1.1.1.1 needed a retry for 100% of its queries" in n for n in rec["notes"]), rec["notes"]
+            any("1.1.1.1 needed a retry for 100% of its queries" in n for n in notes(rec)), rec["notes"]
         )
 
     def test_summary_mentions_retries_of_best(self):
@@ -352,7 +359,7 @@ class RedundancyTest(unittest.TestCase):
         self.assertEqual(rec["backup"], "Google")
         self.assertEqual(rec["suggested_servers"], ["192.0.2.53", "8.8.8.8"])
         self.assertNotIn("ISP", rec["tied_with"])
-        self.assertTrue(any("share server IPs" in n and "ISP" in n for n in rec["notes"]))
+        self.assertTrue(any("share server IPs" in n and "ISP" in n for n in notes(rec)))
 
     def test_only_alias_left_gives_distinct_ips(self):
         s = summary(
@@ -364,15 +371,15 @@ class RedundancyTest(unittest.TestCase):
         rec = RC.recommend(s, SETTINGS)
         self.assertIsNone(rec["backup"])
         self.assertEqual(rec["suggested_servers"], ["192.0.2.53", "192.0.2.54"])
-        self.assertFalse(any("Only one resolver" in n for n in rec["notes"]))
-        self.assertTrue(any("shares servers with Telstra" in n for n in rec["notes"]))
+        self.assertFalse(any("Only one resolver" in n for n in notes(rec)))
+        self.assertTrue(any("shares servers with Telstra" in n for n in notes(rec)))
 
     def test_single_resolver_single_server(self):
         s = summary(rows_for("ISP", "192.0.2.53", [10] * 60))
         rec = RC.recommend(s, SETTINGS)
         self.assertEqual(rec["suggested_servers"], ["192.0.2.53"])
-        self.assertFalse(any("both suggested servers" in n for n in rec["notes"]))
-        self.assertTrue(any("no secondary server" in n for n in rec["notes"]))
+        self.assertFalse(any("both suggested servers" in n for n in notes(rec)))
+        self.assertTrue(any("no secondary server" in n for n in notes(rec)))
 
     def test_only_resolver_tested_wording(self):
         s = summary(rows_for("Quad9", "9.9.9.9", [9.7] * 40), rows_for("Quad9", "149.112.112.112", [12] * 40))
@@ -380,25 +387,25 @@ class RedundancyTest(unittest.TestCase):
         self.assertIn("the only resolver tested", rec["summary"])
         self.assertNotIn("answered", rec["summary"])
         self.assertTrue(
-            any(n.startswith("Only one resolver was tested") and "same provider" in n for n in rec["notes"])
+            any(n.startswith("Only one resolver was tested") and "same provider" in n for n in notes(rec))
         )
 
     def test_only_resolver_answered_wording(self):
         s = summary(rows_for("Dead", "10.0.0.1", [], timeouts=20), rows_for("Live", "1.1.1.1", [9] * 40))
         rec = RC.recommend(s, SETTINGS)
         self.assertIn("the only resolver that answered", rec["summary"])
-        self.assertTrue(any(n.startswith("Only one resolver answered") for n in rec["notes"]))
+        self.assertTrue(any(n.startswith("Only one resolver answered") for n in notes(rec)))
 
 
 class CombinedRunsNoteTest(unittest.TestCase):
     def test_aggregate_note_is_not_self_referential(self):
         s = summary(rows_for("A", "1.1.1.1", [10] * 40), rows_for("B", "8.8.8.8", [20] * 40))
-        notes = RC.recommend(s, SETTINGS, n_runs=3)["notes"]
-        self.assertTrue(any("3 runs" in n and "steadier" in n for n in notes))
-        self.assertFalse(any("report all" in n for n in notes))
+        texts = notes(RC.recommend(s, SETTINGS, n_runs=3))
+        self.assertTrue(any("3 runs" in n and "steadier" in n for n in texts))
+        self.assertFalse(any("report all" in n for n in texts))
         for n_runs in (None, 1):
-            notes = RC.recommend(s, SETTINGS, n_runs=n_runs)["notes"]
-            self.assertTrue(any("report all" in n for n in notes))
+            texts = notes(RC.recommend(s, SETTINGS, n_runs=n_runs))
+            self.assertTrue(any("report all" in n for n in texts))
 
 
 class LowSampleNoteTest(unittest.TestCase):
@@ -409,7 +416,7 @@ class LowSampleNoteTest(unittest.TestCase):
             rows_for("C", "9.9.9.9", [30] * 12),
             rows_for("D", "4.4.4.4", [40] * 40),
         )
-        low = [n for n in RC.recommend(s, SETTINGS)["notes"] if "low sample size" in n]
+        low = [n for n in notes(RC.recommend(s, SETTINGS)) if "low sample size" in n]
         self.assertEqual(
             low,
             [
@@ -418,7 +425,7 @@ class LowSampleNoteTest(unittest.TestCase):
             ],
         )
         s = summary(rows_for("A", "1.1.1.1", [10] * 20), rows_for("B", "8.8.8.8", [20] * 20))
-        low = [n for n in RC.recommend(s, SETTINGS)["notes"] if "low sample size" in n]
+        low = [n for n in notes(RC.recommend(s, SETTINGS)) if "low sample size" in n]
         self.assertEqual(
             low,
             [
@@ -446,9 +453,9 @@ class CurrentResolversTest(unittest.TestCase):
         self.assertEqual(rec["suggested_servers"], ["1.1.1.1", "1.0.0.1"])
         self.assertIn("the only current resolver that answered", rec["summary"])
         self.assertTrue(
-            any(n.startswith("Old was measured in only 1 of 4 combined runs") for n in rec["notes"])
+            any(n.startswith("Old was measured in only 1 of 4 combined runs") for n in notes(rec))
         )
-        self.assertTrue(any(n.startswith("No other current resolver answered") for n in rec["notes"]))
+        self.assertTrue(any(n.startswith("No other current resolver answered") for n in notes(rec)))
 
     def test_current_wording_only_when_a_stale_resolver_did_better(self):
         s = summary(
@@ -474,6 +481,51 @@ class CurrentResolversTest(unittest.TestCase):
         s = summary(rows_for("Old", "9.9.9.9", [2.0] * 40), rows_for("Gone", "8.8.8.8", [9.0] * 40))
         rec = RC.recommend(s, SETTINGS, current={"Missing"})
         self.assertEqual((rec["best"], rec["backup"]), ("Old", "Gone"))
+
+
+class StructureTest(unittest.TestCase):
+    """rank -> choose -> explain, and the notes' codes."""
+
+    def test_notes_have_a_code_params_and_text(self):
+        s = summary(
+            rows_for("A", "1.1.1.1", [10] * 20, timeouts=2),
+            rows_for("A", "1.0.0.1", [], timeouts=5),
+            rows_for("B", "8.8.8.8", [11] * 20),
+            rows_for("Dead", "9.9.9.9", [], timeouts=3),
+        )
+        rec = RC.recommend(s, SETTINGS)
+        codes = [n["code"] for n in rec["notes"]]
+        self.assertEqual(
+            codes, ["no_answers", "server_never_answered", "failure_rate", "low_samples", "one_time"]
+        )
+        for n in rec["notes"]:
+            self.assertEqual(set(n), {"code", "params", "text"})
+            self.assertIsInstance(n["params"], dict)
+        dead = rec["notes"][1]
+        self.assertEqual(dead["params"], {"resolver": "A", "server": "1.0.0.1", "failed": 5, "n": 5})
+
+    def test_rank_and_choose(self):
+        s = summary(rows_for("Slow", "8.8.8.8", [30] * 40), rows_for("Fast", "1.1.1.1", [10] * 40))
+        ranking, no_answers = RC.rank(s, 1000.0)
+        self.assertEqual([r.name for r in ranking], ["Fast", "Slow"])
+        self.assertEqual([r.entry["rank"] for r in ranking], [1, 2])
+        self.assertEqual(no_answers, [])
+        choice = RC.choose(ranking)
+        self.assertEqual((choice.best.name, choice.backup.name if choice.backup else None), ("Fast", "Slow"))
+        self.assertEqual(choice.suggested, ["1.1.1.1", "8.8.8.8"])
+        choice = RC.choose(ranking, current=["Slow"])  # only Slow may be recommended now
+        self.assertEqual(choice.best.name, "Slow")
+        self.assertEqual([r.name for r in choice.stale], ["Fast"])
+
+    def test_the_formula_is_stated_once(self):
+        self.assertEqual(
+            RC.SCORE_FORMULA,
+            "score = 0.5 × median + 0.3 × p95 + 0.2 × mean + failure_rate × timeout_ms × 2 "  # noqa: RUF001 - as in the README
+            "+ retry_rate × timeout_ms",  # noqa: RUF001 - as above
+        )
+        self.assertTrue(
+            RC.SCORE_FORMULA in (ROOT / "README.md").read_text(encoding="utf-8"), "README's formula"
+        )
 
 
 if __name__ == "__main__":

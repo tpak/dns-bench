@@ -33,9 +33,29 @@ packages = ["dnsbench"] # includes dnsbench/web/, the UI's static files
 [tool.hatch.build.targets.sdist]
 include = ["/dnsbench", "/tests", "/dns-bench", "/README.md", "/CHANGELOG.md", "/LICENSE"]
 
-# mypy runs from pre-commit (.pre-commit-config.yaml), so CI checks it too. Lenient for now: default
-# settings, which skip the bodies of unannotated functions. REMEDIATION_PLAN.md Phase 6 tightens it.
+# mypy runs from pre-commit (.pre-commit-config.yaml), so CI checks it too. The core modules must be
+# fully annotated and are checked strictly; the front ends (cli, server) and the tests use the default,
+# more lenient settings, which skip the bodies of unannotated functions.
 [tool.mypy]
 python_version = "3.13"
 files = ["dnsbench", "tests"]
 warn_unused_ignores = true
+
+[[tool.mypy.overrides]]
+module = [
+    "dnsbench.analysis",
+    "dnsbench.config",
+    "dnsbench.models",
+    "dnsbench.paths",
+    "dnsbench.recommend",
+    "dnsbench.report",
+    "dnsbench.service",
+    "dnsbench.stats",
+    "dnsbench.storage",
+    "dnsbench.sysdns",
+]
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+check_untyped_defs = true
+disallow_any_generics = true
+warn_return_any = true

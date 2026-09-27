@@ -16,7 +16,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from dnsbench import __version__, cli, paths, resolver, storage, sysdns
+from dnsbench import __version__, analysis, cli, paths, resolver, service, storage, sysdns
 from dnsbench import config as C
 from dnsbench.resolver import QueryResult
 
@@ -76,6 +76,9 @@ class CliTest(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
+    def saved_runs(self):
+        return analysis.Analysis(storage.RunRepository(self.runs)).list_runs()
+
     def cli(self, *args):
         out, err = io.StringIO(), io.StringIO()
         with (
@@ -95,7 +98,7 @@ class CliTest(unittest.TestCase):
         self.assertIn("[slow] Slow 192.0.2.2", err)
         self.assertIn("[fail] Slow 192.0.2.2 c.example -> timeout", err)
         self.assertIn("progress:", err)  # not a TTY -> periodic lines
-        rows = storage.list_runs(self.runs)
+        rows = self.saved_runs()
         self.assertEqual(len(rows), 1)
         self.assertEqual(self.fake.calls, 6)
 
@@ -180,7 +183,7 @@ class CliTest(unittest.TestCase):
         self.assertEqual(code, 130, err)
         self.assertIn("Cancelling", err)
         self.assertIn("CANCELLED", out)
-        rows = storage.list_runs(self.runs)
+        rows = self.saved_runs()
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["status"], "cancelled")
         self.assertLess(rows[0]["n_queries"], 60)
@@ -200,7 +203,7 @@ class CliTest(unittest.TestCase):
         self.assertIn("STOPPED BY AN ERROR", out)
         self.assertIn("stopped early after an internal error (ValueError", err)
         self.assertIn("and were saved", err)
-        self.assertEqual([r["status"] for r in storage.list_runs(self.runs)], ["partial"])
+        self.assertEqual([r["status"] for r in self.saved_runs()], ["partial"])
 
     def test_sigterm_saves_partial_run_like_ctrl_c(self):
         def terminate(n):
@@ -216,7 +219,7 @@ class CliTest(unittest.TestCase):
         self.assertEqual(code, cli.EXIT_INTERRUPTED, err)
         self.assertIn("Cancelling", err)
         self.assertIn("CANCELLED", out)
-        self.assertEqual([r["status"] for r in storage.list_runs(self.runs)], ["cancelled"])
+        self.assertEqual([r["status"] for r in self.saved_runs()], ["cancelled"])
         self.assertEqual({sig: signal.getsignal(sig) for sig in before}, before)
 
     def test_second_ctrl_c_saves_without_waiting_for_queries_in_flight(self):
@@ -238,7 +241,7 @@ class CliTest(unittest.TestCase):
         self.assertEqual(code, cli.EXIT_INTERRUPTED, err)
         self.assertIn("Press Ctrl-C again to save it now", err)
         self.assertIn("CANCELLED", out)
-        rows = storage.list_runs(self.runs)
+        rows = self.saved_runs()
         self.assertEqual([r["status"] for r in rows], ["cancelled"])
         self.assertLess(rows[0]["n_queries"], 60)
 
@@ -284,20 +287,20 @@ class CliTest(unittest.TestCase):
         )
         self.assertLess(time.monotonic() - t0, 5, "the process waited for the stuck query")
         self.assertEqual(p.returncode, cli.EXIT_INTERRUPTED, p.stderr)
-        self.assertEqual([r["status"] for r in storage.list_runs(self.runs)], ["cancelled"])
+        self.assertEqual([r["status"] for r in self.saved_runs()], ["cancelled"])
 
     def test_signals_during_the_save_are_ignored(self):
-        real_save = storage.save_run_safely
+        real_persist = service.BenchmarkService.persist
 
-        def save(run, runs_dir):
+        def persist(self, run):
             os.kill(os.getpid(), signal.SIGINT)  # Ctrl-C just as the run is being saved
             os.kill(os.getpid(), signal.SIGTERM)
-            return real_save(run, runs_dir)
+            return real_persist(self, run)
 
-        with mock.patch.object(storage, "save_run_safely", save):
+        with mock.patch.object(service.BenchmarkService, "persist", persist):
             code, _, err = self.cli("run")
         self.assertEqual(code, cli.EXIT_OK, err)
-        self.assertEqual([r["status"] for r in storage.list_runs(self.runs)], ["complete"])
+        self.assertEqual([r["status"] for r in self.saved_runs()], ["complete"])
 
     def test_report_errors(self):
         self.assertEqual(self.cli("report")[0], 1)  # no runs yet
@@ -362,7 +365,8 @@ class CliTest(unittest.TestCase):
         self.assertEqual(code, 0, err)
         self.assertIn(f"Created {self.cfg} with the default resolvers. System: 192.0.2.53", err)
         self.assertEqual(C.load_config(self.cfg), C.initial_config(lambda: HOME_NET)[0])
-        run = storage.load_run(storage.latest_run_id(self.runs), self.runs)
+        runs = analysis.Analysis(storage.RunRepository(self.runs))
+        run = runs.load(runs.latest_id())
         self.assertIn("System", [r["name"] for r in run["config"]["resolvers"]])
 
     @mock.patch.dict(C.DEFAULT_CONFIG, {"domains": ["a.example", "b.example"]})
@@ -480,7 +484,9 @@ class CliTest(unittest.TestCase):
         rescue_dir = Path(self.tmp.name) / "rescue"
         rescue_dir.mkdir()
         with (
-            mock.patch.object(storage, "save_run", side_effect=OSError(28, "No space left on device")),
+            mock.patch.object(
+                storage.RunRepository, "save", side_effect=OSError(28, "No space left on device")
+            ),
             mock.patch.object(tempfile, "tempdir", str(rescue_dir)),
         ):
             code, out, err = self.cli("run")
@@ -499,7 +505,7 @@ class CliTest(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("nothing to recommend", out)
         self.assertIn("no resolver returned any successful answers", err)
-        self.assertEqual(len(storage.list_runs(self.runs)), 1)
+        self.assertEqual(len(self.saved_runs()), 1)
         code, out, _ = self.cli("run", "--json", "--no-save", "--quiet")
         self.assertEqual(code, 1)
         self.assertEqual(json.loads(out)["summary"]["overall"]["ok"], 0)

@@ -60,6 +60,18 @@ release notes.
   `{"config", "errors", "estimate"}` instead of the bare config. `GET /api/defaults` is gone:
   `GET /api/schema` has the defaults.
 - `dns-bench` reports a config file that isn't valid JSON as `<file>: not valid JSON: ...`.
+- Saved runs are analysed afresh every time they are loaded, so a single run, "All runs combined"
+  and `dns-bench report` always use the same, current analysis. A single run used to show the
+  summary and recommendation stored when it was measured, while "All runs combined" used the
+  current code. For existing runs nothing changes yet: today's analysis is the one that stored
+  them. A run's `.txt` report still shows the verdict of the day it was measured. The web UI's
+  footer shows the analysis version.
+- New run files carry `"schema": 1` and `"kind": "run"`, and each result records whether the answer
+  was truncated (`truncated`, also a new column in the CSV download). Files from earlier versions
+  load as before.
+- Web API (breaking for scripts that use it): a recommendation's notes are
+  `{"code", "params", "text"}` objects instead of strings.
+- The text report states the score formula in the same words as the README.
 
 - Every enabled server is now measured at the same time. With more than 8 servers (the default
   config has 8, so enabling Quad9 makes 10), the rest used to wait for a second batch, so they were timed at a different time from the others and the results
@@ -76,6 +88,9 @@ release notes.
 
 ### Fixed
 
+- A run file that can't be used (not valid JSON, nested absurdly deep, or not shaped like a run) is
+  reported as unreadable, with the reason, on every Python version. Such problems used to surface as
+  "No runs saved yet" or "run not found", or as a crash.
 - A benchmark started from the web UI is no longer lost when it can't be saved (a full disk, or the
   runs folder became unwritable). As with `dns-bench run`, the full record is written to the
   system's temp folder instead, and the UI's error message says where. The UI also checks that the

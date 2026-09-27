@@ -2160,13 +2160,16 @@
     );
   }
 
+  /** A recommendation's notes: {code, params, text}. The server writes the text; this only shows it. */
   function notesList(notes) {
-    const list = (Array.isArray(notes) ? notes : []).filter(Boolean);
+    const list = (Array.isArray(notes) ? notes : []).filter((n) => n && typeof n.text === 'string');
     if (!list.length) return null;
     return h(
       'ul',
       { class: 'notes' },
-      list.map((n) => h('li', null, icon('info', 14), h('span', null, String(n)))),
+      list.map((n) =>
+        h('li', { dataset: { code: String(n.code) } }, icon('info', 14), h('span', null, n.text)),
+      ),
     );
   }
 
@@ -4460,6 +4463,8 @@
     ]);
     if (schemaR.status === 'fulfilled' && schemaR.value) {
       state.schema = schemaR.value;
+      // Every run is analysed afresh with the server's current analysis; say which one.
+      els.footer.textContent = `DNS Bench ${state.schema.version} · analysis v${state.schema.analysis_version} · queries are rate-limited per server so public resolvers are never flooded.`;
       const rounds = settingSchema('rounds');
       if (rounds) {
         els.rounds.min = String(rounds.min);
@@ -4502,6 +4507,7 @@
     els.estimate = document.getElementById('run-estimate');
     els.tooltip = document.getElementById('tooltip');
     els.toasts = document.getElementById('toasts');
+    els.footer = document.getElementById('page-footer');
     try {
       const fam = getComputedStyle(document.body).fontFamily;
       if (fam) FONT = fam;

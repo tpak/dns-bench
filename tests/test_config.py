@@ -551,24 +551,6 @@ class LoadSaveTest(unittest.TestCase):
         self.assertEqual(cfg, C.default_config())
         self.assertIsNone(system.resolver)
 
-    def test_estimate(self):
-        e = C.estimate(C.default_config())
-        self.assertEqual(e["servers"], 6)
-        self.assertEqual(e["queries"], 360)
-        self.assertEqual(e["max_qps_per_server"], 4.0)
-        self.assertEqual(e["max_qps_total"], 24.0)
-        self.assertTrue(14 <= e["est_seconds"] <= 20, e)
-        # More servers: all measured at once, so no extra time (the old estimate added a batch per 8)
-        many = C.default_config()
-        many["resolvers"] = [
-            {"name": f"R{i}", "servers": [f"192.0.2.{2 * i + 1}", f"192.0.2.{2 * i + 2}"], "enabled": True}
-            for i in range(6)
-        ]
-        e12 = C.estimate(many)
-        self.assertEqual(e12["servers"], 12)
-        self.assertEqual(e12["est_seconds"], e["est_seconds"])
-        self.assertEqual(e12["max_qps_total"], 48.0)
-
 
 class StructuredErrorsTest(unittest.TestCase):
     def test_each_error_says_where_and_what(self):
@@ -649,7 +631,7 @@ class StructuredErrorsTest(unittest.TestCase):
         self.assertTrue(cm.exception.messages[0].startswith(f"{path}: not valid JSON: "))
 
 
-class SchemaAndEstimateTest(unittest.TestCase):
+class SchemaTest(unittest.TestCase):
     def test_setting_schema_matches_the_rules(self):
         schema = {s["key"]: s for s in C.setting_schema()}
         self.assertEqual(list(schema), list(C.DEFAULT_SETTINGS))
@@ -660,46 +642,6 @@ class SchemaAndEstimateTest(unittest.TestCase):
         self.assertEqual(schema["shuffle"], {"key": "shuffle", "type": "bool", "default": True})
         self.assertEqual(schema["timeout_ms"]["unit"], "ms")
         self.assertEqual(schema["rounds"]["unit"], "")
-
-    def test_estimate_of_a_draft_never_raises(self):
-        # Settings shows an estimate while the user types: junk counts as the default.
-        draft = {
-            "resolvers": [
-                {"name": "A", "servers": "192.0.2.1, 192.0.2.2"},
-                "junk",
-                {"name": "B", "enabled": False},
-            ],
-            "domains": "a.com b.com\nc.com",
-            "settings": {"rounds": "", "per_server_interval_ms": "10", "timeout_ms": None},
-        }
-        e = C.estimate(draft)
-        self.assertEqual((e["resolvers"], e["servers"], e["domains"], e["rounds"]), (1, 2, 3, 1))
-        self.assertEqual(e["queries"], 6)
-        self.assertEqual(e["max_qps_per_server"], 20.0)  # 10 ms is below the runner's 50 ms floor
-        for junk in (None, [], "x", {"resolvers": 5, "domains": {}, "settings": []}):
-            with self.subTest(junk=junk):
-                self.assertEqual(C.estimate(junk)["queries"], 0)
-
-    def test_estimate_clamps_out_of_bounds_values(self):
-        # A hand-edited config can hold any integer; 10**400 overflowed float arithmetic (GET /api/config
-        # answered 500 instead of showing the config and its errors).
-        for key, (_lo, hi) in C.SETTING_BOUNDS.items():
-            with self.subTest(key=key):
-                c = cfg()
-                c["settings"][key] = 10**400
-                e = C.estimate(c)
-                self.assertEqual(e["rounds"], hi if key == "rounds" else 1)
-        c = cfg()
-        c["settings"]["rounds"] = 12  # typing past the limit: the estimate stays at the limit
-        self.assertEqual(C.estimate(c)["rounds"], 10)
-
-    def test_estimate_rounds_override_and_worst_case(self):
-        c = cfg()
-        c["settings"].update(tries=2, timeout_ms=1000, per_server_interval_ms=250)
-        e = C.estimate(c, rounds=3)
-        self.assertEqual((e["rounds"], e["queries_per_server"]), (3, 180))
-        self.assertEqual(e["est_seconds"], round(180 * 0.25 * 1.05, 1))
-        self.assertEqual(e["worst_seconds"], 180 * 2 * 1.0)  # every attempt times out after 1 s
 
     def test_duplicate_domains(self):
         self.assertEqual(C.duplicate_domains({"domains": "a.com A.com. b.com\n\n a.com"}), 2)

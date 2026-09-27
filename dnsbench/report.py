@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import UTC, datetime
+from typing import Any
 
 from .config import DEFAULT_SETTINGS
+from .recommend import SCORE_FORMULA
 
 
 def printable(text: str) -> str:
@@ -19,25 +22,26 @@ def printable(text: str) -> str:
     )
 
 
-def _f(x, nd=1) -> str:
+def _f(x: float | None, nd: int = 1) -> str:
     return "-" if x is None else f"{x:.{nd}f}"
 
 
-def _pct(rate) -> str:
+def _pct(rate: float | None) -> str:
     return "-" if rate is None else f"{rate * 100:.1f}%"
 
 
-def _local_time(iso: str | None) -> str:
+def local_time(iso: str | None, fmt: str = "%Y-%m-%d %H:%M:%S %Z") -> str:
+    """A run's UTC timestamp (``2026-09-25T02:34:56Z``) in this computer's time zone; "?" if missing."""
     if not iso:
         return "?"
     try:
         dt = datetime.strptime(iso, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC)
     except ValueError:
         return iso
-    return dt.astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
+    return dt.astimezone().strftime(fmt)
 
 
-def stats_line(name: str, st: dict) -> str:
+def stats_line(name: str, st: Mapping[str, Any]) -> str:
     """One line per resolver, in the style of the original script."""
     line = (
         f"{name}: mean={_f(st.get('mean'))} median={_f(st.get('median'))} "
@@ -50,10 +54,11 @@ def stats_line(name: str, st: dict) -> str:
     return line
 
 
-def _table(headers: list[str], rows: list[list[str]], right: set[int]) -> list[str]:
+def table(headers: list[str], rows: list[list[str]], right: set[int]) -> list[str]:
+    """Aligned text columns: the header, a rule, then the rows. Columns in ``right`` align right."""
     widths = [max(len(h), *(len(r[i]) for r in rows)) if rows else len(h) for i, h in enumerate(headers)]
 
-    def fmt(cells):
+    def fmt(cells: list[str]) -> str:
         return "  ".join(
             c.rjust(w) if i in right else c.ljust(w)
             for i, (c, w) in enumerate(zip(cells, widths, strict=True))
@@ -64,7 +69,7 @@ def _table(headers: list[str], rows: list[list[str]], right: set[int]) -> list[s
     return out
 
 
-def render_text(bundle: dict) -> str:
+def render_text(bundle: Mapping[str, Any]) -> str:
     """Render a run record, or an aggregate bundle {run_ids, summary, recommendation, config}."""
     summary = bundle.get("summary") or {}
     rec = bundle.get("recommendation") or {}
@@ -87,7 +92,7 @@ def render_text(bundle: dict) -> str:
         lines.append(f"DNS Bench run {bundle.get('id', '?')}" + flags.get(status, ""))
         if status == "partial" and bundle.get("error"):
             lines.append(f"Error:     {printable(str(bundle['error']))}")
-        lines.append(f"Started:   {_local_time(bundle.get('started_at'))}")
+        lines.append(f"Started:   {local_time(bundle.get('started_at'))}")
         lines.append(f"Duration:  {_f(bundle.get('duration_s'))} s on {bundle.get('host', '?')}")
     lines.append(
         f"Queries:   {overall.get('n', 0)} ({overall.get('ok', 0)} ok, "
@@ -126,15 +131,12 @@ def render_text(bundle: dict) -> str:
             srv_rows = [r[:5] for r in srv_rows]
         lines.append("")
         lines.append("Per server (ms):")
-        lines += ["  " + ln for ln in _table(headers, srv_rows, right={2, 3, 4, 5})]
+        lines += ["  " + ln for ln in table(headers, srv_rows, right={2, 3, 4, 5})]
 
     ranking = rec.get("ranking") or []
     if ranking:
         lines.append("")
-        lines.append(
-            "Ranking (score = 0.5·median + 0.3·p95 + 0.2·mean + failures·timeout·2 "
-            "+ retries·timeout; lower is better):"
-        )
+        lines.append(f"Ranking ({SCORE_FORMULA}; lower is better):")
         rows = [
             [
                 str(e["rank"]),
@@ -151,7 +153,7 @@ def render_text(bundle: dict) -> str:
         ]
         lines += [
             "  " + ln
-            for ln in _table(
+            for ln in table(
                 ["#", "Resolver", "Score", "Median", "p95", "Mean", "Fail", "OK/N", "Best server"],
                 rows,
                 right={0, 2, 3, 4, 5, 6, 7},
@@ -171,5 +173,5 @@ def render_text(bundle: dict) -> str:
         lines.append("")
         lines.append("Recommendation: " + rec["summary"])
     for note in rec.get("notes") or []:
-        lines.append("  - " + note)
+        lines.append("  - " + note["text"])
     return printable("\n".join(lines)) + "\n"
