@@ -16,7 +16,7 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from dnsbench import cli, resolver, storage  # noqa: E402
+from dnsbench import __version__, cli, resolver, storage  # noqa: E402
 from dnsbench import config as C  # noqa: E402
 from dnsbench.resolver import QueryResult  # noqa: E402
 
@@ -289,6 +289,10 @@ class CliTest(unittest.TestCase):
 
 
 class WrapperTest(unittest.TestCase):
+    def test_version_is_major_minor_patch(self):
+        # release.yml runs only for vX.Y.Z tags, and only when the tag is "v" + __version__
+        self.assertRegex(__version__, r"^[0-9]+\.[0-9]+\.[0-9]+$")
+
     def test_wrapper_from_other_cwd_and_symlink(self):
         wrapper = ROOT / "dns-bench"
         self.assertTrue(os.access(wrapper, os.X_OK), "dns-bench must be executable")
@@ -301,7 +305,7 @@ class WrapperTest(unittest.TestCase):
                         [str(exe), "--version"], cwd=tmp, capture_output=True, text=True, timeout=30
                     )
                     self.assertEqual(p.returncode, 0, p.stderr)
-                    self.assertIn("dns-bench 1.0.0", p.stdout)
+                    self.assertIn(f"dns-bench {__version__}", p.stdout)
                     self.assertEqual(p.stderr, "")
             p = subprocess.run(
                 [str(link), "config", "--path"], cwd=tmp, capture_output=True, text=True, timeout=30
