@@ -14,7 +14,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from dnsbench import __version__, recommend, storage, sysdns
+from dnsbench import __version__, recommend, service, storage, sysdns
 from dnsbench import config as C
 from dnsbench import server as SV
 from dnsbench.resolver import QueryResult
@@ -442,7 +442,7 @@ class ConfigApiTest(ServerTestBase):
         self.assertEqual(set(data), {"config", "errors", "estimate"})
         self.assertEqual(data["config"], C.normalize_config(small_config()))
         self.assertEqual(data["errors"], [])
-        self.assertEqual(data["estimate"], C.estimate(small_config()))
+        self.assertEqual(data["estimate"], service.estimate(small_config()))
         self.assertEqual(data["estimate"]["queries"], 6)  # 2 enabled servers x 3 domains
 
     def test_put_valid_config_normalises_and_saves(self):
@@ -728,6 +728,7 @@ class RunsApiTest(ServerTestBase):
                 "error",
                 "t",
                 "attempts",
+                "truncated",
             ],
         )
         self.assertEqual(len(rows), 7)
@@ -776,7 +777,7 @@ class RunsApiTest(ServerTestBase):
     def test_unwritable_runs_dir_is_refused_before_any_query(self):
         blocker = Path(self.tmp.name) / "not-a-dir"
         blocker.write_text("x")
-        self.srv.runs_dir = blocker / "runs"
+        self.srv.service.repo = storage.RunRepository(blocker / "runs")
         status, data = self.jreq("POST", "/api/run")
         self.assertEqual(status, 500, data)
         self.assertEqual(data["error"], "Cannot save runs")
@@ -790,7 +791,9 @@ class RunsApiTest(ServerTestBase):
         rescue_dir = Path(self.tmp.name) / "rescue"
         rescue_dir.mkdir()
         with (
-            mock.patch.object(storage, "save_run", side_effect=OSError(28, "No space left on device")),
+            mock.patch.object(
+                storage.RunRepository, "save", side_effect=OSError(28, "No space left on device")
+            ),
             mock.patch.object(tempfile, "tempdir", str(rescue_dir)),
         ):
             _, st = self.run_job()
@@ -808,7 +811,7 @@ class RunsApiTest(ServerTestBase):
     def test_job_state_is_reset_whatever_happens(self):
         # SystemExit gets past `except Exception` (and the default thread excepthook ignores it): the
         # job must still end, or the UI would show a benchmark running forever and refuse new ones.
-        with mock.patch.object(storage, "save_run", side_effect=SystemExit):
+        with mock.patch.object(storage.RunRepository, "save", side_effect=SystemExit):
             _, st = self.run_job()
         self.assertFalse(st["running"])
         self.assertEqual(self.jreq("POST", "/api/run")[0], 202)  # a new run can start
@@ -834,7 +837,7 @@ class RunsApiTest(ServerTestBase):
                 return {"status": "ok", "ms": "garbage"}
             return QueryResult("ok", ms=4.0, rcode="NOERROR", answers=1)
 
-        self.srv.query_fn = broken
+        self.srv.service.query_fn = broken
         _, st = self.run_job()
         self.assertEqual(st["last_status"], "partial")
         self.assertIn("stopped early after an internal error (ValueError", st["error"])
@@ -870,48 +873,14 @@ class RunsApiTest(ServerTestBase):
         self.assertEqual(run["status"], "cancelled")  # partial run still saved
         self.assertEqual(self.jreq("POST", "/api/run/cancel")[0], 409)
 
-    def test_stop_job_waits_for_an_in_flight_query(self):
-        # A query can't be interrupted, so the shutdown wait must cover a whole
-        # timeout (not a fixed 5 s) or the partial run is lost.
-        srv = self.srv
-        thread = mock.Mock()
-        thread.is_alive.return_value = False
-        with srv.job.lock:
-            srv.job.running = True
-            srv.job.cancel_event = threading.Event()
-            srv.job.thread = thread
-            srv.job.timeout_s = 8.0
-        self.assertTrue(srv.stop_job())
-        thread.join.assert_called_once_with(11.0)
-        self.assertTrue(srv.job.cancel_event.is_set())
-        srv.job.cancel_event.clear()
-        srv.job.timeout_s = 1.0
-        thread.join.reset_mock()
-        srv.stop_job()
-        thread.join.assert_called_once_with(5.0)  # never less than before
-        with srv.job.lock:
-            srv.job.running = False
-
-    def test_stop_job_saves_partial_run(self):
-        cfg = small_config(domains=20)
-        cfg["settings"]["timeout_ms"] = 400
+    def test_stop_job_saves_the_partial_run(self):
+        # JobManagerTest covers the waiting; this checks the server hands its job to it.
+        cfg = small_config(domains=40)
         C.save_config(cfg, self.cfg_path)
-
-        def blocking(server, domain, record_type="A", timeout_s=1.0, tries=1):
-            self.fake.calls += 1
-            if server == "192.0.2.2":
-                time.sleep(timeout_s)  # unresponsive server: blocks the full timeout
-                return QueryResult("timeout", error="timeout", attempts=1)
-            return QueryResult("ok", ms=4.0, rcode="NOERROR", answers=1, attempts=1)
-
-        self.srv.query_fn = blocking
         self.assertEqual(self.jreq("POST", "/api/run")[0], 202)
-        self.assertEqual(self.srv.job.timeout_s, 0.4)
-        time.sleep(0.15)
+        time.sleep(0.1)
         self.assertTrue(self.srv.stop_job())
-        self.assertFalse(self.srv.job.running)
-        rows = storage.list_runs(self.runs_dir)
-        self.assertEqual([r["status"] for r in rows], ["cancelled"])
+        self.assertEqual([r["status"] for r in self.srv.service.analysis.list_runs()], ["cancelled"])
 
     def test_recent_capped(self):
         C.save_config(small_config(domains=15, interval_ms=50), self.cfg_path)
@@ -943,7 +912,7 @@ class RunsApiTest(ServerTestBase):
         cfg = small_config()
         cfg["resolvers"][0]["name"] = "=HYPERLINK(1)"
         run = runner.run_benchmark(cfg, query_fn=self.fake)
-        storage.save_run(run, self.runs_dir)
+        self.srv.service.persist(run)
         status, _, body = self.req("GET", f"/api/runs/{run['id']}/csv")
         self.assertEqual(status, 200)
         rows = list(csv.reader(io.StringIO(body.decode())))
@@ -985,7 +954,7 @@ class AggregateCurrentConfigTest(ServerTestBase):
             for d in cfg["domains"]
         ]
         started = f"{run_id[:4]}-{run_id[4:6]}-{run_id[6:8]}T00:00:00Z"
-        storage.save_run(
+        self.srv.service.persist(
             {
                 "id": run_id,
                 "started_at": started,
@@ -995,8 +964,7 @@ class AggregateCurrentConfigTest(ServerTestBase):
                 "status": "complete",
                 "config": cfg,
                 "results": results,
-            },
-            self.runs_dir,
+            }
         )
 
     def test_resolver_only_in_old_runs_is_not_recommended(self):
@@ -1082,7 +1050,7 @@ class SchemaAndDraftApiTest(ServerTestBase):
 
     def test_estimate(self):
         status, est = self.jreq("POST", "/api/estimate", {})
-        self.assertEqual((status, est), (200, C.estimate(small_config())))
+        self.assertEqual((status, est), (200, service.estimate(small_config())))
         status, est = self.jreq("POST", "/api/estimate", {"rounds": 3})
         self.assertEqual((est["rounds"], est["queries"]), (3, 18))
         other = {"resolvers": [{"name": "X", "servers": ["192.0.2.7"]}], "domains": ["a.com"]}

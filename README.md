@@ -213,9 +213,11 @@ reported separately as `failure_rate`.
 Each resolver with at least one answer then gets a score, where lower is better:
 
 ```
-score = 0.5 × median + 0.3 × p95 + 0.2 × mean
-        + failure_rate × timeout_ms × 2 + retry_rate × timeout_ms
+score = 0.5 × median + 0.3 × p95 + 0.2 × mean + failure_rate × timeout_ms × 2 + retry_rate × timeout_ms
 ```
+
+(The text report states the same formula; both come from `recommend.SCORE_FORMULA`, and a test keeps
+this line in step with it.)
 
 * The **median** measures typical speed and gets the most weight.
 * The **p95** rewards consistency, because a resolver with occasional slow answers is annoying.
@@ -264,10 +266,18 @@ the Settings tab shows them.
 Every run is saved in `runs/` and is **never deleted or overwritten** by the tool. Each run
 produces two files:
 
-* `runs/<id>.json` – the full record: a config snapshot, every raw query result, the summary
-  statistics and the recommendation. `<id>` is the UTC start time, e.g. `20260925T023456Z`.
-  A `-2`, `-3`, … suffix is added if two runs start in the same second.
-* `runs/<id>.txt` – the same text report that `run` prints.
+* `runs/<id>.json` – the full record: a config snapshot and every raw query result. `<id>` is
+  the UTC start time, e.g. `20260925T023456Z`. A `-2`, `-3`, … suffix is added if two runs start
+  in the same second.
+* `runs/<id>.txt` – the text report that `run` printed at the time.
+
+The summary statistics and the recommendation are worked out from the raw results **every time a
+run is loaded**, so every view (a single run, all runs combined, `dns-bench report`) uses the
+current analysis, whatever version measured the run. The web UI's footer shows which analysis
+version that is. The `.json` file also holds the summary and recommendation as they were when the
+run was saved, for other tools, but dns-bench never reads them back. The `.txt` report is a
+snapshot too: it keeps the verdict from the day of the run, while `dns-bench report <id>` prints
+the same report with today's analysis. Run files from older versions load unchanged.
 
 Raw results can also be downloaded as CSV from the History tab, or from
 `/api/runs/<id>/csv`.
@@ -282,7 +292,7 @@ Raw results can also be downloaded as CSV from the History tab, or from
 | `POST /api/estimate` (`{"rounds": N, "config": {...}}`, both optional) | What a run costs: queries, expected and worst-case seconds, load per server and in total. Without `config`, of the saved config. |
 | `GET /api/schema` | The rules: the defaults, each setting's type and bounds, the limits, the presets, the scoring constants and the error codes. The web UI builds its forms from this instead of keeping its own copy. |
 | `GET /api/info` | The version, and where the config file (and whether it exists yet) and the runs folder are. |
-| `GET /api/runs` · `GET /api/runs/<id>` · `GET /api/runs/<id>/csv` | List runs, get one run in full, or download its raw results as CSV. |
+| `GET /api/runs` · `GET /api/runs/<id>` · `GET /api/runs/<id>/csv` | List runs, get one run in full (with its summary and recommendation, freshly analysed, and `analysis_version`), or download its raw results as CSV. |
 | `GET /api/aggregate?runs=all` or `?runs=id1,id2` | Merged summary and recommendation for several runs, plus `coverage` (how many of the runs measured each resolver). |
 | `POST /api/run` (`{"rounds": N}` optional) · `GET /api/status` · `POST /api/run/cancel` | Start a background benchmark, poll its progress, or cancel it. |
 
@@ -291,6 +301,10 @@ Errors come back as `{"error": "...", "details": [...]}` with a matching HTTP st
 `domains[3]`, `settings.rounds`, or `""` for the whole config or request), `code` what kind it is
 (`GET /api/schema` lists the config ones), and `message` is the sentence the command line prints.
 Messages never include a file's absolute path. The request body limit is 1 MB.
+
+A recommendation's notes are `{"code", "params", "text"}` too: `code` and `params` say what a note
+is about (for example `failure_rate` with the resolver and the rate), and `text` is the sentence to
+show.
 
 ## Project layout
 
@@ -308,16 +322,20 @@ dnsbench/
   paths.py           where config.json and runs/ are (checkout, DNSBENCH_HOME, flags)
   config.py          defaults, validation, load / save
   sysdns.py          finds this computer's own resolvers (the System entry)
+  models.py          the shapes of run records, summaries and recommendations (TypedDicts)
   resolver.py        pure-Python UDP DNS client (random ID, ID/source checks, IPv4+IPv6)
   runner.py          rate-limited concurrent scheduler
+  service.py         one path for a run: prepare, measure, save (CLI and web UI), the UI's job
+  storage.py         reads and writes run files, and brings old ones up to date (migrate)
+  analysis.py        summaries and recommendations, recomputed from the raw results; aggregates
   stats.py           nearest-rank stats; summaries by resolver / server / domain
-  recommend.py       scoring + recommendation text
-  storage.py         save / list / load / aggregate runs
+  recommend.py       scoring: rank, choose, explain
   report.py          text report
-  server.py          HTTP server, JSON API, background job
-  cli.py             command line
+  server.py          HTTP server and JSON API (a thin layer over service.py)
+  cli.py             command line (a thin layer over service.py)
   web/               the UI (plain HTML/CSS/JS, hand-drawn SVG charts)
 tests/               unittest suite, one test_<module>.py per module (test_web.py for web/)
+  samples.py         sample runs several test modules share
   fixtures/          sanitized run files written by older versions (see its README)
 ruff.toml            Python lint and format settings
 biome.json           JS, CSS and JSON lint and format settings
@@ -367,11 +385,14 @@ pre-commit install
 | Type-check only | `pre-commit run mypy --all-files` |
 | Update the pinned tool versions | `pre-commit autoupdate` |
 | Make `git blame` skip the one-off reformat commit | `git config blame.ignoreRevsFile .git-blame-ignore-revs` |
-| Run one test module, or one test | `uv run python -m unittest tests/test_config.py`, `uv run python -m unittest tests.test_cli.CliTest.test_config_commands` |
+| Run one test module, or the tests whose name matches | `uv run python -m unittest discover -s tests -p test_config.py`, `uv run python -m unittest discover -s tests -k test_config_commands` |
 | Try the UI on sample data, away from your own | `DNSBENCH_HOME=$(mktemp -d) ./dns-bench serve --runs-dir tests/fixtures/runs-v1` |
 
-Settings live in `ruff.toml`, `biome.json` and `pyproject.toml` (`[tool.mypy]`). mypy runs with
-its default, lenient settings for now: it skips the bodies of functions without type annotations.
+Settings live in `ruff.toml`, `biome.json` and `pyproject.toml` (`[tool.mypy]`). mypy checks the
+core modules strictly (every function annotated, generics spelled out): config, stats, recommend,
+report, models, storage, analysis, service, paths and sysdns. The front ends (cli, server), the
+runner, the resolver and the tests use its lenient defaults, which skip the bodies of functions
+without annotations.
 
 ### Continuous integration
 

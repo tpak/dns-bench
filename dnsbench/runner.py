@@ -27,9 +27,11 @@ import socket
 import threading
 import time
 from datetime import UTC, datetime
+from typing import cast
 
 from . import __version__, resolver
 from .config import DEFAULT_SETTINGS, MIN_INTERVAL_MS, normalize_server, server_key
+from .models import RUN_SCHEMA, RunRecord
 
 JITTER = 0.10  # up to +10 % on top of the interval, never negative
 _WAIT_SLICE_S = 0.05  # cancel responsiveness while waiting for the next slot
@@ -79,7 +81,9 @@ def _field(res, name, default=None):
     return getattr(res, name, default)
 
 
-def _utc_iso(dt: datetime) -> str:
+def utc_iso(dt: datetime | None = None) -> str:
+    """``dt`` (default: now) as the timestamps runs use: ``2026-09-25T02:34:56Z``."""
+    dt = dt or datetime.now(UTC)
     return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
@@ -92,8 +96,12 @@ def run_benchmark(
     clock=time.monotonic,
     sleep=time.sleep,
     rng: random.Random | None = None,
-) -> dict:
+    jobs: list[dict] | None = None,
+) -> RunRecord:
     """Run the benchmark described by ``config`` and return the run record.
+
+    ``jobs`` are ``build_jobs(config)``'s, when the caller has built them already (to show their
+    total before the run starts); by default they are built here.
 
     ``query_fn(server, domain, record_type=..., timeout_s=..., tries=1)`` must
     return a ``resolver.QueryResult`` (or a dict with the same fields).
@@ -125,7 +133,8 @@ def run_benchmark(
     snapshot = copy.deepcopy(config)
     snapshot["settings"] = dict(settings)
 
-    jobs = build_jobs(config, rng)
+    if jobs is None:
+        jobs = build_jobs(config, rng)
     total = sum(len(j["items"]) for j in jobs)
     results: list[dict] = []
     lock = threading.Lock()  # guards results and state
@@ -193,6 +202,7 @@ def run_benchmark(
                 # >1 means earlier attempts timed out: each cost the user a full
                 # timeout even if the retry answered (ms is the retry's RTT).
                 "attempts": attempts,
+                "truncated": bool(_field(res, "truncated", False)),
             }
             with lock:
                 if state["closed"]:  # the caller stopped waiting (a second Ctrl-C): nothing more to report
@@ -233,11 +243,13 @@ def run_benchmark(
     duration = clock() - t0
     cancelled = (cancel_event.is_set() or interrupted) and len(results) < total
     results.sort(key=lambda r: r["t"])
-    record = {
+    record: dict = {
+        "schema": RUN_SCHEMA,
+        "kind": "run",
         "id": started_wall.strftime("%Y%m%dT%H%M%SZ"),
         "version": __version__,
-        "started_at": _utc_iso(started_wall),
-        "finished_at": _utc_iso(finished_wall),
+        "started_at": utc_iso(started_wall),
+        "finished_at": utc_iso(finished_wall),
         "duration_s": round(duration, 2),
         "host": socket.gethostname(),
         "status": "partial" if state["crash"] else "cancelled" if cancelled else "complete",
@@ -246,4 +258,4 @@ def run_benchmark(
     }
     if state["crash"]:
         record["error"] = state["crash"]
-    return record
+    return cast(RunRecord, record)

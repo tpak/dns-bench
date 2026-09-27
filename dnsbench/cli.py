@@ -11,11 +11,12 @@ import signal
 import sys
 import threading
 import time
-from datetime import UTC, datetime
 from pathlib import Path
 
-from . import __version__, paths, report, runner, storage, sysdns
+from . import __version__, analysis, paths, report, storage, sysdns
 from . import config as config_mod
+from . import service as service_mod
+from .models import ProgressEvent, RunRecord
 
 EXIT_OK, EXIT_ERROR, EXIT_USAGE, EXIT_INTERRUPTED = 0, 1, 2, 130
 
@@ -49,7 +50,7 @@ class Progress:
         self._last_line = self.t0
         self._drawn = False
 
-    def __call__(self, event: dict) -> None:
+    def __call__(self, event: ProgressEvent) -> None:
         row = event["result"]
         self.done = event["done"]
         self.total = event["total"]
@@ -58,8 +59,8 @@ class Progress:
             self.failed += 1
             if row["status"] == "timeout":
                 why = "timeout"
-            elif row.get("rcode"):
-                why = row["rcode"] + (f" ({row['ms']:.1f}ms)" if row.get("ms") is not None else "")
+            elif row["rcode"]:
+                why = row["rcode"] + (f" ({row['ms']:.1f}ms)" if row["ms"] is not None else "")
             else:
                 why = f"error: {row.get('error')}"
             self._emit(f"  [fail] {where} -> {why}")
@@ -115,45 +116,27 @@ class Progress:
 # --------------------------------------------------------------------------- #
 
 
-def _apply_run_overrides(cfg: dict, args) -> list[str]:
-    s = cfg["settings"]
-    if args.rounds is not None:
-        s["rounds"] = args.rounds
-    if args.interval_ms is not None:
-        s["per_server_interval_ms"] = args.interval_ms
-    if args.timeout_ms is not None:
-        s["timeout_ms"] = args.timeout_ms
-    if args.resolvers:
-        wanted = [w.strip() for w in args.resolvers.split(",") if w.strip()]
-        by_name = {r["name"].casefold(): r for r in cfg["resolvers"]}
-        unknown = [w for w in wanted if w.casefold() not in by_name]
-        if unknown:
-            names = ", ".join(r["name"] for r in cfg["resolvers"])
-            return [f"unknown resolver(s): {', '.join(unknown)} (configured: {names})"]
-        keep = {w.casefold() for w in wanted}
-        for r in cfg["resolvers"]:
-            r["enabled"] = r["name"].casefold() in keep
-    return [str(e) for e in config_mod.validate_config(cfg)]
-
-
 def cmd_run(args) -> int:
-    if not args.no_save:  # --no-save writes nothing, so a missing config is used as loaded, not created
-        created = config_mod.ensure_config(args.config)
-        if created is not None and not args.quiet:
-            print(f"Created {args.config} with the default resolvers. {created.message}", file=sys.stderr)
-    cfg = config_mod.load_config(args.config)
-    errors = _apply_run_overrides(cfg, args)
-    if errors:
-        for e in errors:
-            _err(e)
+    service = service_mod.BenchmarkService(args.config, args.runs_dir)
+    overrides = service_mod.Overrides(
+        rounds=args.rounds,
+        interval_ms=args.interval_ms,
+        timeout_ms=args.timeout_ms,
+        resolvers=args.resolvers.split(",") if args.resolvers else None,
+    )
+    # --no-save writes nothing: a missing config is used as loaded, not created
+    try:
+        plan = service.prepare(overrides, save=not args.no_save)
+    except service_mod.InvalidRun as exc:  # the config is fine; this run's options aren't
+        for message in exc.messages:
+            _err(message)
         return EXIT_USAGE
-    if not args.no_save:
-        problem = storage.check_writable(args.runs_dir)
-        if problem:
-            _err(problem + " (use --runs-dir DIR, or --no-save)")
-            return EXIT_ERROR
-    cfg = config_mod.normalize_config(cfg)
-    est = config_mod.estimate(cfg)
+    except service_mod.RunsDirUnwritable as exc:
+        _err(f"{exc} (use --runs-dir DIR, or --no-save)")
+        return EXIT_ERROR
+    if plan.created is not None and not args.quiet:
+        print(f"Created {args.config} with the default resolvers. {plan.created.message}", file=sys.stderr)
+    cfg, est = plan.config, plan.estimate
     s = cfg["settings"]
     names = [r["name"] for r in config_mod.enabled_resolvers(cfg)]
     if not args.quiet:
@@ -171,7 +154,7 @@ def cmd_run(args) -> int:
             file=sys.stderr,
         )
 
-    progress = Progress(est["queries"], s["slow_threshold_ms"], quiet=args.quiet)
+    progress = Progress(plan.total, s["slow_threshold_ms"], quiet=args.quiet)
     cancel = threading.Event()
     stop_waiting = threading.Event()
     signals = {"count": 0, "measuring": True}
@@ -198,24 +181,24 @@ def cmd_run(args) -> int:
     previous = {sig: signal.signal(sig, on_signal) for sig in (signal.SIGINT, signal.SIGTERM)}
     try:
         try:
-            run = runner.run_benchmark(cfg, progress=progress, cancel_event=cancel, stop_waiting=stop_waiting)
+            run = service.execute(plan, progress=progress, cancel_event=cancel, stop_waiting=stop_waiting)
         finally:
             signals["measuring"] = False
             progress.finish()
-        return _finish_run(args, run, est)
+        return _finish_run(args, service, run, est)
     finally:
         for sig, handler in previous.items():
             if handler is not None:  # None: installed outside Python, can't be put back
                 signal.signal(sig, handler)
 
 
-def _finish_run(args, run: dict, est: dict) -> int:
+def _finish_run(args, service: service_mod.BenchmarkService, run: RunRecord, est: dict) -> int:
     """Save and report a finished (or stopped) run; returns the exit code."""
     saved = None
     if args.no_save:
-        storage.finalize_run(run)
+        analysis.finalize(run)
     else:
-        saved = storage.save_run_safely(run, args.runs_dir)
+        saved = service.persist(run)
 
     # The report goes out first, so the measurements are never lost.
     if args.json:
@@ -242,8 +225,7 @@ def _finish_run(args, run: dict, est: dict) -> int:
         return EXIT_ERROR
     if saved is not None and saved.error is not None:
         return EXIT_ERROR
-    overall = (run.get("summary") or {}).get("overall") or {}
-    if run.get("results") and not overall.get("ok"):
+    if run["results"] and not run["summary"]["overall"]["ok"]:  # finalize() or persist() added the summary
         _err(
             "no resolver returned any successful answers "
             "(check your network connection and that outbound UDP port 53 is allowed)"
@@ -284,18 +266,8 @@ def cmd_serve(args) -> int:
     return EXIT_OK
 
 
-def _local(iso: str | None) -> str:
-    if not iso:
-        return "?"
-    try:
-        dt = datetime.strptime(iso, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC)
-        return dt.astimezone().strftime("%Y-%m-%d %H:%M")
-    except ValueError:
-        return iso
-
-
 def cmd_list(args) -> int:
-    rows = storage.list_runs(args.runs_dir)
+    rows = analysis.Analysis(storage.RunRepository(args.runs_dir)).list_runs()
     if not rows:
         print(f"No runs saved yet in {args.runs_dir}. Start one with: dns-bench run")
         return EXIT_OK
@@ -304,7 +276,7 @@ def cmd_list(args) -> int:
         table.append(
             [
                 r["id"],
-                _local(r.get("started_at")),
+                report.local_time(r.get("started_at"), "%Y-%m-%d %H:%M"),
                 f"{r['duration_s']:.1f}s" if isinstance(r.get("duration_s"), (int, float)) else "-",
                 r.get("status") or "-",
                 str(r.get("n_queries", 0)),
@@ -314,52 +286,35 @@ def cmd_list(args) -> int:
             ]
         )
     headers = ["ID", "Started", "Duration", "Status", "Queries", "Resolvers", "Best", "Best median"]
-    widths = [max(len(h), *(len(row[i]) for row in table)) for i, h in enumerate(headers)]
-    right = {2, 4, 7}
-
-    def fmt(cells):
-        return "  ".join(
-            c.rjust(w) if i in right else c.ljust(w)
-            for i, (c, w) in enumerate(zip(cells, widths, strict=True))
-        ).rstrip()
-
-    print(fmt(headers))
-    print(fmt(["-" * w for w in widths]))
-    for row in table:
-        print(fmt(row))
+    print("\n".join(report.table(headers, table, right={2, 4, 7})))
     print(f"\n{len(rows)} run{'s' if len(rows) != 1 else ''} in {args.runs_dir}")
     return EXIT_OK
 
 
 def cmd_report(args) -> int:
+    """The report, recomputed with today's analysis (the saved .txt keeps the one made at run time)."""
+    runs = analysis.Analysis(storage.RunRepository(args.runs_dir))
     target = args.target
-    if target == "all":
-        try:
-            bundle = storage.aggregate(
-                args.runs_dir, "all", current=config_mod.current_resolver_names(args.config)
-            )
-        except KeyError:
-            _err(f"no runs saved yet in {args.runs_dir}")
-            return EXIT_ERROR
-        sys.stdout.write(report.render_text(bundle))
-        return EXIT_OK
-    if target == "latest":
-        run_id = storage.latest_run_id(args.runs_dir)
-        if run_id is None:
-            _err(f"no runs saved yet in {args.runs_dir}")
-            return EXIT_ERROR
-    else:
-        run_id = target
-        if not storage.valid_run_id(run_id):
-            _err(f"invalid run id {run_id!r} (expected e.g. 20260925T023456Z; see `dns-bench list`)")
-            return EXIT_USAGE
     try:
-        run = storage.load_run(run_id, args.runs_dir)
-    except KeyError:
-        _err(f"run {run_id} not found in {args.runs_dir}")
+        if target == "all":
+            bundle = runs.aggregate("all", current=config_mod.current_resolver_names(args.config))
+            sys.stdout.write(report.render_text(bundle))
+            return EXIT_OK
+        if target == "latest":
+            run_id = runs.latest_id()
+            if run_id is None:
+                raise storage.NoRuns
+        else:
+            run_id = target
+            if not storage.valid_run_id(run_id):
+                _err(f"invalid run id {run_id!r} (expected e.g. 20260925T023456Z; see `dns-bench list`)")
+                return EXIT_USAGE
+        run = runs.load(run_id)
+    except storage.NoRuns:
+        _err(f"no runs saved yet in {args.runs_dir}")
         return EXIT_ERROR
-    except storage.StorageError as exc:
-        _err(str(exc))
+    except storage.StorageError as exc:  # RunNotFound, CorruptRun
+        _err(f"{exc} (in {args.runs_dir})")
         return EXIT_ERROR
     sys.stdout.write(report.render_text(run))
     return EXIT_OK

@@ -19,12 +19,16 @@ import json
 import os
 import re
 import tempfile
-from collections.abc import Callable
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from . import sysdns
+
+# A config as JSON: {"resolvers": [...], "domains": [...], "settings": {...}}. Loaded ones may hold
+# anything a hand-edited file does, so values are Any until validate_config has passed them.
+Config = dict[str, Any]
 
 # Popular sites across several countries, in a fixed order (README "History" says where they came from).
 DEFAULT_DOMAINS = [
@@ -195,7 +199,11 @@ class ConfigError(Exception):
     one; ``messages`` are the errors as the CLI prints them, prefixed with it.
     """
 
-    def __init__(self, errors: str | ValidationError | list, file: str | os.PathLike[str] | None = None):
+    def __init__(
+        self,
+        errors: str | ValidationError | Sequence[str | ValidationError],
+        file: str | os.PathLike[str] | None = None,
+    ):
         items = [errors] if isinstance(errors, (str, ValidationError)) else list(errors)
         self.errors: list[ValidationError] = [
             e if isinstance(e, ValidationError) else ValidationError("", "invalid", str(e)) for e in items
@@ -226,14 +234,14 @@ PRESETS = [
 ]
 
 
-def default_config() -> dict:
+def default_config() -> Config:
     """Return a fresh deep copy of the default configuration."""
     return copy.deepcopy(DEFAULT_CONFIG)
 
 
-def setting_schema() -> list[dict]:
+def setting_schema() -> list[dict[str, Any]]:
     """Each setting's type, default and allowed values, in DEFAULT_SETTINGS order (for GET /api/schema)."""
-    out: list[dict] = []
+    out: list[dict[str, Any]] = []
     for key, default in DEFAULT_SETTINGS.items():
         if key in SETTING_BOUNDS:
             lo, hi = SETTING_BOUNDS[key]
@@ -259,7 +267,7 @@ def setting_schema() -> list[dict]:
 # --------------------------------------------------------------------------- #
 
 
-def normalize_domain(value) -> str:
+def normalize_domain(value: object) -> str:
     """strip, lowercase, drop trailing dot, IDNA-encode unicode names."""
     d = str(value).strip().lower().rstrip(".")
     # Encoding takes time in proportion to the input, which can be a whole request body. A name longer
@@ -270,7 +278,7 @@ def normalize_domain(value) -> str:
     return d
 
 
-def normalize_server(value) -> str:
+def normalize_server(value: object) -> str:
     """Canonicalise an IP literal (e.g. compress IPv6); leave junk untouched.
 
     IPv4-mapped IPv6 (``::ffff:1.2.3.4``) becomes plain IPv4: it reaches the
@@ -289,7 +297,7 @@ def normalize_server(value) -> str:
     return str(ip)
 
 
-def server_key(value) -> str | None:
+def server_key(value: object) -> str | None:
     """Identity of the host behind a server literal, for de-duplication.
 
     Different spellings of one address map to the same key: IPv6 compression,
@@ -316,7 +324,7 @@ def _host_key(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> str:
     return str(ip)
 
 
-def _as_list(value):
+def _as_list(value: object) -> object:
     if value is None:
         return []
     if isinstance(value, str):
@@ -326,7 +334,7 @@ def _as_list(value):
     return value  # wrong type: leave for validation to report
 
 
-def _coerce_int(value):
+def _coerce_int(value: object) -> object:
     """Turn integral floats / numeric strings into ints; leave anything else.
 
     Never raises: strings int() would reject ("--5", "²", 5000 digits) are
@@ -344,12 +352,12 @@ def _coerce_int(value):
     return value
 
 
-def _short_repr(value, limit: int = 40) -> str:
+def _short_repr(value: object, limit: int = 40) -> str:
     text = repr(value)
     return text if len(text) <= limit else text[: limit - 3] + "..."
 
 
-def _server_problem(ip) -> str | None:
+def _server_problem(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> str | None:
     """Why a syntactically valid IP can't be a DNS resolver (None if it can)."""
     if (
         ip.version == 6
@@ -371,7 +379,7 @@ def _server_problem(ip) -> str | None:
     return None
 
 
-def normalize_config(cfg) -> dict:
+def normalize_config(cfg: Mapping[str, Any]) -> Config:
     """Return a normalised copy of ``cfg`` (best effort, never raises).
 
     * resolvers: names stripped, servers split/stripped/canonicalised,
@@ -382,9 +390,7 @@ def normalize_config(cfg) -> dict:
       setting that no longer exists, like max_parallel_servers, just goes away).
     Values of the wrong type are passed through so validation can report them.
     """
-    if not isinstance(cfg, dict):
-        return cfg
-    out: dict[str, Any] = {}
+    out: Config = {}
 
     resolvers = cfg.get("resolvers")
     if isinstance(resolvers, list):
@@ -453,7 +459,7 @@ def duplicate_domains(cfg: object) -> int:
 # --------------------------------------------------------------------------- #
 
 
-def _hostname_error(domain) -> str | None:
+def _hostname_error(domain: object) -> str | None:
     if not isinstance(domain, str):
         return "must be a string"
     if not domain:
@@ -669,7 +675,7 @@ def _validate_settings(settings: object) -> list[ValidationError]:
     return errors
 
 
-def _validate_run_size(cfg: dict) -> list[ValidationError]:
+def _validate_run_size(cfg: Config) -> list[ValidationError]:
     """The run as a whole, when the numbers it depends on are usable."""
     resolvers, domains, settings = cfg.get("resolvers"), cfg.get("domains"), cfg.get("settings")
     rounds = settings.get("rounds") if isinstance(settings, dict) else None
@@ -751,7 +757,7 @@ def _atomic_write_text_raw(path: Path, text: str) -> None:
         raise
 
 
-def dumps_config(cfg: dict) -> str:
+def dumps_config(cfg: Config) -> str:
     return json.dumps(cfg, indent=2, ensure_ascii=False) + "\n"
 
 
@@ -798,7 +804,7 @@ Detect = Callable[[], sysdns.Detected]
 class SystemResolver:
     """What to do with this computer's resolvers, given the other resolvers in a config."""
 
-    resolver: dict | None  # the entry to add or update; None if there is nothing usable to add
+    resolver: dict[str, Any] | None  # the entry to add or update; None if there is nothing usable to add
     message: str  # one line for the user saying what was found and what happens
     detected: sysdns.Detected = field(default_factory=lambda: sysdns.Detected([]))
 
@@ -863,7 +869,7 @@ def system_resolver(resolvers: object, detected: sysdns.Detected) -> SystemResol
     return SystemResolver({"name": SYSTEM_NAME, "servers": keep, "enabled": True}, message, detected)
 
 
-def with_system_resolver(cfg: dict, entry: dict) -> dict:
+def with_system_resolver(cfg: Config, entry: Mapping[str, Any]) -> Config:
     """A copy of ``cfg`` whose "System" resolver has ``entry``'s servers (added at the end if missing).
 
     An existing entry keeps its name's spelling and its enabled flag: the user may have turned it off.
@@ -880,7 +886,7 @@ def with_system_resolver(cfg: dict, entry: dict) -> dict:
     return out
 
 
-def initial_config(detect: Detect | None = None) -> tuple[dict, SystemResolver]:
+def initial_config(detect: Detect | None = None) -> tuple[Config, SystemResolver]:
     """The config a new config.json starts with: the defaults plus this computer's own resolvers."""
     cfg = default_config()
     system = system_resolver(cfg["resolvers"], (detect or sysdns.detect)())
@@ -894,7 +900,7 @@ def initial_config(detect: Detect | None = None) -> tuple[dict, SystemResolver]:
 # --------------------------------------------------------------------------- #
 
 
-def load_config(path: str | os.PathLike[str], strict: bool = True, detect: Detect | None = None) -> dict:
+def load_config(path: str | os.PathLike[str], strict: bool = True, detect: Detect | None = None) -> Config:
     """Load, normalise and (if ``strict``) validate the config at ``path``. Never writes.
 
     A missing file loads as ``initial_config()``, without creating it. Invalid JSON raises
@@ -939,7 +945,7 @@ def ensure_config(path: str | os.PathLike[str], detect: Detect | None = None) ->
     return system
 
 
-def save_config(cfg: dict, path: str | os.PathLike[str]) -> dict:
+def save_config(cfg: Mapping[str, Any], path: str | os.PathLike[str]) -> Config:
     """Normalise + validate, then atomically write. Returns the saved config."""
     norm = normalize_config(cfg)
     errors = validate_config(norm)
@@ -949,14 +955,14 @@ def save_config(cfg: dict, path: str | os.PathLike[str]) -> dict:
     return norm
 
 
-def reset_config(path: str | os.PathLike[str], detect: Detect | None = None) -> tuple[dict, SystemResolver]:
+def reset_config(path: str | os.PathLike[str], detect: Detect | None = None) -> tuple[Config, SystemResolver]:
     """Overwrite the config at ``path`` with ``initial_config()``; returns it and what detection found."""
     cfg, system = initial_config(detect)
     _atomic_write_text(Path(path), dumps_config(cfg))
     return cfg, system
 
 
-def enabled_resolvers(cfg: dict) -> list[dict]:
+def enabled_resolvers(cfg: Config) -> list[dict[str, Any]]:
     return [r for r in cfg.get("resolvers", []) if r.get("enabled", True)]
 
 
@@ -981,58 +987,3 @@ def current_resolver_names(path: str | os.PathLike[str]) -> list[str] | None:
         for r in resolvers
         if isinstance(r, dict) and isinstance(r.get("name"), str) and r.get("enabled", True) is not False
     ]
-
-
-# Average and worst-case slack the runner adds to the interval (runner.JITTER is up to 10 %).
-_AVG_JITTER, _MAX_JITTER = 1.05, 1.10
-
-
-def estimate(cfg: object, rounds: int | None = None) -> dict:
-    """Rough cost of a run of ``cfg`` (with ``rounds`` instead of its own, if given). Never raises.
-
-    Works on any config, even an invalid draft: a setting that isn't a usable number counts as its
-    default, so the Settings page can show an estimate while the user is still typing.
-    ``est_seconds`` assumes every query is answered at once; ``worst_seconds`` assumes every attempt
-    times out.
-    """
-    cfg = normalize_config(cfg) if isinstance(cfg, dict) else {}
-    settings = cfg.get("settings")
-    raw = settings if isinstance(settings, dict) else {}
-
-    def setting(key: str) -> int:
-        # Clamped to the bounds: the estimate follows the typing smoothly, and a hand-edited 10**400
-        # can't overflow the float arithmetic below.
-        v = raw.get(key)
-        lo, hi = SETTING_BOUNDS[key]
-        return min(max(v, lo), hi) if type(v) is int and v > 0 else DEFAULT_SETTINGS[key]  # type: ignore[return-value] # the int defaults
-
-    resolvers = cfg.get("resolvers")
-    enabled = [
-        r
-        for r in (resolvers if isinstance(resolvers, list) else [])
-        if isinstance(r, dict) and r.get("enabled", True) is not False and isinstance(r.get("servers"), list)
-    ]
-    servers = sum(len(r["servers"]) for r in enabled)
-    domains = cfg.get("domains")
-    n_domains = len(domains) if isinstance(domains, list) else 0
-    n_rounds = rounds if rounds is not None else setting("rounds")
-    per_server = n_domains * n_rounds
-    interval_s = max(MIN_INTERVAL_MS, setting("per_server_interval_ms")) / 1000.0  # the runner's hard floor
-    timeout_s = setting("timeout_ms") / 1000.0
-    per_server_qps = 1.0 / interval_s
-    return {
-        "resolvers": len(enabled),
-        "servers": servers,
-        "domains": n_domains,
-        "rounds": n_rounds,
-        "queries": servers * per_server,
-        "queries_per_server": per_server,
-        # every server is measured at the same time, each at its own pace
-        "est_seconds": round(per_server * interval_s * _AVG_JITTER, 1) if servers else 0.0,
-        # each attempt waits for its slot and then, at worst, for the whole timeout
-        "worst_seconds": round(per_server * setting("tries") * max(interval_s * _MAX_JITTER, timeout_s), 1)
-        if servers
-        else 0.0,
-        "max_qps_per_server": round(per_server_qps, 2),
-        "max_qps_total": round(per_server_qps * servers, 2),
-    }

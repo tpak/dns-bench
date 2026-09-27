@@ -19,19 +19,18 @@ import socket
 import sys
 import threading
 import time
-from collections import deque
-from datetime import UTC, datetime
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from typing import Literal
 from urllib.parse import parse_qs, unquote, urlsplit
 
-from . import __version__, paths, recommend, runner, stats, storage, sysdns
+from . import __version__, analysis, paths, recommend, stats, storage, sysdns
 from . import config as config_mod
+from . import service as service_mod
 
 MAX_BODY = 1024 * 1024  # 1 MB request body cap
 _DRAIN_LIMIT = 8 * 1024 * 1024  # read (and discard) oversized bodies up to this so the 413 arrives
-RECENT_MAX = 20
 
 CONTENT_TYPES = {
     ".html": "text/html; charset=utf-8",
@@ -59,6 +58,7 @@ CSV_COLUMNS = [
     "error",
     "t",
     "attempts",
+    "truncated",
 ]
 
 LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "[::1]"}
@@ -139,6 +139,7 @@ def api_schema() -> dict:
             "low_sample": recommend.LOW_SAMPLE,
         },
         "slow": {"list_max": stats.SLOW_LIST_MAX, "per_resolver_max": stats.SLOW_PER_RESOLVER_MAX},
+        "analysis_version": analysis.ANALYSIS_VERSION,
     }
 
 
@@ -147,12 +148,8 @@ def _config_response(cfg: dict) -> dict:
     return {
         "config": cfg,
         "errors": [e.to_dict() for e in config_mod.validate_config(cfg)],
-        "estimate": config_mod.estimate(cfg),
+        "estimate": service_mod.estimate(cfg),
     }
-
-
-def _now_iso() -> str:
-    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _csv_safe(value):
@@ -162,29 +159,9 @@ def _csv_safe(value):
     return value
 
 
-class JobState:
-    def __init__(self) -> None:
-        self.lock = threading.Lock()
-        self.running = False
-        self.done = 0
-        self.total = 0
-        self.slow = 0
-        self.failed = 0
-        self.started_at: str | None = None
-        self.t_start: float | None = None
-        self.t_end: float | None = None
-        self.est_seconds: float | None = None
-        self.timeout_s: float | None = None  # per-query timeout of the running job
-        self.slow_threshold_ms = 200
-        self.last_run_id: str | None = None
-        self.last_status: str | None = None
-        self.error: str | None = None
-        self.recent: deque = deque(maxlen=RECENT_MAX)
-        self.cancel_event: threading.Event | None = None
-        self.thread: threading.Thread | None = None
-
-
 class DNSBenchServer(ThreadingHTTPServer):
+    """The HTTP front end. Runs, config and the background job belong to ``service`` and ``jobs``."""
+
     daemon_threads = True
     allow_reuse_address = True
 
@@ -201,168 +178,29 @@ class DNSBenchServer(ThreadingHTTPServer):
     ):
         if ":" in host:
             self.address_family = socket.AF_INET6
-        self.config_path = Path(config_path)
-        self.runs_dir = Path(runs_dir)
-        self.query_fn = query_fn
         self.detect_fn = detect_fn or sysdns.detect  # finds this computer's resolvers (a seam for tests)
+        self.service = service_mod.BenchmarkService(
+            config_path, runs_dir, query_fn=query_fn, detect_fn=self.detect_fn
+        )
+        self.jobs = service_mod.JobManager(self.service, log=self.log_line)
         self.web_dir = Path(web_dir) if web_dir else paths.WEB_DIR
         self.quiet = quiet
-        self.job = JobState()
-        self.config_lock = threading.Lock()
         super().__init__((host, port), Handler)
         self.allowed_hosts = set(LOOPBACK_HOSTS)
         if host not in ("", "0.0.0.0", "::"):
             self.allowed_hosts.add(f"[{host.lower()}]" if ":" in host else host.lower())
 
-    # -- background job ------------------------------------------------------
-    def start_job(self, rounds: int | None = None) -> int:
-        job = self.job
-        with job.lock:
-            if job.running:
-                raise HTTPError(409, "A benchmark is already running")
-            with self.config_lock:
-                try:
-                    # Usually created when serve started; this covers a config.json deleted since.
-                    config_mod.ensure_config(self.config_path, self.detect_fn)
-                    cfg = config_mod.load_config(self.config_path, strict=True)
-                except config_mod.ConfigWriteError as exc:  # disk problem, not bad input
-                    raise HTTPError(500, "Cannot save config", exc.errors) from None
-                except config_mod.ConfigError as exc:
-                    raise HTTPError(400, "Invalid config", exc.errors) from None
-            if rounds is not None:
-                cfg["settings"]["rounds"] = rounds
-                errors = config_mod.validate_config(cfg)  # more rounds can take a run past its limits
-                if errors:
-                    raise HTTPError(400, "Invalid run settings", errors)
-            # Before any DNS traffic, like the CLI: a run that can't be saved isn't worth measuring.
-            problem = storage.check_writable(self.runs_dir)
-            if problem:
-                why = problem.removeprefix(f"cannot write to {self.runs_dir}: ")  # the UI shows the path
-                raise HTTPError(
-                    500,
-                    "Cannot save runs",
-                    [_problem("runs_dir_unwritable", f"cannot write to the runs folder: {why}")],
-                )
-            est = config_mod.estimate(cfg)
-            total = sum(len(j["items"]) for j in runner.build_jobs(cfg))
-            job.running = True
-            job.done = 0
-            job.total = total
-            job.slow = 0
-            job.failed = 0
-            job.error = None
-            job.recent.clear()
-            job.started_at = _now_iso()
-            job.t_start = time.monotonic()
-            job.t_end = None
-            job.est_seconds = est["est_seconds"]
-            job.timeout_s = cfg["settings"]["timeout_ms"] / 1000.0
-            job.slow_threshold_ms = cfg["settings"]["slow_threshold_ms"]
-            job.cancel_event = threading.Event()
-            job.thread = threading.Thread(
-                target=self._job_main, args=(cfg, job.cancel_event), name="dnsbench-job", daemon=True
-            )
-            job.thread.start()
-        return total
+    @property
+    def config_path(self) -> Path:
+        return self.service.config_path
 
-    def _on_progress(self, event: dict) -> None:
-        row = event["result"]
-        job = self.job
-        with job.lock:
-            job.done = event["done"]
-            job.total = event["total"]
-            job.recent.append(row)
-            if row["status"] != "ok":
-                job.failed += 1
-            elif row["ms"] is not None and row["ms"] > job.slow_threshold_ms:
-                job.slow += 1
-
-    def _job_main(self, cfg: dict, cancel_event: threading.Event) -> None:
-        run_id = None
-        status = None
-        error = None
-        try:
-            run = runner.run_benchmark(
-                cfg, query_fn=self.query_fn, progress=self._on_progress, cancel_event=cancel_event
-            )
-            status = run["status"]
-            if status == "partial":
-                error = f"the benchmark stopped early after an internal error ({run.get('error')})"
-                self.log_line(error)
-            saved = storage.save_run_safely(run, self.runs_dir)
-            if saved.path is not None:
-                run_id = run["id"]
-            if saved.error is not None:
-                problem = saved.error
-                if saved.rescued is not None:
-                    problem += f"; the full run record was written to {saved.rescued} instead"
-                self.log_line(problem)
-                error = f"{error}; {problem}" if error else problem
-            elif error:
-                error += f"; the {len(run['results'])} queries measured before it were saved"
-        except Exception as exc:  # the job's own thread: report the failure, never take the server down
-            error = f"{type(exc).__name__}: {exc}"
-            self.log_line(f"benchmark failed: {error}")
-        finally:  # whatever happened, the job is over: never leave the UI showing a run that isn't going
-            with self.job.lock:
-                self.job.running = False
-                self.job.t_end = time.monotonic()
-                if run_id:
-                    self.job.last_run_id = run_id
-                self.job.last_status = status
-                self.job.error = error
-
-    def cancel_job(self) -> bool:
-        with self.job.lock:
-            if not self.job.running or self.job.cancel_event is None:
-                return False
-            self.job.cancel_event.set()
-            return True
-
-    def status(self) -> dict:
-        job = self.job
-        with job.lock:
-            now = time.monotonic()
-            if job.t_start is None:  # noqa: SIM108 - a nested conditional expression would be harder to read
-                elapsed = 0.0
-            else:
-                elapsed = (now if job.running else (job.t_end or now)) - job.t_start
-            eta = None
-            if job.running:
-                if job.done > 0:
-                    eta = elapsed * (job.total - job.done) / job.done
-                elif job.est_seconds is not None:
-                    eta = max(0.0, job.est_seconds - elapsed)
-            return {
-                "running": job.running,
-                "done": job.done,
-                "total": job.total,
-                "elapsed_s": round(elapsed, 2),
-                "eta_s": None if eta is None else round(eta, 1),
-                "started_at": job.started_at,
-                "last_run_id": job.last_run_id,
-                "last_status": job.last_status,
-                "error": job.error,
-                "slow": job.slow,
-                "failed": job.failed,
-                "recent": list(job.recent),
-            }
+    @property
+    def runs_dir(self) -> Path:
+        return self.service.runs_dir
 
     def stop_job(self, wait_s: float | None = None) -> bool:
-        """Cancel a running job and wait for it to save the partial run.
-
-        A query already in flight can't be interrupted, so by default this
-        waits for up to one full query timeout plus a margin for writing the
-        files (at least 5 s). Returns False if the job is still running.
-        """
-        if self.cancel_job():
-            t = self.job.thread
-            if t is not None:
-                if wait_s is None:
-                    wait_s = max(5.0, (self.job.timeout_s or 0.0) + 3.0)
-                t.join(wait_s)
-                return not t.is_alive()
-        return True
+        """Cancel a running benchmark and wait for its partial run to be saved (see JobManager.stop)."""
+        return self.jobs.stop(wait_s)
 
     def log_line(self, msg: str) -> None:
         if not self.quiet:
@@ -638,7 +476,7 @@ class Handler(BaseHTTPRequestHandler):
 
     # -- config --------------------------------------------------------------
     def h_get_config(self):
-        with self.server.config_lock:
+        with self.server.service.config_lock:
             try:
                 cfg = config_mod.load_config(
                     self.server.config_path, strict=False, detect=self.server.detect_fn
@@ -651,7 +489,7 @@ class Handler(BaseHTTPRequestHandler):
         body = self._read_json(required=True)
         if not isinstance(body, dict):
             raise HTTPError(400, "Invalid config", config_mod.validate_config(body))
-        with self.server.config_lock:
+        with self.server.service.config_lock:
             try:
                 saved = config_mod.save_config(body, self.server.config_path)
             except config_mod.ConfigWriteError as exc:  # disk problem, not bad input
@@ -662,7 +500,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def h_reset_config(self):
         self._read_json(required=False)
-        with self.server.config_lock:
+        with self.server.service.config_lock:
             try:
                 cfg, _ = config_mod.reset_config(self.server.config_path, self.server.detect_fn)
             except config_mod.ConfigWriteError as exc:
@@ -690,14 +528,14 @@ class Handler(BaseHTTPRequestHandler):
         rounds = _rounds_param(body)
         cfg = body.get("config")
         if cfg is None:
-            with self.server.config_lock:
+            with self.server.service.config_lock:
                 try:
                     cfg = config_mod.load_config(
                         self.server.config_path, strict=False, detect=self.server.detect_fn
                     )
                 except config_mod.ConfigError as exc:
                     raise HTTPError(500, "Cannot read config", exc.errors) from None
-        self._json(200, config_mod.estimate(cfg, rounds))
+        self._json(200, service_mod.estimate(cfg, rounds))
 
     def h_schema(self):
         self._json(200, api_schema())
@@ -737,14 +575,14 @@ class Handler(BaseHTTPRequestHandler):
         if not storage.valid_run_id(run_id):
             raise HTTPError(400, f"Invalid run id: {run_id}")
         try:
-            return storage.load_run(run_id, self.server.runs_dir)
-        except KeyError:
+            return dict(self.server.service.analysis.load(run_id))
+        except storage.RunNotFound:
             raise HTTPError(404, f"Run {run_id} not found") from None
-        except storage.StorageError as exc:
+        except storage.CorruptRun as exc:
             raise HTTPError(500, str(exc)) from None
 
     def h_runs(self):
-        self._json(200, {"runs": storage.list_runs(self.server.runs_dir)})
+        self._json(200, {"runs": self.server.service.analysis.list_runs()})
 
     def h_run(self, id: str):  # noqa: A002
         self._json(200, self._load_run(id))
@@ -768,9 +606,9 @@ class Handler(BaseHTTPRequestHandler):
     def h_aggregate(self):
         qs = parse_qs(urlsplit(self.path).query)
         spec = (qs.get("runs") or ["all"])[0].strip()
-        if spec in ("", "all"):
-            ids = "all"
-        else:
+        repo = self.server.service.repo
+        ids: list[str] | Literal["all"] = "all"
+        if spec not in ("", "all"):
             ids = [p.strip() for p in spec.split(",") if p.strip()]
             bad = [i for i in ids if not storage.valid_run_id(i)]
             if bad:
@@ -779,18 +617,20 @@ class Handler(BaseHTTPRequestHandler):
                     "Invalid run id",
                     [_problem("invalid_run_id", f"not a run id: {i!r}", "runs") for i in bad],
                 )
-            missing = [i for i in ids if not (self.server.runs_dir / f"{i}.json").is_file()]
+            missing = [i for i in ids if not repo.exists(i)]
             if missing:
                 raise HTTPError(
                     404, "Run not found", [_problem("not_found", f"no run {i}", "runs") for i in missing]
                 )
-        with self.server.config_lock:
+        with self.server.service.config_lock:
             current = config_mod.current_resolver_names(self.server.config_path)
         try:
-            bundle = storage.aggregate(self.server.runs_dir, ids, current=current)
-        except KeyError:
+            bundle = self.server.service.analysis.aggregate(ids, current=current)
+        except storage.NoRuns:
             raise HTTPError(404, "No runs saved yet") from None
-        except storage.StorageError as exc:
+        except storage.RunNotFound as exc:  # deleted since the check above
+            raise HTTPError(404, "Run not found", [_problem("not_found", str(exc), "runs")]) from None
+        except storage.CorruptRun as exc:
             raise HTTPError(500, str(exc)) from None
         self._json(200, bundle)
 
@@ -799,17 +639,29 @@ class Handler(BaseHTTPRequestHandler):
         body = self._read_json(required=False) or {}
         if not isinstance(body, dict):
             raise HTTPError(400, "Body must be a JSON object")
-        total = self.server.start_job(_rounds_param(body))
+        try:
+            total = self.server.jobs.start(service_mod.Overrides(rounds=_rounds_param(body)))
+        except service_mod.JobBusy:
+            raise HTTPError(409, "A benchmark is already running") from None
+        except config_mod.ConfigWriteError as exc:  # creating the config failed: a disk problem
+            raise HTTPError(500, "Cannot save config", exc.errors) from None
+        except service_mod.InvalidRun as exc:  # more rounds can take a run past its limits
+            raise HTTPError(400, "Invalid run settings", exc.errors) from None
+        except config_mod.ConfigError as exc:
+            raise HTTPError(400, "Invalid config", exc.errors) from None
+        except service_mod.RunsDirUnwritable as exc:  # before any DNS traffic, like the CLI
+            detail = _problem("runs_dir_unwritable", f"cannot write to the runs folder: {exc.reason}")
+            raise HTTPError(500, "Cannot save runs", [detail]) from None
         self._json(202, {"job": "started", "total": total})
 
     def h_cancel_run(self):
         self._read_json(required=False)
-        if not self.server.cancel_job():
+        if not self.server.jobs.cancel():
             raise HTTPError(409, "No benchmark is running")
         self._json(200, {"cancelled": True})
 
     def h_status(self):
-        self._json(200, self.server.status())
+        self._json(200, self.server.jobs.status())
 
 
 # --------------------------------------------------------------------------- #
@@ -896,7 +748,7 @@ def serve(
         httpd.serve_forever(poll_interval=0.25)
     finally:
         try:
-            if httpd.job.running:
+            if httpd.jobs.running:
                 print(
                     "Stopping: cancelling the running benchmark and saving the partial run...",
                     file=sys.stderr,
