@@ -246,6 +246,9 @@ dnsbench/
   cli.py             command line
   web/               the UI (plain HTML/CSS/JS, hand-drawn SVG charts)
 tests/               unittest suite
+ruff.toml            Python lint and format settings
+biome.json           JS, CSS and JSON lint and format settings
+.pre-commit-config.yaml  git hooks that run ruff and Biome on every commit
 ```
 
 ## Running the tests
@@ -262,3 +265,24 @@ you ask for it:
 ```sh
 DNSBENCH_LIVE=1 python3 -m unittest discover -s tests -p test_resolver.py -v
 ```
+
+## Development
+
+Every commit is linted and formatted by [pre-commit](https://pre-commit.com) hooks:
+[ruff](https://docs.astral.sh/ruff/) for Python and [Biome](https://biomejs.dev/) for the web UI's
+JavaScript, CSS and JSON. A commit is refused until they pass; most problems are fixed
+automatically, so re-stage and commit again. One-time setup in each clone, with
+[uv](https://docs.astral.sh/uv/):
+
+```sh
+uv tool install pre-commit
+pre-commit install
+```
+
+| Task | Command |
+|---|---|
+| Check the whole repo | `pre-commit run --all-files` |
+| Update the pinned tool versions | `pre-commit autoupdate` |
+| Make `git blame` skip the one-off reformat commit | `git config blame.ignoreRevsFile .git-blame-ignore-revs` |
+
+Settings live in `ruff.toml` and `biome.json`.

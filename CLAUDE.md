@@ -110,7 +110,7 @@ Applies to every `.py` file and to the `dns-bench` launcher script.
 - **Threads.** Shared mutable state sits behind a `threading.Lock`, with a comment naming what the lock guards.
 - **Docstrings.** Every module opens with a docstring saying what it's for and explaining any non-obvious design choice (`dnsbench/runner.py` is the model). Public functions get a docstring when the name and signature don't tell you what comes back or what the edge cases are. One line is usually enough.
 - **Suppressions** (`# noqa`, `# pragma: no cover`, `# type: ignore`) carry their reason on the same line, e.g. `# noqa: A002 - signature from base class`.
-- **No linter or formatter is configured yet.** Until one is, match PEP 8 and the surrounding code, and don't reformat lines you aren't otherwise changing. Adopting one (ruff is the likely candidate, added with `uv add --dev ruff`) is Chris's call and needs a `DECISIONS.md` entry. Once adopted, it joins the gate in §4.2.6.
+- **Ruff lints and formats all Python** (settings in `ruff.toml`; the pre-commit hook runs it on every commit). Let the formatter own layout. Use `# fmt: off` / `# fmt: on` only around a hand-aligned table that reads better as a table (e.g. `RCODES` in `dnsbench/resolver.py`). Changing the rule list in `ruff.toml` needs a `DECISIONS.md` entry.
 
 #### 4.2.2 Naming
 
@@ -123,7 +123,7 @@ Applies to every `.py` file and to the `dns-bench` launcher script.
 
 #### 4.2.3 Error handling
 
-- No bare `except:`. Catch `except Exception` only where one failure must not take down everything else: a worker thread, an HTTP handler, the serve loop. Add a comment saying why. The exception must be reported or recorded. If it is deliberately dropped, the comment says why dropping it is safe (`pass  # a UI hiccup must never break the measurement`).
+- No bare `except:`. Catch `except Exception` only where one failure must not take down everything else: a worker thread, an HTTP handler, the serve loop. Add a comment saying why. The exception must be reported or recorded. If it is deliberately dropped, use `contextlib.suppress(...)` with a comment saying why dropping it is safe (`with contextlib.suppress(Exception):  # a UI hiccup must never break the measurement`).
 - Raise specific exceptions: the module's own subclass (`ConfigError`, `ConfigWriteError` in `config.py`) or the precise built-in (`ValueError`, `OSError`). Never raise bare `Exception`.
 - When translating one exception into another, chain it: `raise ConfigError(...) from exc`. Use `from None` only when the original error tells the reader nothing more.
 - Messages name the thing and the value: `f"cannot write {path}: {exc.strerror}"`, `f"expected a whole number, got {value!r}"`.
@@ -148,6 +148,15 @@ Before claiming a Python change is done:
 1. **Run the whole suite and show the output.** `uv run python -m unittest discover -s tests -v`. All tests must pass.
 2. **Check the 3.13 floor.** `uv run` uses the newest Python uv manages, so once a newer one is installed, 3.14-only syntax passes locally and breaks for users. Run the suite under 3.13 as well: `uv run --isolated --python 3.13 python -m unittest discover -s tests -v`. uv downloads 3.13 if it's missing, and `--isolated` leaves the project `.venv/` alone.
 3. **Do a real run if you touched the query path.** Tests use fakes, so changes to `resolver.py`, `runner.py`, `server.py` or `cli.py` also need a short live run: `uv run ./dns-bench run --rounds 1 --resolvers Cloudflare --no-save`. For UI changes, run `uv run ./dns-bench serve` and check the page in a browser.
+4. **Lint the whole repo.** `pre-commit run --all-files` must pass. The hook also runs on every commit; if it fails, fix the code (hard rule 2: never `--no-verify`, never `SKIP=`).
+
+### 4.3 JavaScript and CSS (web UI)
+
+- `dnsbench/web/` is plain browser JavaScript (ES2022, no build step, no dependencies) and CSS. Biome lints and formats it (settings in `biome.json`; the pre-commit hook runs it on every commit).
+- `index.html` loads `app.js` as a classic script, not a module. Keep its `'use strict'`: Biome assumes modules and calls it redundant, hence the `biome-ignore` above it.
+- Suppressions carry their reason: `// biome-ignore lint/<group>/<rule>: <why>` in JS, `/* biome-ignore ... */` in CSS.
+- Check every site before accepting a fix Biome marks unsafe. `a && a.b` → `a?.b` returns `undefined` instead of `null`, and `x + y + 'z'` → a template literal stops adding `x + y` as numbers first.
+- `noDescendingSpecificity` is off: its fixes reorder CSS rules, which can change which rule wins. Re-enable it only with a visual check of every view (REMEDIATION_PLAN.md Phase 7).
 
 ---
 
@@ -191,7 +200,8 @@ This is non-negotiable for new features. For pure bug fixes with an obvious root
 ### 7.2 Python
 
 - **Use uv exclusively.** It manages interpreters (`uv python install`), the project environment (`uv sync`, which builds `.venv/`), running code (`uv run`) and one-off tools (`uvx`). No pyenv, pip, pipx, virtualenv or poetry. Never install into a system interpreter, and never use `--break-system-packages`. `.venv/` goes in `.gitignore`.
-- **Add packages with `uv add <pkg>`**, or `uv add --dev <pkg>` for dev-only tools (linters, formatters, type checkers). This records the package in `pyproject.toml` and pins the whole tree in `uv.lock`. Commit both files. Never hand-edit `uv.lock`.
+- **Add packages with `uv add <pkg>`**, or `uv add --dev <pkg>` for dev-only packages the code or tests import. This records the package in `pyproject.toml` and pins the whole tree in `uv.lock`. Commit both files. Never hand-edit `uv.lock`.
+- **Linters and formatters run through pre-commit**, not uv dev dependencies. Their versions are pinned in `.pre-commit-config.yaml`; update them with `pre-commit autoupdate`, then run the §4.2.6 gate. Install pre-commit itself with `uv tool install pre-commit`, then run `pre-commit install` once per clone.
 - **Justify every new dependency.** Prefer the standard library when it does the job reasonably. Don't add a package for a single helper. A new runtime dependency needs a reason in the commit message, plus a research file (§3.4) if it's a substantial choice. Check that it is maintained, has an MIT-compatible license, and supports the Python floor.
 - **The first runtime dependency is an architectural decision.** Right now dns-bench runs from a plain `python3` with no install step, and the README says so. The change that adds the first package must also:
   - create `pyproject.toml` (`uv init --bare`) with `requires-python = ">=3.13"`;
