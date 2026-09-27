@@ -10,6 +10,15 @@ repos:
         args: [--fix]
       - id: ruff-format
 
+  # Type checking, with the settings in pyproject.toml ([tool.mypy]). It checks the files listed
+  # there as a whole, not just the staged ones, because a change in one module can break another.
+  - repo: https://github.com/pre-commit/mirrors-mypy
+    rev: v2.3.1
+    hooks:
+      - id: mypy
+        args: []
+        pass_filenames: false
+
   # Biome for JS, CSS and JSON. pre-commit installs its own Node for this hook;
   # nothing Node-related is added to the repo.
   - repo: https://github.com/biomejs/pre-commit

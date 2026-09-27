@@ -1,4 +1,4 @@
-# Packaging settings. Ruff's settings are in ruff.toml.
+# Packaging and mypy settings. Ruff's settings are in ruff.toml.
 # dns-bench has no runtime dependencies; hatchling is needed only to build it (for example by
 # `uv run` and `uv tool install --editable .`).
 
@@ -32,3 +32,10 @@ packages = ["dnsbench"] # includes dnsbench/web/, the UI's static files
 
 [tool.hatch.build.targets.sdist]
 include = ["/dnsbench", "/tests", "/dns-bench", "/README.md", "/CHANGELOG.md", "/LICENSE"]
+
+# mypy runs from pre-commit (.pre-commit-config.yaml), so CI checks it too. Lenient for now: default
+# settings, which skip the bodies of unannotated functions. REMEDIATION_PLAN.md Phase 6 tightens it.
+[tool.mypy]
+python_version = "3.13"
+files = ["dnsbench", "tests"]
+warn_unused_ignores = true

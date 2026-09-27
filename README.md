@@ -255,7 +255,7 @@ dns-bench            launcher (python3)
 config.json          your config (defaults committed)
 CHANGELOG.md         what changed in each release
 runs/                every saved run (git-ignored)
-pyproject.toml       packaging (the `dns-bench` command)
+pyproject.toml       packaging (the `dns-bench` command) and mypy settings
 uv.lock              uv's lock file (there are no dependencies to pin yet)
 dnsbench/
   __main__.py        `python -m dnsbench`
@@ -272,7 +272,7 @@ tests/               unittest suite, one test_<module>.py per module (test_web.p
   fixtures/          sanitized run files written by older versions (see its README)
 ruff.toml            Python lint and format settings
 biome.json           JS, CSS and JSON lint and format settings
-.pre-commit-config.yaml  git hooks that run ruff and Biome on every commit
+.pre-commit-config.yaml  git hooks that run ruff, mypy and Biome on every commit
 .github/             CI and release workflows (GitHub Actions), Dependabot settings
 ```
 
@@ -300,9 +300,10 @@ DNSBENCH_LIVE=1 uv run python -m unittest discover -s tests -p test_resolver.py 
 
 ## Development
 
-Every commit is linted and formatted by [pre-commit](https://pre-commit.com) hooks:
-[ruff](https://docs.astral.sh/ruff/) for Python and [Biome](https://biomejs.dev/) for the web UI's
-JavaScript, CSS and JSON. A commit is refused until they pass; most problems are fixed
+Every commit is checked by [pre-commit](https://pre-commit.com) hooks:
+[ruff](https://docs.astral.sh/ruff/) lints and formats Python, [mypy](https://mypy-lang.org/)
+type-checks it, and [Biome](https://biomejs.dev/) lints and formats the web UI's JavaScript, CSS and
+JSON. A commit is refused until they pass; most problems are fixed
 automatically, so re-stage and commit again. One-time setup in each clone, with
 [uv](https://docs.astral.sh/uv/):
 
@@ -314,16 +315,19 @@ pre-commit install
 | Task | Command |
 |---|---|
 | Check the whole repo | `pre-commit run --all-files` |
+| Type-check only | `pre-commit run mypy --all-files` |
 | Update the pinned tool versions | `pre-commit autoupdate` |
 | Make `git blame` skip the one-off reformat commit | `git config blame.ignoreRevsFile .git-blame-ignore-revs` |
 
-Settings live in `ruff.toml` and `biome.json`.
+Settings live in `ruff.toml`, `biome.json` and `pyproject.toml` (`[tool.mypy]`). mypy runs with
+its default, lenient settings for now: it skips the bodies of functions without type annotations.
 
 ### Continuous integration
 
 GitHub Actions (`.github/workflows/ci.yml`) runs on every push to `main` and every pull request:
 
-- `lint`: the same pre-commit hooks, at the same pinned versions, over the whole repo. If it fails
+- `lint`: the same pre-commit hooks (ruff, mypy, Biome), at the same pinned versions, over the whole
+  repo. If it fails
   on a PR, run `pre-commit run --all-files` locally and commit what it fixes.
 - `test`: the unit tests on Linux and macOS with Python 3.13 and 3.14, plus the `./dns-bench`
   launcher, run directly and through a symlink, and refusing Python 3.12, and the `dns-bench`
