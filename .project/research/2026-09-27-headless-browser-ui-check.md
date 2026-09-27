@@ -88,6 +88,91 @@ for route in routes:
 srv.shutdown()
 ```
 
+## Addendum (2026-09-28): interactive checks without WebDriver
+
+Screenshots don't exercise clicks or typing. Phase 5 rewrote the Settings save flow, so it needed
+more: **inject a test script into a copy of the UI and let it report back.**
+
+- The harness copies `dnsbench/web`, adds `<script src="/static/uitest.js">` (allowed by the CSP:
+  it is same-origin) and the `slow.png` load hold-back to `index.html`, and patches `h_static` so
+  `GET /static/report?k=...&v=...` prints `k: v` to stdout, and `k=done` releases `slow.png` (and so
+  the screenshot).
+- `uitest.js` is a plain script that waits for bootstrap, then drives the page the way a user would:
+  set `input.value` and dispatch an `input` event, `.click()` buttons found by their text, change
+  `location.hash`. After each step it `fetch`es `/static/report` with what the DOM shows (an error
+  summary, a field's error, the estimate box, the rows). It also reports `window` `error` and
+  `unhandledrejection` events, so a script error can't pass unnoticed.
+- One Firefox run then gives a transcript of every step, plus a screenshot of the final state.
+  About 15 s. Keyboard focus (Phase 7) can be checked the same way through `document.activeElement`.
+
+The Phase 5 harness, run as `uv run python harness.py <out-dir>` from the repo root with
+`uitest.js` next to it:
+
+```python
+"""Serve a copy of the UI with uitest.js injected, open it in headless Firefox, print what it reports."""
+
+import shutil, subprocess, sys, tempfile, threading, time
+from pathlib import Path
+from urllib.parse import parse_qs, urlsplit
+from dnsbench import paths, server as SV
+
+here = Path(__file__).parent
+out = Path(sys.argv[1])
+out.mkdir(parents=True, exist_ok=True)
+tmp = Path(tempfile.mkdtemp())
+shutil.copytree(Path("tests/fixtures/runs-v1"), tmp / "runs")
+web = tmp / "web"
+shutil.copytree(paths.WEB_DIR, web)
+shutil.copy(here / "uitest.js", web / "uitest.js")
+html = (web / "index.html").read_text()
+(web / "index.html").write_text(
+    html.replace(
+        "</body>",
+        '<script src="/static/uitest.js"></script><img src="/static/slow.png" alt="" width="1" height="1"></body>',
+    )
+)
+done = threading.Event()
+orig = SV.Handler.h_static
+
+
+def h_static(self, file):
+    if file == "slow.png":
+        done.wait(40)  # hold back the load event (and the screenshot) until the script is finished
+        raise SV.HTTPError(404, "Not found")
+    if file == "report":
+        q = parse_qs(urlsplit(self.path).query)
+        k, v = q.get("k", [""])[0], q.get("v", [""])[0]
+        print(f"{k}: {v}", flush=True)
+        if k == "done":
+            done.set()
+        self._send(204, b"", "text/plain")
+        return
+    return orig(self, file)
+
+
+SV.Handler.h_static = h_static
+srv = SV.make_server("127.0.0.1", 0, tmp / "config.json", tmp / "runs", web_dir=web)
+threading.Thread(target=srv.serve_forever, daemon=True).start()
+(tmp / "ff").mkdir()
+subprocess.run(
+    [
+        "/Applications/Firefox.app/Contents/MacOS/firefox",
+        "--headless",
+        "--no-remote",
+        "--profile",
+        str(tmp / "ff"),
+        "--screenshot",
+        str(out / "final.png"),
+        "--window-size=1280,1600",
+        f"http://127.0.0.1:{srv.server_address[1]}/#overview",
+    ],
+    capture_output=True,
+    timeout=120,
+)
+print("finished:", done.is_set())
+srv.shutdown()
+```
+
 ## Sources
 
 - Firefox headless mode and `--screenshot`: https://firefox-source-docs.mozilla.org/testing/headless/index.html

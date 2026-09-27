@@ -30,6 +30,9 @@ release notes.
   network, `dns-bench config --detect`, or **Add system resolvers** in Settings, updates it.
 - `DNSBENCH_HOME=/some/dir` keeps `config.json` and `runs/` in that directory instead of the checkout.
   `dns-bench serve` prints where both are when it starts, and the Settings tab shows them.
+- Web API: `GET /api/schema` (the defaults, every setting's bounds, the limits, the presets and the
+  scoring constants), `POST /api/config/validate` (checks a draft without saving it) and
+  `POST /api/estimate` (what a run would cost). See README "JSON API".
 
 ### Changed
 
@@ -44,6 +47,19 @@ release notes.
   set `DNSBENCH_HOME`.
 - The Settings estimate no longer compares the run time with the old `dns-test.sh`. The README's
   new History section does.
+- The Settings page checks your edits with the server's own rules, the same ones a save uses. It
+  used to keep a copy of them, which had drifted: for example, it treated `::ffff:1.1.1.1` and
+  `1.1.1.1` as different servers. The estimate and the domain count (with duplicates and invalid
+  names) update as you type; problems are still listed when you save, next to the field they are
+  about.
+- The worst-case run time in Settings now counts every try of every query, so it is no longer too
+  low when `tries` is 2 or 3.
+- Web API (breaking for scripts that use it): error `details` are `{path, code, message}` objects
+  naming the field a problem is about, instead of plain strings, and never include a file's path.
+  `GET /api/config`, `PUT /api/config` and `POST /api/config/reset` return
+  `{"config", "errors", "estimate"}` instead of the bare config. `GET /api/defaults` is gone:
+  `GET /api/schema` has the defaults.
+- `dns-bench` reports a config file that isn't valid JSON as `<file>: not valid JSON: ...`.
 
 - Every enabled server is now measured at the same time. With more than 8 servers (the default
   config has 8, so enabling Quad9 makes 10), the rest used to wait for a second batch, so they were timed at a different time from the others and the results
