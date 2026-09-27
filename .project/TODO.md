@@ -2,8 +2,6 @@
 
 ## In Progress
 
-- Phase 3 — Security hardening + correctness bug fixes (REMEDIATION_PLAN.md). Branch `phase-3-hardening`, PR #9
-
 ## Up Next
 
 - Chris: click through the web UI once in a normal browser (the Phase 3 CSP change was checked with headless Firefox screenshots only, not interactively)
@@ -15,6 +13,7 @@
 
 ## Done This Week
 
+- Phase 3 — Security hardening + correctness: Origin check, CORP/COOP, CSP without inline styles plus Trusted Types, JSON errors for malformed requests, 15 s request timeout, strict Host port, `serve --allow-remote`; the UI never loses a finished run (runs-dir check + rescue, shared with the CLI); at most 20 resolvers and 50,000 queries per run; every server measured at once (`max_parallel_servers` removed — changes results with >8 servers); crashed runs saved as `partial`; SIGTERM and a second Ctrl-C save promptly. An independent review found the process still waiting for stuck queries at exit (fixed with daemon workers); CI found a signal race (fixed with a stop_waiting event). PR #9 (2026-09-27)
 - Phase 2 — Safety net: `pyproject.toml` (hatchling, dynamic version, `dns-bench` entry point, editable installs only), `python -m dnsbench`, mypy in pre-commit (13 behaviour-preserving fixes), no more `sys.path` hacks, the skipped `dns-test.sh` test now runs, real-UI smoke tests (`tests/test_web.py`), sanitized v1 run fixtures, `.venv/` ignored. CI's 3.12 launcher check fixed for the new `requires-python`. PR #8 (2026-09-27)
 - v1.1.0: version bump and corrected release notes after an independent pre-release review; release.yml now publishes only commits on `main`; README states the browser minimum and release recovery steps. Tagged after the release PR merged (2026-09-27)
 - Phase 1 — CI: `ci.yml` (lint; tests on Linux and macOS × 3.13 and 3.14; launcher checks; `ci-passed` gate), `release.yml` (tag → checks → GitHub release; manual dry run), Dependabot for actions, CHANGELOG.md, README CI and Releasing sections. Fixed a Python 3.14 bug (deeply nested JSON caused a 500) and made the rate-limit tests robust on slow runners. `main` protected by a ruleset requiring `ci-passed`. PR #5 (2026-09-27)
