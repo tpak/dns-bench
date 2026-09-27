@@ -18,7 +18,7 @@ review findings below are kept as recorded.
 
 **Status (2026-09-27):** Phase 0 is done (PRs #2/#3). Phase 1 is done (PRs #5/#6); see its
 "As built" notes, which differ from the plan in two places. v1.1.0 is the first release through the
-new release workflow. Phase 2 is done (PR #8). Next is Phase 3.
+new release workflow. Phase 2 is done (PR #8). Phase 3 is done (PR #9). Next is Phase 4.
 
 ## Verdict: would a distinguished engineer approve? **No, not as-is.**
 The problems are structural, not rot. The Python core is better than typical one-shot output: an
@@ -190,7 +190,7 @@ Housekeeping. It comes first so that every later diff is linted and formatted fr
 - The real-UI smoke tests are `tests/test_web.py`. A JS syntax error is caught by Biome in the lint job:
   it parses app.js.
 
-### Phase 3 — Security hardening + correctness bug fixes (S–M)
+### Phase 3 — Security hardening + correctness bug fixes (S–M) — ✅ done (PR #9)
 server.py:
 - For non-GET `/api/*`, require `Origin` (when present) == `http://<validated Host>`. Add
   `Cross-Origin-Resource-Policy: same-origin` and `Cross-Origin-Opener-Policy: same-origin`.
@@ -218,6 +218,33 @@ runner.py:
 cli.py:
 - SIGTERM handled like SIGINT.
 - A second Ctrl-C does a best-effort save and exits 130 (COR-5).
+
+**As built (2026-09-27)**, where it differs from the plan above or adds to it:
+- **Origin** is checked on every method except GET and HEAD (OPTIONS and DELETE too), not only
+  under `/api/`. A request without `Origin` is allowed (curl, scripts), because a page can't leave
+  it out. Two `Host` or two `Origin` headers are refused.
+- **CSP**: `trusted-types 'none'` was added as well, since the UI creates no policy. It was checked
+  in headless Firefox, which enforces both `style-src` and Trusted Types. All five views render, and
+  a planted inline style and `insertAdjacentHTML` call are blocked. Headless Chrome hangs on this
+  machine (`.project/research/2026-09-27-headless-browser-ui-check.md`).
+- A stalled client gets no response: the connection is closed, not answered with a 500.
+- **Rescue**: `storage.check_writable`, `rescue_run` and the new `save_run_safely` replace the CLI's
+  private helpers, so the CLI and the server share one path. The UI also checks the runs dir before
+  sending any queries (ARCH-3 noted this was missing).
+- **Limits**: `MAX_RESOLVERS = 20` and `MAX_QUERIES_PER_RUN = 50,000` (enabled servers × domains ×
+  rounds). A `rounds` override from the CLI or the API is re-validated against them.
+- **IDNA**: names longer than 253 characters are not encoded. Python 3.13's codec was already
+  linear, not quadratic, but a 1 MB name still cost about 2 s of CPU.
+- **Crashes**: a crashed run comes back as `status: "partial"`, with a new `error` field; the report
+  and the UI show both. `dns-bench run` exits 1 for it.
+- **Signals**: the second Ctrl-C makes the runner stop waiting for queries in flight and return at
+  once; rows that finish later are dropped. Signals during the save are ignored. After a second
+  Ctrl-C the process can still take up to one timeout to exit, while the stuck queries finish.
+- **Interleaving** changes timing only for configs with more than 8 servers. That covers 8 of the 9
+  saved runs in `runs/`: each had 10 servers, so 2 of them were measured in a later window. New runs
+  of that config measure every server together. A live run with all 10 servers measured every server
+  over the same 15.8 s, where the batches took about 31 s. The analysis code is untouched, so
+  recomputing all 9 saved runs reproduces their stored summaries and recommendations exactly.
 
 ### Phase 4 — Data hygiene & defaults (M)
 - `git rm --cached config.json`, add it to .gitignore, and delete `runs/.gitkeep` (runs/ is created

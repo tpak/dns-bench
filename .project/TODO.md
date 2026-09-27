@@ -2,13 +2,16 @@
 
 ## In Progress
 
+- Phase 3 — Security hardening + correctness bug fixes (REMEDIATION_PLAN.md). Branch `phase-3-hardening`, PR #9
+
 ## Up Next
 
-- Phase 3 — Security hardening + correctness bug fixes (REMEDIATION_PLAN.md)
+- Chris: click through the web UI once in a normal browser (the Phase 3 CSP change was checked with headless Firefox screenshots only, not interactively)
 - Tag ruleset for `v*` tags (Chris's call): restrict updates and deletions, with the admin role as bypass so a bad tag can still be deleted; never restrict creation, or the release tag push is rejected
 - Consider Dependabot's `pre-commit` ecosystem for the hook revs (would replace manual `pre-commit autoupdate`; CLAUDE.md §7.2 would change) — `.project/research/2026-09-27-ci-actions.md`
 - Re-enable Biome's `noDescendingSpecificity` with a visual check of every view (Phase 7)
-- Phases 4–8 — see REMEDIATION_PLAN.md
+- Phase 4 — Data hygiene & defaults (REMEDIATION_PLAN.md)
+- Phases 5–8 — see REMEDIATION_PLAN.md
 
 ## Done This Week
 

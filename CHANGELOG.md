@@ -15,8 +15,8 @@ release notes.
 
 ### Changed
 
-- Every enabled server is now measured at the same time. With more than 8 servers, the rest used to
-  wait for a second batch, so they were timed at a different time from the others and the results
+- Every enabled server is now measured at the same time. With more than 8 servers (the default
+  config has 8, so enabling Quad9 makes 10), the rest used to wait for a second batch, so they were timed at a different time from the others and the results
   weren't comparable. Results with more than 8 servers can therefore differ from earlier versions.
   Such runs also finish sooner. The `max_parallel_servers` setting is gone: it is ignored if your
   `config.json` still has it, and dropped the next time the config is saved. The load on each server
