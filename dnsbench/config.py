@@ -23,18 +23,66 @@ DEFAULT_RUNS_DIR = PROJECT_DIR / "runs"
 
 # The 60 domains from the original dns-test.sh, in the same order.
 DEFAULT_DOMAINS = [
-    "google.com", "bbc.co.uk", "reddit.com", "amazon.com", "github.com",
-    "wikipedia.org", "apple.com", "microsoft.com", "netflix.com", "spotify.com",
-    "twitter.com", "linkedin.com", "instagram.com", "nytimes.com", "cnn.com",
-    "yahoo.com", "ebay.com", "paypal.com", "stackoverflow.com", "dropbox.com",
-    "salesforce.com", "adobe.com", "oracle.com", "ibm.com", "intel.com",
-    "samsung.com", "sony.com", "nike.com", "airbnb.com", "uber.com",
-    "slack.com", "zoom.us", "shopify.com", "wordpress.com", "wikimedia.org",
-    "mozilla.org", "cloudflare.com", "digitalocean.com", "heroku.com", "atlassian.com",
-    "trello.com", "notion.so", "figma.com", "canva.com", "twitch.tv",
-    "pinterest.com", "tumblr.com", "quora.com", "medium.com", "etsy.com",
-    "commbank.com.au", "anz.com.au", "westpac.com.au", "nab.com.au", "telstra.com.au",
-    "optus.com.au", "woolworths.com.au", "coles.com.au", "news.com.au", "realestate.com.au",
+    "google.com",
+    "bbc.co.uk",
+    "reddit.com",
+    "amazon.com",
+    "github.com",
+    "wikipedia.org",
+    "apple.com",
+    "microsoft.com",
+    "netflix.com",
+    "spotify.com",
+    "twitter.com",
+    "linkedin.com",
+    "instagram.com",
+    "nytimes.com",
+    "cnn.com",
+    "yahoo.com",
+    "ebay.com",
+    "paypal.com",
+    "stackoverflow.com",
+    "dropbox.com",
+    "salesforce.com",
+    "adobe.com",
+    "oracle.com",
+    "ibm.com",
+    "intel.com",
+    "samsung.com",
+    "sony.com",
+    "nike.com",
+    "airbnb.com",
+    "uber.com",
+    "slack.com",
+    "zoom.us",
+    "shopify.com",
+    "wordpress.com",
+    "wikimedia.org",
+    "mozilla.org",
+    "cloudflare.com",
+    "digitalocean.com",
+    "heroku.com",
+    "atlassian.com",
+    "trello.com",
+    "notion.so",
+    "figma.com",
+    "canva.com",
+    "twitch.tv",
+    "pinterest.com",
+    "tumblr.com",
+    "quora.com",
+    "medium.com",
+    "etsy.com",
+    "commbank.com.au",
+    "anz.com.au",
+    "westpac.com.au",
+    "nab.com.au",
+    "telstra.com.au",
+    "optus.com.au",
+    "woolworths.com.au",
+    "coles.com.au",
+    "news.com.au",
+    "realestate.com.au",
 ]
 
 # Quad9 is disabled because the original script defined it but left it out of `order`.
@@ -119,6 +167,7 @@ def default_config() -> dict:
 # Normalisation
 # --------------------------------------------------------------------------- #
 
+
 def normalize_domain(value) -> str:
     """strip, lowercase, drop trailing dot, IDNA-encode unicode names."""
     d = str(value).strip().lower().rstrip(".")
@@ -201,15 +250,17 @@ def _coerce_int(value):
 
 def _short_repr(value, limit: int = 40) -> str:
     text = repr(value)
-    return text if len(text) <= limit else text[:limit - 3] + "..."
+    return text if len(text) <= limit else text[: limit - 3] + "..."
 
 
 def _server_problem(ip) -> str | None:
     """Why a syntactically valid IP can't be a DNS resolver (None if it can)."""
     if ip.version == 6 and ip.scope_id is not None:
         if not (ip.is_link_local and _ZONE_RE.fullmatch(ip.scope_id)):
-            return ("zone IDs (%...) are only allowed on link-local fe80::/10 addresses "
-                    "and must be an interface name like en0")
+            return (
+                "zone IDs (%...) are only allowed on link-local fe80::/10 addresses "
+                "and must be an interface name like en0"
+            )
     chk = ip.ipv4_mapped if ip.version == 6 and ip.ipv4_mapped is not None else ip
     if chk.is_multicast:
         return "is a multicast address, not a DNS resolver"
@@ -246,8 +297,7 @@ def normalize_config(cfg) -> dict:
             name = name.strip() if isinstance(name, str) else name
             servers = _as_list(r.get("servers"))
             if isinstance(servers, list):
-                servers = [normalize_server(s) for s in servers
-                           if not (isinstance(s, str) and not s.strip())]
+                servers = [normalize_server(s) for s in servers if not (isinstance(s, str) and not s.strip())]
             enabled = r.get("enabled", True)
             norm_resolvers.append({"name": name, "servers": servers, "enabled": enabled})
         out["resolvers"] = norm_resolvers
@@ -292,6 +342,7 @@ def normalize_config(cfg) -> dict:
 # Validation
 # --------------------------------------------------------------------------- #
 
+
 def _hostname_error(domain) -> str | None:
     if not isinstance(domain, str):
         return "must be a string"
@@ -305,8 +356,7 @@ def _hostname_error(domain) -> str | None:
         if len(label) > 63:
             return f"label '{label[:20]}...' is longer than 63 characters"
         if not _LABEL_RE.fullmatch(label):
-            return (f"label '{label}' may only contain a-z, 0-9 and '-' "
-                    "and must not start or end with '-'")
+            return f"label '{label}' may only contain a-z, 0-9 and '-' and must not start or end with '-'"
     return None
 
 
@@ -355,8 +405,9 @@ def validate_config(cfg) -> list[str]:
                 errors.append(f"{label}: at least one server IP is required")
             else:
                 if len(servers) > MAX_SERVERS_PER_RESOLVER:
-                    errors.append(f"{label}: at most {MAX_SERVERS_PER_RESOLVER} servers allowed "
-                                  f"(got {len(servers)})")
+                    errors.append(
+                        f"{label}: at most {MAX_SERVERS_PER_RESOLVER} servers allowed (got {len(servers)})"
+                    )
                 for s in servers:
                     if isinstance(s, str) and not s.isprintable():
                         errors.append(f"{label}: server {_short_repr(s)} contains control characters")
@@ -369,15 +420,21 @@ def validate_config(cfg) -> list[str]:
                     problem = _server_problem(ip)
                     if problem:
                         shown = s if len(s) <= 64 else s[:61] + "..."
-                        errors.append(f"{label}: server {shown} {problem}" if problem.startswith("is ")
-                                      else f"{label}: server {shown}: {problem}")
+                        errors.append(
+                            f"{label}: server {shown} {problem}"
+                            if problem.startswith("is ")
+                            else f"{label}: server {shown}: {problem}"
+                        )
                         continue
                     key = server_key(s)
                     if key in servers_seen:
                         errors.append(f"{label}: server {key} is already used by {servers_seen[key]}")
                     else:
-                        servers_seen[key] = (name if isinstance(name, str) and name and name.isprintable()
-                                             else f"resolver #{i}")
+                        servers_seen[key] = (
+                            name
+                            if isinstance(name, str) and name and name.isprintable()
+                            else f"resolver #{i}"
+                        )
             enabled = r.get("enabled", True)
             if not isinstance(enabled, bool):
                 errors.append(f"{label}: enabled must be true or false")
@@ -413,21 +470,25 @@ def validate_config(cfg) -> list[str]:
         for key, (lo, hi) in SETTING_BOUNDS.items():
             v = settings.get(key)
             if isinstance(v, bool) or not isinstance(v, int) or not lo <= v <= hi:
-                errors.append(f"settings.{key}: must be a whole number from {lo} to {hi} "
-                              f"(got {_short_repr(v)})")
+                errors.append(
+                    f"settings.{key}: must be a whole number from {lo} to {hi} (got {_short_repr(v)})"
+                )
         rt = settings.get("record_type")
         if rt not in RECORD_TYPES:
-            errors.append(f"settings.record_type: must be one of {', '.join(RECORD_TYPES)} "
-                          f"(got {_short_repr(rt)})")
+            errors.append(
+                f"settings.record_type: must be one of {', '.join(RECORD_TYPES)} (got {_short_repr(rt)})"
+            )
         if not isinstance(settings.get("shuffle"), bool):
-            errors.append(f"settings.shuffle: must be true or false "
-                          f"(got {_short_repr(settings.get('shuffle'))})")
+            errors.append(
+                f"settings.shuffle: must be true or false (got {_short_repr(settings.get('shuffle'))})"
+            )
     return errors
 
 
 # --------------------------------------------------------------------------- #
 # Load / save
 # --------------------------------------------------------------------------- #
+
 
 def _atomic_write_text(path: Path, text: str) -> None:
     """Atomic write; any OSError becomes ConfigWriteError (clean CLI/API message)."""
@@ -525,8 +586,11 @@ def current_resolver_names(path=DEFAULT_CONFIG_PATH) -> list[str] | None:
     resolvers = cfg.get("resolvers") if isinstance(cfg, dict) else None
     if not isinstance(resolvers, list):
         return None
-    return [r["name"] for r in resolvers
-            if isinstance(r, dict) and isinstance(r.get("name"), str) and r.get("enabled", True) is not False]
+    return [
+        r["name"]
+        for r in resolvers
+        if isinstance(r, dict) and isinstance(r.get("name"), str) and r.get("enabled", True) is not False
+    ]
 
 
 def estimate(cfg: dict) -> dict:

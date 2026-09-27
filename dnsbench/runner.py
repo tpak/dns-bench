@@ -31,8 +31,8 @@ from . import __version__
 from . import resolver
 from .config import DEFAULT_SETTINGS, MIN_INTERVAL_MS, normalize_server, server_key
 
-JITTER = 0.10          # up to +10 % on top of the interval, never negative
-_WAIT_SLICE_S = 0.05   # cancel responsiveness while waiting for the next slot
+JITTER = 0.10  # up to +10 % on top of the interval, never negative
+_WAIT_SLICE_S = 0.05  # cancel responsiveness while waiting for the next slot
 
 
 def effective_settings(config: dict) -> dict:
@@ -84,8 +84,15 @@ def _utc_iso(dt: datetime) -> str:
     return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def run_benchmark(config: dict, query_fn=None, progress=None, cancel_event=None,
-                  clock=time.monotonic, sleep=time.sleep, rng: random.Random | None = None) -> dict:
+def run_benchmark(
+    config: dict,
+    query_fn=None,
+    progress=None,
+    cancel_event=None,
+    clock=time.monotonic,
+    sleep=time.sleep,
+    rng: random.Random | None = None,
+) -> dict:
     """Run the benchmark described by ``config`` and return the run record.
 
     ``query_fn(server, domain, record_type=..., timeout_s=..., tries=1)`` must
@@ -143,8 +150,7 @@ def run_benchmark(config: dict, query_fn=None, progress=None, cancel_event=None,
                 next_start = start + interval_s * (1.0 + wrng.uniform(0.0, JITTER))
                 attempts += 1
                 try:
-                    res = query_fn(server, domain, record_type=record_type,
-                                   timeout_s=timeout_s, tries=1)
+                    res = query_fn(server, domain, record_type=record_type, timeout_s=timeout_s, tries=1)
                 except Exception as exc:  # a broken query_fn must not kill the run
                     res = resolver.QueryResult("error", error=f"{type(exc).__name__}: {exc}")
                 status = _field(res, "status", "error")
@@ -173,8 +179,7 @@ def run_benchmark(config: dict, query_fn=None, progress=None, cancel_event=None,
                 state["done"] += 1
                 if progress is not None:
                     try:
-                        progress({"type": "result", "done": state["done"], "total": total,
-                                  "result": row})
+                        progress({"type": "result", "done": state["done"], "total": total, "result": row})
                     except Exception:
                         pass  # a UI hiccup must never break the measurement
 

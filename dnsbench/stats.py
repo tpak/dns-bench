@@ -57,8 +57,7 @@ def latency_stats(rows) -> dict:
     """
     rows = list(rows)
     n = len(rows)
-    lat = sorted(float(r["ms"]) for r in rows
-                 if r.get("status") == "ok" and r.get("ms") is not None)
+    lat = sorted(float(r["ms"]) for r in rows if r.get("status") == "ok" and r.get("ms") is not None)
     ok = len(lat)
     timeouts = sum(1 for r in rows if r.get("status") == "timeout")
     failures = n - ok
@@ -72,22 +71,30 @@ def latency_stats(rows) -> dict:
         "errors": failures - timeouts,
         "retried": retried,
         "retry_rate": round(retried / n, 4) if n else 0.0,
-        "mean": None, "median": None, "p80": None, "p95": None, "p98": None,
-        "min": None, "max": None, "stdev": None,
+        "mean": None,
+        "median": None,
+        "p80": None,
+        "p95": None,
+        "p98": None,
+        "min": None,
+        "max": None,
+        "stdev": None,
     }
     if ok:
         mean = math.fsum(lat) / ok
         var = math.fsum((x - mean) ** 2 for x in lat) / ok  # population
-        out.update({
-            "mean": _r(mean),
-            "median": _r(median(lat)),
-            "p80": _r(nearest_rank(lat, 80)),
-            "p95": _r(nearest_rank(lat, 95)),
-            "p98": _r(nearest_rank(lat, 98)),
-            "min": _r(lat[0]),
-            "max": _r(lat[-1]),
-            "stdev": _r(math.sqrt(var)),
-        })
+        out.update(
+            {
+                "mean": _r(mean),
+                "median": _r(median(lat)),
+                "p80": _r(nearest_rank(lat, 80)),
+                "p95": _r(nearest_rank(lat, 95)),
+                "p98": _r(nearest_rank(lat, 98)),
+                "min": _r(lat[0]),
+                "max": _r(lat[-1]),
+                "stdev": _r(math.sqrt(var)),
+            }
+        )
     return out
 
 
@@ -110,18 +117,29 @@ def orders_from_config(config: dict | None) -> dict:
     if not config:
         return {}
     resolvers = [r.get("name") for r in config.get("resolvers") or [] if isinstance(r, dict)]
-    servers = {r.get("name"): list(r.get("servers") or [])
-               for r in config.get("resolvers") or [] if isinstance(r, dict)}
-    kw = {"resolver_order": resolvers, "domain_order": list(config.get("domains") or []),
-          "server_order": servers}
+    servers = {
+        r.get("name"): list(r.get("servers") or [])
+        for r in config.get("resolvers") or []
+        if isinstance(r, dict)
+    }
+    kw = {
+        "resolver_order": resolvers,
+        "domain_order": list(config.get("domains") or []),
+        "server_order": servers,
+    }
     settings = config.get("settings") or {}
     if "slow_threshold_ms" in settings:
         kw["slow_threshold_ms"] = settings["slow_threshold_ms"]
     return kw
 
 
-def summarize(results, resolver_order=None, slow_threshold_ms: float = 200,
-              domain_order=None, server_order: dict | None = None) -> dict:
+def summarize(
+    results,
+    resolver_order=None,
+    slow_threshold_ms: float = 200,
+    domain_order=None,
+    server_order: dict | None = None,
+) -> dict:
     """Aggregate result rows overall, by resolver, by server and by domain."""
     results = list(results)
     resolvers = _ordered(_first_seen(r["resolver"] for r in results), resolver_order)
@@ -147,9 +165,11 @@ def summarize(results, resolver_order=None, slow_threshold_ms: float = 200,
         per = by_dom[d]
         by_domain[d] = {name: latency_stats(per[name]) for name in resolvers if name in per}
 
-    slow_all = [r for r in results
-                if r.get("status") == "ok" and r.get("ms") is not None
-                and r["ms"] > slow_threshold_ms]
+    slow_all = [
+        r
+        for r in results
+        if r.get("status") == "ok" and r.get("ms") is not None and r["ms"] > slow_threshold_ms
+    ]
     slow_all.sort(key=lambda r: r["ms"], reverse=True)
     # The global list is capped across all resolvers, so a slow resolver can
     # crowd the others out of it; keep a (capped) list and a count per resolver.
@@ -172,8 +192,9 @@ def summarize(results, resolver_order=None, slow_threshold_ms: float = 200,
         "slow": slow_all[:SLOW_LIST_MAX],
         "slow_count": len(slow_all),
         "slow_by_resolver": {n: slow_by_resolver[n] for n in resolvers if n in slow_by_resolver},
-        "slow_count_by_resolver": {n: slow_count_by_resolver[n] for n in resolvers
-                                   if n in slow_count_by_resolver},
+        "slow_count_by_resolver": {
+            n: slow_count_by_resolver[n] for n in resolvers if n in slow_count_by_resolver
+        },
         "slow_threshold_ms": slow_threshold_ms,
     }
 

@@ -25,7 +25,7 @@ from . import __version__
 from . import config as config_mod
 from . import runner, storage
 
-MAX_BODY = 1024 * 1024          # 1 MB request body cap
+MAX_BODY = 1024 * 1024  # 1 MB request body cap
 _DRAIN_LIMIT = 8 * 1024 * 1024  # read (and discard) oversized bodies up to this so the 413 arrives
 RECENT_MAX = 20
 
@@ -42,8 +42,20 @@ CONTENT_TYPES = {
     ".map": "application/json; charset=utf-8",
 }
 
-CSV_COLUMNS = ["run_id", "resolver", "server", "domain", "round", "status", "ms",
-               "rcode", "answers", "error", "t", "attempts"]
+CSV_COLUMNS = [
+    "run_id",
+    "resolver",
+    "server",
+    "domain",
+    "round",
+    "status",
+    "ms",
+    "rcode",
+    "answers",
+    "error",
+    "t",
+    "attempts",
+]
 
 LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "[::1]"}
 
@@ -94,8 +106,9 @@ class DNSBenchServer(ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
 
-    def __init__(self, host: str, port: int, config_path, runs_dir, query_fn=None,
-                 web_dir=None, quiet: bool = True):
+    def __init__(
+        self, host: str, port: int, config_path, runs_dir, query_fn=None, web_dir=None, quiet: bool = True
+    ):
         if ":" in host:
             self.address_family = socket.AF_INET6
         self.config_path = Path(config_path)
@@ -141,8 +154,9 @@ class DNSBenchServer(ThreadingHTTPServer):
             job.timeout_s = cfg["settings"]["timeout_ms"] / 1000.0
             job.slow_threshold_ms = cfg["settings"]["slow_threshold_ms"]
             job.cancel_event = threading.Event()
-            job.thread = threading.Thread(target=self._job_main, args=(cfg, job.cancel_event),
-                                          name="dnsbench-job", daemon=True)
+            job.thread = threading.Thread(
+                target=self._job_main, args=(cfg, job.cancel_event), name="dnsbench-job", daemon=True
+            )
             job.thread.start()
         return total
 
@@ -163,8 +177,9 @@ class DNSBenchServer(ThreadingHTTPServer):
         status = None
         error = None
         try:
-            run = runner.run_benchmark(cfg, query_fn=self.query_fn, progress=self._on_progress,
-                                       cancel_event=cancel_event)
+            run = runner.run_benchmark(
+                cfg, query_fn=self.query_fn, progress=self._on_progress, cancel_event=cancel_event
+            )
             status = run["status"]
             storage.save_run(run, self.runs_dir)
             run_id = run["id"]
@@ -257,9 +272,11 @@ _ROUTES = [
     (re.compile(r"^/api/status$"), {"GET": "status"}),
 ]
 
-_HTML_CSP = ("default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
-             "img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; "
-             "form-action 'self'; frame-ancestors 'none'")
+_HTML_CSP = (
+    "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
+    "img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; "
+    "form-action 'self'; frame-ancestors 'none'"
+)
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -339,7 +356,7 @@ class Handler(BaseHTTPRequestHandler):
             end = host.find("]")
             if end < 0:
                 return False
-            name, rest = host[:end + 1], host[end + 1:]
+            name, rest = host[: end + 1], host[end + 1 :]
         else:
             name, sep, port = host.partition(":")
             rest = f":{port}" if sep else ""
@@ -362,8 +379,9 @@ class Handler(BaseHTTPRequestHandler):
                     continue
                 name = methods.get(method)
                 if name is None:
-                    raise HTTPError(405, f"Method {method} not allowed",
-                                    headers={"Allow": ", ".join(sorted(methods))})
+                    raise HTTPError(
+                        405, f"Method {method} not allowed", headers={"Allow": ", ".join(sorted(methods))}
+                    )
                 getattr(self, f"h_{name}")(**m.groupdict())
                 return
             raise HTTPError(404, "Not found")
@@ -507,10 +525,15 @@ class Handler(BaseHTTPRequestHandler):
         w = csv.writer(buf, lineterminator="\r\n")
         w.writerow(CSV_COLUMNS)
         for row in run.get("results") or []:
-            w.writerow([run["id"]] + [_csv_safe("" if row.get(c) is None else row.get(c))
-                                      for c in CSV_COLUMNS[1:]])
-        self._send(200, buf.getvalue().encode("utf-8"), "text/csv; charset=utf-8",
-                   {"Content-Disposition": f'attachment; filename="dns-bench-{run["id"]}.csv"'})
+            w.writerow(
+                [run["id"]] + [_csv_safe("" if row.get(c) is None else row.get(c)) for c in CSV_COLUMNS[1:]]
+            )
+        self._send(
+            200,
+            buf.getvalue().encode("utf-8"),
+            "text/csv; charset=utf-8",
+            {"Content-Disposition": f'attachment; filename="dns-bench-{run["id"]}.csv"'},
+        )
 
     def h_aggregate(self):
         qs = parse_qs(urlsplit(self.path).query)
@@ -564,10 +587,11 @@ class Handler(BaseHTTPRequestHandler):
 # Entry points
 # --------------------------------------------------------------------------- #
 
-def make_server(host: str, port: int, config_path, runs_dir, query_fn=None,
-                web_dir=None, quiet: bool = True) -> DNSBenchServer:
-    return DNSBenchServer(host, port, config_path, runs_dir, query_fn=query_fn,
-                          web_dir=web_dir, quiet=quiet)
+
+def make_server(
+    host: str, port: int, config_path, runs_dir, query_fn=None, web_dir=None, quiet: bool = True
+) -> DNSBenchServer:
+    return DNSBenchServer(host, port, config_path, runs_dir, query_fn=query_fn, web_dir=web_dir, quiet=quiet)
 
 
 def server_url(server: DNSBenchServer) -> str:
@@ -581,28 +605,44 @@ def server_url(server: DNSBenchServer) -> str:
     return f"http://{host}:{port}/"
 
 
-def serve(host: str = "127.0.0.1", port: int = 8053, config_path=config_mod.DEFAULT_CONFIG_PATH,
-          runs_dir=config_mod.DEFAULT_RUNS_DIR, open_browser: bool = False, query_fn=None,
-          quiet: bool = True) -> None:
+def serve(
+    host: str = "127.0.0.1",
+    port: int = 8053,
+    config_path=config_mod.DEFAULT_CONFIG_PATH,
+    runs_dir=config_mod.DEFAULT_RUNS_DIR,
+    open_browser: bool = False,
+    query_fn=None,
+    quiet: bool = True,
+) -> None:
     """Run the web UI until Ctrl-C (KeyboardInterrupt propagates after cleanup)."""
     httpd = make_server(host, port, config_path, runs_dir, query_fn=query_fn, quiet=quiet)
     url = server_url(httpd)
     print(f"DNS Bench UI: {url}  (Ctrl-C to stop)", flush=True)
     if host not in ("127.0.0.1", "localhost", "::1"):
-        print("warning: listening on a non-loopback address; only loopback Host names are "
-              "accepted, and there is no authentication.", file=sys.stderr)
+        print(
+            "warning: listening on a non-loopback address; only loopback Host names are "
+            "accepted, and there is no authentication.",
+            file=sys.stderr,
+        )
     if open_browser:
         import webbrowser
+
         threading.Timer(0.3, webbrowser.open, args=(url,)).start()
     try:
         httpd.serve_forever(poll_interval=0.25)
     finally:
         try:
             if httpd.job.running:
-                print("Stopping: cancelling the running benchmark and saving the partial run...",
-                      file=sys.stderr, flush=True)
+                print(
+                    "Stopping: cancelling the running benchmark and saving the partial run...",
+                    file=sys.stderr,
+                    flush=True,
+                )
             if not httpd.stop_job():
-                print("warning: the benchmark is still finishing; its partial run may not be saved.",
-                      file=sys.stderr, flush=True)
+                print(
+                    "warning: the benchmark is still finishing; its partial run may not be saved.",
+                    file=sys.stderr,
+                    flush=True,
+                )
         finally:
             httpd.server_close()

@@ -39,8 +39,7 @@ def _id_sort_key(run_id: str):
 def finalize_run(run: dict) -> dict:
     """Add ``summary`` and ``recommendation`` to a run record (in place)."""
     run["summary"] = stats.summarize_run(run)
-    run["recommendation"] = recommend_mod.recommend(run["summary"],
-                                                    (run.get("config") or {}).get("settings"))
+    run["recommendation"] = recommend_mod.recommend(run["summary"], (run.get("config") or {}).get("settings"))
     return run
 
 
@@ -221,8 +220,7 @@ def coverage(runs: list[dict]) -> dict:
     how many of the combined runs measured each resolver, and the newest one that did."""
     out: dict[str, dict] = {}
     for run in runs:
-        names = dict.fromkeys(r.get("resolver") for r in run.get("results") or []
-                              if isinstance(r, dict))
+        names = dict.fromkeys(r.get("resolver") for r in run.get("results") or [] if isinstance(r, dict))
         for name in names:
             if name is None:
                 continue
@@ -268,10 +266,19 @@ def aggregate(runs_dir, run_ids="all", current=None) -> dict:
     summary = stats.summarize(stats.merge_runs(runs), **stats.orders_from_config(config))
     cov = coverage(runs)
     if current is None:
-        current = [r.get("name") for r in config.get("resolvers") or []
-                   if isinstance(r, dict) and r.get("enabled", True) is not False]
+        current = [
+            r.get("name")
+            for r in config.get("resolvers") or []
+            if isinstance(r, dict) and r.get("enabled", True) is not False
+        ]
     eligible = set(current) | {name for name, c in cov.items() if c["last_run"] == newest["id"]}
-    rec = recommend_mod.recommend(summary, config.get("settings"), n_runs=len(runs),
-                                  coverage=cov, current=eligible)
-    return {"run_ids": [r["id"] for r in runs], "summary": summary,
-            "recommendation": rec, "config": config, "coverage": cov}
+    rec = recommend_mod.recommend(
+        summary, config.get("settings"), n_runs=len(runs), coverage=cov, current=eligible
+    )
+    return {
+        "run_ids": [r["id"] for r in runs],
+        "summary": summary,
+        "recommendation": rec,
+        "config": config,
+        "coverage": cov,
+    }

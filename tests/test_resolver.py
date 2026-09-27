@@ -66,8 +66,7 @@ class MockDNS:
 class PacketTest(unittest.TestCase):
     def test_build_query_exact_bytes(self):
         pkt = R.build_query(0x1234, "example.com", "A")
-        expected = (b"\x12\x34" b"\x01\x00" b"\x00\x01" b"\x00\x00" b"\x00\x00" b"\x00\x00"
-                    b"\x07example\x03com\x00" b"\x00\x01" b"\x00\x01")
+        expected = b"\x12\x34\x01\x00\x00\x01\x00\x00\x00\x00\x00\x00\x07example\x03com\x00\x00\x01\x00\x01"
         self.assertEqual(pkt, expected)
 
     def test_build_query_aaaa_and_trailing_dot(self):
@@ -116,6 +115,7 @@ class PacketTest(unittest.TestCase):
 
     def test_addr_matches(self):
         import ipaddress
+
         self.assertTrue(R.addr_matches("1.1.1.1", ipaddress.ip_address("1.1.1.1")))
         self.assertFalse(R.addr_matches("1.1.1.2", ipaddress.ip_address("1.1.1.1")))
         self.assertTrue(R.addr_matches("::ffff:1.1.1.1", ipaddress.ip_address("1.1.1.1")))
@@ -180,10 +180,11 @@ class QueryTest(unittest.TestCase):
             real_id = struct.unpack_from("!H", q, 0)[0]
             return [
                 (0, make_response(q, qid=(real_id + 1) & 0xFFFF)),  # wrong ID
-                (0, make_response(q, qr=False)),                    # QR=0
-                (0, b"\x00\x01"),                                  # garbage
-                (0.02, make_response(q, rcode=3, ancount=0)),      # the real one
+                (0, make_response(q, qr=False)),  # QR=0
+                (0, b"\x00\x01"),  # garbage
+                (0.02, make_response(q, rcode=3, ancount=0)),  # the real one
             ]
+
         m = self.serve(behaviour)
         r = R.query("127.0.0.1", "example.com", port=m.port, timeout_s=1)
         self.assertEqual(r.status, "ok")

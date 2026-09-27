@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """dns-bench launcher: works from any cwd and when invoked through a symlink."""
+
 import os
 import sys
 

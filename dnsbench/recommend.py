@@ -37,9 +37,13 @@ LOW_SAMPLE = 30
 def score(stats: dict, timeout_ms: float) -> float | None:
     if not stats or not stats.get("ok"):
         return None
-    return (W_MEDIAN * stats["median"] + W_P95 * stats["p95"] + W_MEAN * stats["mean"]
-            + (stats.get("failure_rate") or 0.0) * timeout_ms * FAILURE_WEIGHT
-            + (stats.get("retry_rate") or 0.0) * timeout_ms * RETRY_WEIGHT)
+    return (
+        W_MEDIAN * stats["median"]
+        + W_P95 * stats["p95"]
+        + W_MEAN * stats["mean"]
+        + (stats.get("failure_rate") or 0.0) * timeout_ms * FAILURE_WEIGHT
+        + (stats.get("retry_rate") or 0.0) * timeout_ms * RETRY_WEIGHT
+    )
 
 
 def _unreliability(st: dict) -> float:
@@ -53,8 +57,11 @@ def _server_cost(st: dict, timeout_ms: float) -> float:
     p95/mean are dominated by uncached lookups and swing from run to run, so
     they only break ties here.
     """
-    return (st["median"] + (st.get("failure_rate") or 0.0) * timeout_ms * FAILURE_WEIGHT
-            + (st.get("retry_rate") or 0.0) * timeout_ms * RETRY_WEIGHT)
+    return (
+        st["median"]
+        + (st.get("failure_rate") or 0.0) * timeout_ms * FAILURE_WEIGHT
+        + (st.get("retry_rate") or 0.0) * timeout_ms * RETRY_WEIGHT
+    )
 
 
 def _servers_ranked(server_stats: dict, timeout_ms: float) -> tuple[list[str], list[str]]:
@@ -68,16 +75,22 @@ def _servers_ranked(server_stats: dict, timeout_ms: float) -> tuple[list[str], l
     so the advice doesn't flip between runs over 0.1 ms. ``tied`` lists the
     other servers that were within noise of the one put first.
     """
-    usable = [(i, s, st, _server_cost(st, timeout_ms))
-              for i, (s, st) in enumerate((server_stats or {}).items()) if st.get("ok")]
+    usable = [
+        (i, s, st, _server_cost(st, timeout_ms))
+        for i, (s, st) in enumerate((server_stats or {}).items())
+        if st.get("ok")
+    ]
     if not usable:
         return [], []
     usable.sort(key=lambda u: (u[3], u[2]["p95"], u[0]))
     lead = usable[0][2]
     margin = max(SERVER_TIE_ABS_MS, SERVER_TIE_REL * lead["median"])
-    tie = [u for u in usable
-           if abs(u[2]["median"] - lead["median"]) <= margin
-           and _unreliability(u[2]) - _unreliability(lead) <= SERVER_TIE_FAIL]
+    tie = [
+        u
+        for u in usable
+        if abs(u[2]["median"] - lead["median"]) <= margin
+        and _unreliability(u[2]) - _unreliability(lead) <= SERVER_TIE_FAIL
+    ]
     min_p95 = min(u[2]["p95"] for u in tie)
     p95_margin = max(TIE_ABS_MS, TIE_REL * min_p95)
     tie = [u for u in tie if u[2]["p95"] - min_p95 <= p95_margin]
@@ -101,10 +114,16 @@ def _live_stats(st: dict, server_stats: dict) -> dict:
     n = sum(x["n"] for x in live)
     failures = sum(x["failures"] for x in live)
     retried = sum(x.get("retried") or 0 for x in live)
-    return {**st, "n": n, "ok": sum(x["ok"] for x in live), "failures": failures,
-            "failure_rate": round(failures / n, 4) if n else 0.0,
-            "timeouts": sum(x.get("timeouts") or 0 for x in live),
-            "retried": retried, "retry_rate": round(retried / n, 4) if n else 0.0}
+    return {
+        **st,
+        "n": n,
+        "ok": sum(x["ok"] for x in live),
+        "failures": failures,
+        "failure_rate": round(failures / n, 4) if n else 0.0,
+        "timeouts": sum(x.get("timeouts") or 0 for x in live),
+        "retried": retried,
+        "retry_rate": round(retried / n, 4) if n else 0.0,
+    }
 
 
 def _key(ip: str) -> str:
@@ -124,8 +143,14 @@ def _join(items: list[str]) -> str:
     return items[0] if len(items) == 1 else ", ".join(items[:-1]) + " and " + items[-1]
 
 
-def recommend(summary: dict, settings: dict | None = None, *, n_runs: int | None = None,
-              coverage: dict | None = None, current=None) -> dict:
+def recommend(
+    summary: dict,
+    settings: dict | None = None,
+    *,
+    n_runs: int | None = None,
+    coverage: dict | None = None,
+    current=None,
+) -> dict:
     """Rank resolvers and write the recommendation.
 
     ``n_runs`` is the number of runs the summary combines (aggregates only);
@@ -155,43 +180,51 @@ def recommend(summary: dict, settings: dict | None = None, *, n_runs: int | None
             no_answers.append(name)
             continue
         ordered, tied_servers = _servers_ranked(srv, timeout_ms)
-        ranking.append({
-            "rank": 0,
-            "resolver": name,
-            "score": round(sc, 2),
-            "median": st["median"],
-            "p95": st["p95"],
-            "mean": st["mean"],
-            "failure_rate": st["failure_rate"],
-            "retry_rate": st.get("retry_rate") or 0.0,
-            "ok": st["ok"],
-            "n": st["n"],
-            "fastest_server": ordered[0] if ordered else None,
-            "_servers": ordered,
-            "_tied_servers": tied_servers,
-            "_dead": [s for s, x in srv.items() if not x.get("ok")],
-            "_eff": eff,
-            "_srv": srv,
-            "_keys": {_key(s) for s in srv},
-            "_order": len(ranking),
-        })
+        ranking.append(
+            {
+                "rank": 0,
+                "resolver": name,
+                "score": round(sc, 2),
+                "median": st["median"],
+                "p95": st["p95"],
+                "mean": st["mean"],
+                "failure_rate": st["failure_rate"],
+                "retry_rate": st.get("retry_rate") or 0.0,
+                "ok": st["ok"],
+                "n": st["n"],
+                "fastest_server": ordered[0] if ordered else None,
+                "_servers": ordered,
+                "_tied_servers": tied_servers,
+                "_dead": [s for s, x in srv.items() if not x.get("ok")],
+                "_eff": eff,
+                "_srv": srv,
+                "_keys": {_key(s) for s in srv},
+                "_order": len(ranking),
+            }
+        )
     ranking.sort(key=lambda e: (e["score"], e["median"], e["_order"]))
     for i, e in enumerate(ranking, 1):
         e["rank"] = i
 
     notes: list[str] = []
     for name in no_answers:
-        notes.append(f"{name} returned no successful answers at all — it is unreachable "
-                     "or blocked from this network.")
+        notes.append(
+            f"{name} returned no successful answers at all — it is unreachable or blocked from this network."
+        )
 
     if not ranking:
-        notes.append("Results reflect this network at this time; check your connection "
-                     "(UDP port 53 must be allowed) and run again.")
+        notes.append(
+            "Results reflect this network at this time; check your connection "
+            "(UDP port 53 must be allowed) and run again."
+        )
         return {
-            "best": None, "backup": None, "tied_with": [], "suggested_servers": [],
+            "best": None,
+            "backup": None,
+            "tied_with": [],
+            "suggested_servers": [],
             "ranking": [],
             "summary": "No resolver returned any successful answers, so there is nothing to "
-                       "recommend. Check your network connection or firewall (outbound UDP port 53).",
+            "recommend. Check your network connection or firewall (outbound UDP port 53).",
             "notes": notes,
         }
 
@@ -213,8 +246,11 @@ def recommend(summary: dict, settings: dict | None = None, *, n_runs: int | None
     backup = next((e for e in eligible[1:] if not (e["_keys"] & best["_keys"])), None)
     tie_margin = max(TIE_ABS_MS, TIE_REL * best["score"])
     alias_names = {e["resolver"] for e in aliases}
-    tied_with = [e["resolver"] for e in eligible[1:]
-                 if e["score"] - best["score"] <= tie_margin and e["resolver"] not in alias_names]
+    tied_with = [
+        e["resolver"]
+        for e in eligible[1:]
+        if e["score"] - best["score"] <= tie_margin and e["resolver"] not in alias_names
+    ]
 
     primary_ip = best["fastest_server"]
     secondary_ip = None
@@ -244,16 +280,21 @@ def recommend(summary: dict, settings: dict | None = None, *, n_runs: int | None
         why = f"{best['resolver']} was {who} (median {_ms(best['median'])}, p95 {_ms(best['p95'])})"
     elif lowest_median and lowest_p95:
         among = tag if beaten_median or beaten_p95 else ""
-        why = (f"{best['resolver']} had the lowest median ({_ms(best['median'])}) "
-               f"and p95 ({_ms(best['p95'])}){among}")
+        why = (
+            f"{best['resolver']} had the lowest median ({_ms(best['median'])}) "
+            f"and p95 ({_ms(best['p95'])}){among}"
+        )
     elif lowest_median:
         among = tag if beaten_median else ""
-        why = (f"{best['resolver']} had the lowest median ({_ms(best['median'])}){among}, "
-               f"p95 {_ms(best['p95'])}")
+        why = (
+            f"{best['resolver']} had the lowest median ({_ms(best['median'])}){among}, p95 {_ms(best['p95'])}"
+        )
     else:
         among = tag if best is not ranking[0] else ""
-        why = (f"{best['resolver']} had the best overall score{among} "
-               f"(median {_ms(best['median'])}, p95 {_ms(best['p95'])})")
+        why = (
+            f"{best['resolver']} had the best overall score{among} "
+            f"(median {_ms(best['median'])}, p95 {_ms(best['p95'])})"
+        )
     eff = best["_eff"]
     fails, n_eff, retried = eff["n"] - eff["ok"], eff["n"], eff.get("retried") or 0
     if fails == 0 and retried == 0:
@@ -279,23 +320,31 @@ def recommend(summary: dict, settings: dict | None = None, *, n_runs: int | None
     for e in ranking:
         for ip in e["_dead"]:
             x = e["_srv"][ip]
-            notes.append(f"{e['resolver']}: server {ip} never answered ({x['n'] - x['ok']} of {x['n']} "
-                         "queries failed) — it is unreachable or blocked from this network, so it "
-                         "was left out of the score; don't configure it.")
+            notes.append(
+                f"{e['resolver']}: server {ip} never answered ({x['n'] - x['ok']} of {x['n']} "
+                "queries failed) — it is unreachable or blocked from this network, so it "
+                "was left out of the score; don't configure it."
+            )
     for e in ranking:
         eff = e["_eff"]
         if eff["failure_rate"] > FAILURE_WARN_RATE:
             if eff.get("timeouts"):
-                notes.append(f"{e['resolver']}: {_pct(eff['failure_rate'])} of queries failed "
-                             f"(timeouts/errors) — each timeout costs a full {timeout_ms:.0f} ms "
-                             "before your device falls back.")
+                notes.append(
+                    f"{e['resolver']}: {_pct(eff['failure_rate'])} of queries failed "
+                    f"(timeouts/errors) — each timeout costs a full {timeout_ms:.0f} ms "
+                    "before your device falls back."
+                )
             else:
-                notes.append(f"{e['resolver']}: {_pct(eff['failure_rate'])} of queries failed "
-                             "(error answers such as SERVFAIL/REFUSED, or network errors).")
+                notes.append(
+                    f"{e['resolver']}: {_pct(eff['failure_rate'])} of queries failed "
+                    "(error answers such as SERVFAIL/REFUSED, or network errors)."
+                )
         if (eff.get("retry_rate") or 0.0) > FAILURE_WARN_RATE:
-            notes.append(f"{e['resolver']}: {_pct(eff['retry_rate'])} of queries needed a retry — "
-                         f"the first attempt timed out, which costs a full {timeout_ms:.0f} ms "
-                         "even though the retry answered.")
+            notes.append(
+                f"{e['resolver']}: {_pct(eff['retry_rate'])} of queries needed a retry — "
+                f"the first attempt timed out, which costs a full {timeout_ms:.0f} ms "
+                "even though the retry answered."
+            )
         chosen = e["fastest_server"]
         if chosen and len(e["_servers"]) > 1:
             cst = e["_srv"][chosen]
@@ -309,35 +358,45 @@ def recommend(summary: dict, settings: dict | None = None, *, n_runs: int | None
                     what, key = "needed a retry for", "retry_rate"
                 else:
                     continue
-                notes.append(f"{e['resolver']}: {ip} {what} {_pct(x[key])} of its queries "
-                             f"({chosen}: {_pct(cst.get(key) or 0.0)}) — prefer {chosen}.")
+                notes.append(
+                    f"{e['resolver']}: {ip} {what} {_pct(x[key])} of its queries "
+                    f"({chosen}: {_pct(cst.get(key) or 0.0)}) — prefer {chosen}."
+                )
     cov = coverage or {}
     for e in stale:
         c = cov.get(e["resolver"]) or {}
-        seen = (f"was measured in only {c['runs']} of {c['of']} combined runs"
-                if c.get("runs") and c.get("of") else "was not measured in the newest run")
-        notes.append(f"{e['resolver']} {seen} and is not enabled in the current config, so it is "
-                     "ranked but not recommended.")
+        seen = (
+            f"was measured in only {c['runs']} of {c['of']} combined runs"
+            if c.get("runs") and c.get("of")
+            else "was not measured in the newest run"
+        )
+        notes.append(
+            f"{e['resolver']} {seen} and is not enabled in the current config, so it is "
+            "ranked but not recommended."
+        )
     for e in eligible:
         c = cov.get(e["resolver"]) or {}
         if c.get("runs") and c.get("of") and c["runs"] < c["of"]:
-            notes.append(f"{e['resolver']} was measured in only {c['runs']} of {c['of']} combined "
-                         "runs, so its numbers are less comparable with the others'.")
+            notes.append(
+                f"{e['resolver']} was measured in only {c['runs']} of {c['of']} combined "
+                "runs, so its numbers are less comparable with the others'."
+            )
     low = [e for e in ranking if e["ok"] < LOW_SAMPLE]
     if low:  # one note, not one per resolver (a short run makes them all low)
         if len(low) == 1:
             what = f"{low[0]['resolver']}: only {low[0]['ok']} successful samples"
         elif len({e["ok"] for e in low}) == 1:
-            what = (f"{_join([e['resolver'] for e in low])}: only {low[0]['ok']} successful "
-                    "samples each")
+            what = f"{_join([e['resolver'] for e in low])}: only {low[0]['ok']} successful samples each"
         else:
             counts = [f"{e['resolver']} ({e['ok']})" for e in low]
             what = f"{_join(counts)}: fewer than {LOW_SAMPLE} successful samples each"
         notes.append(f"{what} — low sample size, run more rounds for a steadier answer.")
     if tied_with:
         names = ", ".join(tied_with)
-        notes.append(f"{best['resolver']} is within noise of {names} (score within "
-                     f"{tie_margin:.1f} ms) — any of them is a good choice.")
+        notes.append(
+            f"{best['resolver']} is within noise of {names} (score within "
+            f"{tie_margin:.1f} ms) — any of them is a good choice."
+        )
     for e, role in ((best, "go first"), (backup, "be the secondary")):
         if e is None or not e["_tied_servers"] or not e["fastest_server"]:
             continue
@@ -346,15 +405,21 @@ def recommend(summary: dict, settings: dict | None = None, *, n_runs: int | None
         ips = [e["fastest_server"]] + e["_tied_servers"]
         medians = " vs ".join(f"{e['_srv'][ip]['median']:.1f}" for ip in ips)
         either = "either" if len(ips) == 2 else "any of them"
-        notes.append(f"{e['resolver']}'s servers {_join(ips)} were within noise of each other "
-                     f"(median {medians} ms) — {either} can {role}.")
+        notes.append(
+            f"{e['resolver']}'s servers {_join(ips)} were within noise of each other "
+            f"(median {medians} ms) — {either} can {role}."
+        )
     if aliases:
-        notes.append(f"{best['resolver']} and {_join([e['resolver'] for e in aliases])} share server "
-                     "IPs — probably the same resolver under an older name in combined runs.")
+        notes.append(
+            f"{best['resolver']} and {_join([e['resolver'] for e in aliases])} share server "
+            "IPs — probably the same resolver under an older name in combined runs."
+        )
     if backup is None:
         if len(eligible) > 1:
-            prefix = (f"Every other {'current ' if stale else ''}resolver that answered shares "
-                      f"servers with {best['resolver']}")
+            prefix = (
+                f"Every other {'current ' if stale else ''}resolver that answered shares "
+                f"servers with {best['resolver']}"
+            )
             add = "add a different provider for redundancy."
         elif stale:
             prefix = "No other current resolver answered"
@@ -368,18 +433,27 @@ def recommend(summary: dict, settings: dict | None = None, *, n_runs: int | None
         if len(suggested) >= 2:
             notes.append(f"{prefix}, so both suggested servers are from the same provider; {add}")
         elif primary_ip:
-            only = ("is its only server" if len(best["_srv"]) <= 1
-                    else "is the only one of its servers that answered")
-            notes.append(f"{prefix}, and {primary_ip} {only}, so there is no secondary server to "
-                         "suggest; add a second server or another resolver for redundancy.")
+            only = (
+                "is its only server"
+                if len(best["_srv"]) <= 1
+                else "is the only one of its servers that answered"
+            )
+            notes.append(
+                f"{prefix}, and {primary_ip} {only}, so there is no secondary server to "
+                "suggest; add a second server or another resolver for redundancy."
+            )
         else:
             notes.append(f"{prefix}; {add}")
     if n_runs is not None and n_runs >= 2:
-        notes.append(f"Combined from {n_runs} runs. Results still reflect this network at the times "
-                     "those runs were taken; adding runs at other times of day gives a steadier answer.")
+        notes.append(
+            f"Combined from {n_runs} runs. Results still reflect this network at the times "
+            "those runs were taken; adding runs at other times of day gives a steadier answer."
+        )
     else:
-        notes.append("Results reflect this network at this time of day; combining several runs "
-                     "(UI \"All runs combined\" or `dns-bench report all`) gives a steadier answer.")
+        notes.append(
+            "Results reflect this network at this time of day; combining several runs "
+            '(UI "All runs combined" or `dns-bench report all`) gives a steadier answer.'
+        )
 
     for e in ranking:
         for k in ("_servers", "_tied_servers", "_dead", "_eff", "_srv", "_keys", "_order"):

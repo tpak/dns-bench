@@ -69,11 +69,13 @@ class ServerTestBase(unittest.TestCase):
             (self.web_dir / "sub" / "x.svg").write_text("<svg/>")
         C.save_config(small_config(), self.cfg_path)
         self.fake = FakeQuery()
-        self.srv = SV.make_server("127.0.0.1", 0, self.cfg_path, self.runs_dir, query_fn=self.fake,
-                                  web_dir=self.web_dir)
+        self.srv = SV.make_server(
+            "127.0.0.1", 0, self.cfg_path, self.runs_dir, query_fn=self.fake, web_dir=self.web_dir
+        )
         self.port = self.srv.server_address[1]
-        self.thread = threading.Thread(target=self.srv.serve_forever, kwargs={"poll_interval": 0.05},
-                                       daemon=True)
+        self.thread = threading.Thread(
+            target=self.srv.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True
+        )
         self.thread.start()
 
     def tearDown(self):
@@ -135,10 +137,12 @@ class StaticTest(ServerTestBase):
         self.assertEqual(self.req("GET", "/index.html")[0], 200)
 
     def test_static_content_types(self):
-        for path, ctype in (("/static/app.js", "application/javascript"),
-                            ("/static/style.css", "text/css"),
-                            ("/static/index.html", "text/html"),
-                            ("/static/sub/x.svg", "image/svg+xml")):
+        for path, ctype in (
+            ("/static/app.js", "application/javascript"),
+            ("/static/style.css", "text/css"),
+            ("/static/index.html", "text/html"),
+            ("/static/sub/x.svg", "image/svg+xml"),
+        ):
             with self.subTest(path=path):
                 status, headers, _ = self.req("GET", path)
                 self.assertEqual(status, 200)
@@ -161,12 +165,23 @@ class StaticTest(ServerTestBase):
         self.assertEqual(status, 404)
 
     def test_static_traversal_rejected(self):
-        for path in ("/static/../secret.txt", "/static/%2e%2e/secret.txt", "/static/..%2fsecret.txt",
-                     "/static/%2e%2e%2fsecret.txt", "/static/sub/../../secret.txt",
-                     "/static/sub/%2e%2e/%2e%2e/secret.txt", "/static//etc/passwd",
-                     "/static/%2fetc%2fpasswd", "/static/.hidden", "/static/%2ehidden",
-                     "/static/app.js%00.css", "/static/..%5csecret.txt", "/static/./app.js",
-                     "/static/sub", "/static/"):
+        for path in (
+            "/static/../secret.txt",
+            "/static/%2e%2e/secret.txt",
+            "/static/..%2fsecret.txt",
+            "/static/%2e%2e%2fsecret.txt",
+            "/static/sub/../../secret.txt",
+            "/static/sub/%2e%2e/%2e%2e/secret.txt",
+            "/static//etc/passwd",
+            "/static/%2fetc%2fpasswd",
+            "/static/.hidden",
+            "/static/%2ehidden",
+            "/static/app.js%00.css",
+            "/static/..%5csecret.txt",
+            "/static/./app.js",
+            "/static/sub",
+            "/static/",
+        ):
             with self.subTest(path=path):
                 status, _, body = self.req("GET", path)
                 self.assertIn(status, (403, 404))
@@ -188,11 +203,20 @@ class NoUiFilesTest(ServerTestBase):
 class SecurityTest(ServerTestBase):
     def test_host_header_check(self):
         port = self.port
-        for host, expected in ((f"127.0.0.1:{port}", 200), (f"localhost:{port}", 200),
-                               (f"LOCALHOST:{port}", 200), (f"[::1]:{port}", 200), ("localhost", 200),
-                               ("evil.com", 403), (f"evil.com:{port}", 403),
-                               (f"127.0.0.1.evil.com:{port}", 403), (f"127.0.0.1:{port + 1}", 403),
-                               (f"localhost:{port}x", 403), ("[::1", 403), ("", 403)):
+        for host, expected in (
+            (f"127.0.0.1:{port}", 200),
+            (f"localhost:{port}", 200),
+            (f"LOCALHOST:{port}", 200),
+            (f"[::1]:{port}", 200),
+            ("localhost", 200),
+            ("evil.com", 403),
+            (f"evil.com:{port}", 403),
+            (f"127.0.0.1.evil.com:{port}", 403),
+            (f"127.0.0.1:{port + 1}", 403),
+            (f"localhost:{port}x", 403),
+            ("[::1", 403),
+            ("", 403),
+        ):
             with self.subTest(host=host):
                 status, _, body = self.req("GET", "/api/config", headers={"Host": host})
                 self.assertEqual(status, expected, body)
@@ -201,13 +225,22 @@ class SecurityTest(ServerTestBase):
         self.assertIn("error", data)
 
     def test_state_changing_requires_json_content_type(self):
-        for method, path in (("PUT", "/api/config"), ("POST", "/api/config/reset"),
-                             ("POST", "/api/run"), ("POST", "/api/run/cancel")):
-            for ctype in (None, "text/plain", "application/x-www-form-urlencoded",
-                          "multipart/form-data; boundary=x"):
+        for method, path in (
+            ("PUT", "/api/config"),
+            ("POST", "/api/config/reset"),
+            ("POST", "/api/run"),
+            ("POST", "/api/run/cancel"),
+        ):
+            for ctype in (
+                None,
+                "text/plain",
+                "application/x-www-form-urlencoded",
+                "multipart/form-data; boundary=x",
+            ):
                 with self.subTest(path=path, ctype=ctype):
-                    status, data = self.jreq(method, path, raw=b"{}", json_body=False,
-                                             headers={"Content-Type": ctype})
+                    status, data = self.jreq(
+                        method, path, raw=b"{}", json_body=False, headers={"Content-Type": ctype}
+                    )
                     self.assertEqual(status, 400)
                     self.assertIn("Content-Type", data["error"])
         # nothing was started or changed
@@ -260,8 +293,9 @@ class ConfigApiTest(ServerTestBase):
         self.assertEqual(self.jreq("GET", "/api/config")[1], data)
 
     def test_put_charset_content_type_ok(self):
-        status, _ = self.jreq("PUT", "/api/config", small_config(),
-                              headers={"Content-Type": "application/json; charset=utf-8"})
+        status, _ = self.jreq(
+            "PUT", "/api/config", small_config(), headers={"Content-Type": "application/json; charset=utf-8"}
+        )
         self.assertEqual(status, 200)
 
     def test_put_invalid_config(self):
@@ -357,8 +391,21 @@ class RunsApiTest(ServerTestBase):
         self.assertEqual(status, 404)
         status, st = self.jreq("GET", "/api/status")
         self.assertEqual(status, 200)
-        self.assertEqual(set(st) >= {"running", "done", "total", "elapsed_s", "eta_s", "started_at",
-                                     "last_run_id", "error", "recent"}, True)
+        self.assertEqual(
+            set(st)
+            >= {
+                "running",
+                "done",
+                "total",
+                "elapsed_s",
+                "eta_s",
+                "started_at",
+                "last_run_id",
+                "error",
+                "recent",
+            },
+            True,
+        )
         self.assertFalse(st["running"])
         self.assertIsNone(st["last_run_id"])
         self.assertIsNone(st["eta_s"])
@@ -370,8 +417,8 @@ class RunsApiTest(ServerTestBase):
         self.assertIsNone(st["error"])
         self.assertEqual((st["done"], st["total"]), (6, 6))
         self.assertEqual(st["last_status"], "complete")
-        self.assertEqual(st["failed"], 1)   # Slow/d2 timed out
-        self.assertEqual(st["slow"], 2)     # Slow's other two answers are 40 ms > 30 ms
+        self.assertEqual(st["failed"], 1)  # Slow/d2 timed out
+        self.assertEqual(st["slow"], 2)  # Slow's other two answers are 40 ms > 30 ms
         self.assertEqual(len(st["recent"]), 6)
         run_id = st["last_run_id"]
         self.assertTrue(storage.valid_run_id(run_id))
@@ -395,8 +442,23 @@ class RunsApiTest(ServerTestBase):
         self.assertIn("attachment", headers["content-disposition"])
         self.assertIn(run_id, headers["content-disposition"])
         rows = list(csv.reader(io.StringIO(body.decode())))
-        self.assertEqual(rows[0], ["run_id", "resolver", "server", "domain", "round", "status", "ms",
-                                   "rcode", "answers", "error", "t", "attempts"])
+        self.assertEqual(
+            rows[0],
+            [
+                "run_id",
+                "resolver",
+                "server",
+                "domain",
+                "round",
+                "status",
+                "ms",
+                "rcode",
+                "answers",
+                "error",
+                "t",
+                "attempts",
+            ],
+        )
         self.assertEqual(len(rows), 7)
         self.assertTrue(all(r[0] == run_id for r in rows[1:]))
         timeout_rows = [r for r in rows[1:] if r[5] == "timeout"]
@@ -433,8 +495,7 @@ class RunsApiTest(ServerTestBase):
         self.assertEqual(run["config"]["settings"]["rounds"], 2)
 
     def test_run_bad_rounds(self):
-        for body in ({"rounds": 0}, {"rounds": 11}, {"rounds": "3"}, {"rounds": True}, {"rounds": 1.5},
-                     [1]):
+        for body in ({"rounds": 0}, {"rounds": 11}, {"rounds": "3"}, {"rounds": True}, {"rounds": 1.5}, [1]):
             with self.subTest(body=body):
                 status, data = self.jreq("POST", "/api/run", body)
                 self.assertEqual(status, 400, data)
@@ -501,6 +562,7 @@ class RunsApiTest(ServerTestBase):
                 time.sleep(timeout_s)  # unresponsive server: blocks the full timeout
                 return QueryResult("timeout", error="timeout", attempts=1)
             return QueryResult("ok", ms=4.0, rcode="NOERROR", answers=1, attempts=1)
+
         self.srv.query_fn = blocking
         self.assertEqual(self.jreq("POST", "/api/run")[0], 202)
         self.assertEqual(self.srv.job.timeout_s, 0.4)
@@ -517,8 +579,12 @@ class RunsApiTest(ServerTestBase):
         self.assertEqual(len(st["recent"]), 20)
 
     def test_bad_and_unknown_run_ids(self):
-        for path in ("/api/runs/latest", "/api/runs/..%2f..%2fsecret", "/api/runs/2026",
-                     "/api/runs/latest/csv"):
+        for path in (
+            "/api/runs/latest",
+            "/api/runs/..%2f..%2fsecret",
+            "/api/runs/2026",
+            "/api/runs/latest/csv",
+        ):
             with self.subTest(path=path):
                 self.assertEqual(self.jreq("GET", path)[0], 400)
         for path in ("/api/runs/20200101T000000Z", "/api/runs/20200101T000000Z-2/csv"):
@@ -532,6 +598,7 @@ class RunsApiTest(ServerTestBase):
 
     def test_csv_formula_injection_neutralised(self):
         from dnsbench import runner
+
         cfg = small_config()
         cfg["resolvers"][0]["name"] = "=HYPERLINK(1)"
         run = runner.run_benchmark(cfg, query_fn=self.fake)
@@ -545,6 +612,7 @@ class RunsApiTest(ServerTestBase):
         self.runs_dir.mkdir(parents=True, exist_ok=True)
         (self.runs_dir / "20260101T000000Z.json").write_text("{ nope")
         import contextlib
+
         with contextlib.redirect_stderr(io.StringIO()):
             self.assertEqual(self.jreq("GET", "/api/runs"), (200, {"runs": []}))
         self.assertEqual(self.jreq("GET", "/api/runs/20260101T000000Z")[0], 500)
@@ -559,17 +627,39 @@ class AggregateCurrentConfigTest(ServerTestBase):
         for r in cfg["resolvers"]:
             r["enabled"] = r["name"] in enabled
         servers = {r["name"]: r["servers"][0] for r in cfg["resolvers"]}
-        results = [{"resolver": n, "server": servers[n], "domain": d, "round": 1, "status": "ok",
-                    "ms": ms, "rcode": "NOERROR", "answers": 1, "error": None, "t": 0.0}
-                   for n, ms in names_ms for d in cfg["domains"]]
+        results = [
+            {
+                "resolver": n,
+                "server": servers[n],
+                "domain": d,
+                "round": 1,
+                "status": "ok",
+                "ms": ms,
+                "rcode": "NOERROR",
+                "answers": 1,
+                "error": None,
+                "t": 0.0,
+            }
+            for n, ms in names_ms
+            for d in cfg["domains"]
+        ]
         started = f"{run_id[:4]}-{run_id[4:6]}-{run_id[6:8]}T00:00:00Z"
-        storage.save_run({"id": run_id, "started_at": started, "finished_at": started,
-                          "duration_s": 1.0, "host": "h", "status": "complete", "config": cfg,
-                          "results": results}, self.runs_dir)
+        storage.save_run(
+            {
+                "id": run_id,
+                "started_at": started,
+                "finished_at": started,
+                "duration_s": 1.0,
+                "host": "h",
+                "status": "complete",
+                "config": cfg,
+                "results": results,
+            },
+            self.runs_dir,
+        )
 
     def test_resolver_only_in_old_runs_is_not_recommended(self):
-        self._save("20260101T000000Z", [("Fast", 4.0), ("Slow", 40.0), ("Off", 1.0)],
-                   {"Fast", "Slow", "Off"})
+        self._save("20260101T000000Z", [("Fast", 4.0), ("Slow", 40.0), ("Off", 1.0)], {"Fast", "Slow", "Off"})
         self._save("20260201T000000Z", [("Fast", 4.0), ("Slow", 40.0)], {"Fast", "Slow"})
         status, agg = self.jreq("GET", "/api/aggregate?runs=all")
         self.assertEqual(status, 200)

@@ -10,7 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from dnsbench import stats as S  # noqa: E402
 
 # The exact awk program from the original dns-test.sh.
-ORIGINAL_AWK = r'''
+ORIGINAL_AWK = r"""
     {
         a[NR] = $1
         sum += $1
@@ -29,14 +29,22 @@ ORIGINAL_AWK = r'''
 
         printf "mean=%.1f median=%.1f p80=%d p95=%d p98=%d min=%d max=%d n=%d",
             mean, median, a[p80_idx], a[p95_idx], a[p98_idx], a[1], a[n], n
-    }'''
+    }"""
 
 
 def row(ms, status="ok", resolver="R", server="1.1.1.1", domain="a.com", rnd=1):
-    return {"resolver": resolver, "server": server, "domain": domain, "round": rnd,
-            "status": status, "ms": ms if status != "timeout" else None,
-            "rcode": "NOERROR" if status == "ok" else ("SERVFAIL" if status == "error" else None),
-            "answers": 1, "error": None if status == "ok" else status, "t": 0.0}
+    return {
+        "resolver": resolver,
+        "server": server,
+        "domain": domain,
+        "round": rnd,
+        "status": status,
+        "ms": ms if status != "timeout" else None,
+        "rcode": "NOERROR" if status == "ok" else ("SERVFAIL" if status == "error" else None),
+        "answers": 1,
+        "error": None if status == "ok" else status,
+        "t": 0.0,
+    }
 
 
 class PercentileTest(unittest.TestCase):
@@ -72,8 +80,9 @@ class PercentileTest(unittest.TestCase):
             n = rng.choice([1, 2, 3, 7, 10, 20, 50, 60, 99, 120, 240, 480])
             vals = [rng.randint(1, 400) for _ in range(n)]
             data = "\n".join(str(v) for v in sorted(vals)) + "\n"
-            out = subprocess.run(["awk", ORIGINAL_AWK], input=data, capture_output=True,
-                                 text=True, check=True).stdout
+            out = subprocess.run(
+                ["awk", ORIGINAL_AWK], input=data, capture_output=True, text=True, check=True
+            ).stdout
             awk = dict(kv.split("=") for kv in out.split())
             st = S.latency_stats([row(v) for v in vals])
             with self.subTest(trial=trial, n=n):
@@ -136,8 +145,12 @@ class LatencyStatsTest(unittest.TestCase):
 class SummarizeTest(unittest.TestCase):
     def setUp(self):
         rows = []
-        for res, srv, base in (("Fast", "1.1.1.1", 5), ("Fast", "1.0.0.1", 7),
-                               ("Slow", "9.9.9.9", 50), ("Slow", "9.9.9.10", 60)):
+        for res, srv, base in (
+            ("Fast", "1.1.1.1", 5),
+            ("Fast", "1.0.0.1", 7),
+            ("Slow", "9.9.9.9", 50),
+            ("Slow", "9.9.9.10", 60),
+        ):
             for i, dom in enumerate(("b.com", "a.com", "c.com")):
                 rows.append(row(base + i, resolver=res, server=srv, domain=dom))
         rows.append(row(None, "timeout", resolver="Slow", server="9.9.9.9", domain="c.com", rnd=2))
@@ -147,9 +160,22 @@ class SummarizeTest(unittest.TestCase):
 
     def test_structure(self):
         s = S.summarize(self.rows)
-        self.assertEqual(set(s), {"overall", "resolvers", "domains", "by_resolver", "by_server",
-                                  "by_domain", "slow", "slow_count", "slow_by_resolver",
-                                  "slow_count_by_resolver", "slow_threshold_ms"})
+        self.assertEqual(
+            set(s),
+            {
+                "overall",
+                "resolvers",
+                "domains",
+                "by_resolver",
+                "by_server",
+                "by_domain",
+                "slow",
+                "slow_count",
+                "slow_by_resolver",
+                "slow_count_by_resolver",
+                "slow_threshold_ms",
+            },
+        )
         self.assertEqual(s["resolvers"], ["Fast", "Slow"])
         self.assertEqual(s["domains"], ["b.com", "a.com", "c.com"])  # first appearance
         self.assertEqual(s["overall"]["n"], len(self.rows))
@@ -160,18 +186,26 @@ class SummarizeTest(unittest.TestCase):
         self.assertEqual(s["by_domain"]["c.com"]["Slow"]["failures"], 1)
 
     def test_orders(self):
-        s = S.summarize(self.rows, resolver_order=["Slow", "Missing", "Fast"],
-                        domain_order=["a.com", "b.com", "c.com"],
-                        server_order={"Fast": ["1.0.0.1", "1.1.1.1"]})
+        s = S.summarize(
+            self.rows,
+            resolver_order=["Slow", "Missing", "Fast"],
+            domain_order=["a.com", "b.com", "c.com"],
+            server_order={"Fast": ["1.0.0.1", "1.1.1.1"]},
+        )
         self.assertEqual(s["resolvers"], ["Slow", "Fast"])
         self.assertEqual(s["domains"], ["a.com", "b.com", "c.com"])
         self.assertEqual(list(s["by_server"]["Fast"]), ["1.0.0.1", "1.1.1.1"])
         self.assertEqual(list(s["by_resolver"]), ["Slow", "Fast"])
 
     def test_orders_from_config(self):
-        cfg = {"resolvers": [{"name": "Slow", "servers": ["9.9.9.10", "9.9.9.9"]},
-                             {"name": "Fast", "servers": ["1.1.1.1", "1.0.0.1"]}],
-               "domains": ["c.com", "b.com", "a.com"], "settings": {"slow_threshold_ms": 100}}
+        cfg = {
+            "resolvers": [
+                {"name": "Slow", "servers": ["9.9.9.10", "9.9.9.9"]},
+                {"name": "Fast", "servers": ["1.1.1.1", "1.0.0.1"]},
+            ],
+            "domains": ["c.com", "b.com", "a.com"],
+            "settings": {"slow_threshold_ms": 100},
+        }
         s = S.summarize(self.rows, **S.orders_from_config(cfg))
         self.assertEqual(s["resolvers"], ["Slow", "Fast"])
         self.assertEqual(s["domains"], ["c.com", "b.com", "a.com"])
@@ -218,11 +252,14 @@ class SummarizeTest(unittest.TestCase):
         self.assertEqual(s["overall"]["n"], 5)
 
 
-
 class RetriedStatsTest(unittest.TestCase):
     def test_retried_counts_attempts_over_one(self):
-        rows = [{**row(10), "attempts": 2}, {**row(10), "attempts": 1}, {**row(10), "attempts": 3},
-                {**row(None, status="timeout"), "attempts": 2}]
+        rows = [
+            {**row(10), "attempts": 2},
+            {**row(10), "attempts": 1},
+            {**row(10), "attempts": 3},
+            {**row(None, status="timeout"), "attempts": 2},
+        ]
         st = S.latency_stats(rows)
         self.assertEqual(st["retried"], 3)
         self.assertEqual(st["retry_rate"], 0.75)

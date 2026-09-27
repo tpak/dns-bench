@@ -16,10 +16,12 @@ from dataclasses import asdict, dataclass
 
 QTYPES = {"A": 1, "AAAA": 28}
 QCLASS_IN = 1
+# fmt: off
 RCODES = {
     0: "NOERROR", 1: "FORMERR", 2: "SERVFAIL", 3: "NXDOMAIN", 4: "NOTIMP",
     5: "REFUSED", 6: "YXDOMAIN", 7: "YXRRSET", 8: "NXRRSET", 9: "NOTAUTH", 10: "NOTZONE",
 }
+# fmt: on
 OK_RCODES = ("NOERROR", "NXDOMAIN")
 DNS_PORT = 53
 _HEADER = struct.Struct("!HHHHHH")
@@ -27,6 +29,7 @@ _HEADER = struct.Struct("!HHHHHH")
 
 @dataclass
 class QueryResult:
+    # fmt: off
     status: str                 # "ok" | "timeout" | "error"
     ms: float | None = None     # round trip of the answering attempt
     rcode: str | None = None    # "NOERROR", "NXDOMAIN", "SERVFAIL", ...
@@ -34,6 +37,7 @@ class QueryResult:
     error: str | None = None
     attempts: int = 0
     truncated: bool = False     # TC bit set (latency still valid)
+    # fmt: on
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -165,8 +169,14 @@ def _attempt(sockaddr, family, target_ip, port, packet, qid, timeout_s) -> Query
             )
 
 
-def query(server: str, domain: str, record_type: str = "A", timeout_s: float = 1.0,
-          tries: int = 1, port: int = DNS_PORT) -> QueryResult:
+def query(
+    server: str,
+    domain: str,
+    record_type: str = "A",
+    timeout_s: float = 1.0,
+    tries: int = 1,
+    port: int = DNS_PORT,
+) -> QueryResult:
     """Send one DNS query (retrying only after a timeout) and time the reply."""
     try:
         target_ip = ipaddress.ip_address(_strip_scope(str(server).strip("[]")))
@@ -174,8 +184,9 @@ def query(server: str, domain: str, record_type: str = "A", timeout_s: float = 1
         return QueryResult("error", error=f"invalid server address {server!r}")
     family = socket.AF_INET6 if target_ip.version == 6 else socket.AF_INET
     try:
-        infos = socket.getaddrinfo(str(server).strip("[]"), port, family, socket.SOCK_DGRAM,
-                                   0, socket.AI_NUMERICHOST)
+        infos = socket.getaddrinfo(
+            str(server).strip("[]"), port, family, socket.SOCK_DGRAM, 0, socket.AI_NUMERICHOST
+        )
         sockaddr = infos[0][4]
     except (OSError, IndexError) as exc:
         return QueryResult("error", error=f"address: {exc}")

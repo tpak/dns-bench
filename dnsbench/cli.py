@@ -28,6 +28,7 @@ def _err(msg: str) -> None:
 # Live progress
 # --------------------------------------------------------------------------- #
 
+
 class Progress:
     """Progress callback for run_benchmark (calls are serialised by the runner)."""
 
@@ -72,8 +73,10 @@ class Progress:
         pct = 100.0 * self.done / self.total if self.total else 100.0
         eta = elapsed * (self.total - self.done) / self.done if self.done else None
         eta_txt = f"{eta:.0f}s" if eta is not None else "?"
-        return (f"{self.done}/{self.total} {pct:3.0f}%  elapsed {elapsed:.1f}s  ETA {eta_txt}  "
-                f"slow {self.slow}  fail {self.failed}")
+        return (
+            f"{self.done}/{self.total} {pct:3.0f}%  elapsed {elapsed:.1f}s  ETA {eta_txt}  "
+            f"slow {self.slow}  fail {self.failed}"
+        )
 
     def _emit(self, line: str) -> None:
         if self.quiet:
@@ -110,6 +113,7 @@ class Progress:
 # --------------------------------------------------------------------------- #
 # Commands
 # --------------------------------------------------------------------------- #
+
 
 def _apply_run_overrides(cfg: dict, args) -> list[str]:
     s = cfg["settings"]
@@ -173,13 +177,19 @@ def cmd_run(args) -> int:
     s = cfg["settings"]
     names = [r["name"] for r in config_mod.enabled_resolvers(cfg)]
     if not args.quiet:
-        print(f"Benchmarking {len(names)} resolver{'s' if len(names) != 1 else ''} "
-              f"({est['servers']} server{'s' if est['servers'] != 1 else ''}: {', '.join(names)}) "
-              f"x {len(cfg['domains'])} domains x {s['rounds']} round{'s' if s['rounds'] != 1 else ''} "
-              f"= {est['queries']} queries", file=sys.stderr)
-        print(f"Polite pacing: 1 query in flight per server, >= {s['per_server_interval_ms']} ms apart "
-              f"(<= {est['max_qps_per_server']:g} q/s per server, <= {est['max_qps_total']:g} q/s total). "
-              f"Estimated time ~{est['est_seconds']:.0f} s. Ctrl-C to stop early.", file=sys.stderr)
+        print(
+            f"Benchmarking {len(names)} resolver{'s' if len(names) != 1 else ''} "
+            f"({est['servers']} server{'s' if est['servers'] != 1 else ''}: {', '.join(names)}) "
+            f"x {len(cfg['domains'])} domains x {s['rounds']} round{'s' if s['rounds'] != 1 else ''} "
+            f"= {est['queries']} queries",
+            file=sys.stderr,
+        )
+        print(
+            f"Polite pacing: 1 query in flight per server, >= {s['per_server_interval_ms']} ms apart "
+            f"(<= {est['max_qps_per_server']:g} q/s per server, <= {est['max_qps_total']:g} q/s total). "
+            f"Estimated time ~{est['est_seconds']:.0f} s. Ctrl-C to stop early.",
+            file=sys.stderr,
+        )
 
     progress = Progress(est["queries"], s["slow_threshold_ms"], quiet=args.quiet)
     cancel = threading.Event()
@@ -238,8 +248,10 @@ def cmd_run(args) -> int:
         return EXIT_ERROR
     overall = (run.get("summary") or {}).get("overall") or {}
     if run.get("results") and not overall.get("ok"):
-        _err("no resolver returned any successful answers "
-             "(check your network connection and that outbound UDP port 53 is allowed)")
+        _err(
+            "no resolver returned any successful answers "
+            "(check your network connection and that outbound UDP port 53 is allowed)"
+        )
         return EXIT_ERROR
     return EXIT_OK
 
@@ -250,13 +262,13 @@ def _raise_interrupt(signum, frame):
 
 def cmd_serve(args) -> int:
     from . import server
+
     # Explicit handlers: Ctrl-C and `kill` both stop cleanly (a running job is
     # cancelled and its partial run saved), even if SIGINT was inherited as ignored.
     signal.signal(signal.SIGINT, _raise_interrupt)
     signal.signal(signal.SIGTERM, _raise_interrupt)
     try:
-        server.serve(args.host, args.port, args.config, args.runs_dir, open_browser=args.open,
-                     quiet=False)
+        server.serve(args.host, args.port, args.config, args.runs_dir, open_browser=args.open, quiet=False)
     except (OSError, OverflowError) as exc:
         _err(f"cannot listen on {args.host}:{args.port}: {exc}")
         return EXIT_ERROR
@@ -283,21 +295,27 @@ def cmd_list(args) -> int:
         return EXIT_OK
     table = []
     for r in rows:
-        table.append([
-            r["id"], _local(r.get("started_at")),
-            f"{r['duration_s']:.1f}s" if isinstance(r.get("duration_s"), (int, float)) else "-",
-            r.get("status") or "-", str(r.get("n_queries", 0)),
-            report.printable(",".join(map(str, r.get("resolvers") or []))),
-            report.printable(str(r.get("best") or "-")),
-            f"{r['best_median']:.1f} ms" if isinstance(r.get("best_median"), (int, float)) else "-",
-        ])
+        table.append(
+            [
+                r["id"],
+                _local(r.get("started_at")),
+                f"{r['duration_s']:.1f}s" if isinstance(r.get("duration_s"), (int, float)) else "-",
+                r.get("status") or "-",
+                str(r.get("n_queries", 0)),
+                report.printable(",".join(map(str, r.get("resolvers") or []))),
+                report.printable(str(r.get("best") or "-")),
+                f"{r['best_median']:.1f} ms" if isinstance(r.get("best_median"), (int, float)) else "-",
+            ]
+        )
     headers = ["ID", "Started", "Duration", "Status", "Queries", "Resolvers", "Best", "Best median"]
     widths = [max(len(h), *(len(row[i]) for row in table)) for i, h in enumerate(headers)]
     right = {2, 4, 7}
 
     def fmt(cells):
-        return "  ".join(c.rjust(w) if i in right else c.ljust(w)
-                         for i, (c, w) in enumerate(zip(cells, widths))).rstrip()
+        return "  ".join(
+            c.rjust(w) if i in right else c.ljust(w) for i, (c, w) in enumerate(zip(cells, widths))
+        ).rstrip()
+
     print(fmt(headers))
     print(fmt(["-" * w for w in widths]))
     for row in table:
@@ -310,8 +328,9 @@ def cmd_report(args) -> int:
     target = args.target
     if target == "all":
         try:
-            bundle = storage.aggregate(args.runs_dir, "all",
-                                       current=config_mod.current_resolver_names(args.config))
+            bundle = storage.aggregate(
+                args.runs_dir, "all", current=config_mod.current_resolver_names(args.config)
+            )
         except KeyError:
             _err(f"no runs saved yet in {args.runs_dir}")
             return EXIT_ERROR
@@ -360,6 +379,7 @@ def cmd_config(args) -> int:
 # Parser
 # --------------------------------------------------------------------------- #
 
+
 def _int_in_range(value: str, lo: int, hi: int) -> int:
     try:
         n = int(value)
@@ -376,6 +396,7 @@ def _bounded_int(key: str):
 
     def conv(value: str) -> int:
         return _int_in_range(value, lo, hi)
+
     conv.__name__ = key  # argparse's fallback 'invalid <name> value' message
     return conv
 
@@ -386,39 +407,73 @@ def _port(value: str) -> int:
 
 def _range_help(text: str, key: str, unit: str = "") -> str:
     lo, hi = config_mod.SETTING_BOUNDS[key]
-    return (f"{text} ({lo}-{hi}{unit}; default: from the config, built-in "
-            f"{config_mod.DEFAULT_SETTINGS[key]})")
+    return f"{text} ({lo}-{hi}{unit}; default: from the config, built-in {config_mod.DEFAULT_SETTINGS[key]})"
 
 
 def build_parser() -> argparse.ArgumentParser:
     common = argparse.ArgumentParser(add_help=False)
-    common.add_argument("--config", default=argparse.SUPPRESS, metavar="PATH",
-                        help=f"config file (default: {config_mod.DEFAULT_CONFIG_PATH})")
-    common.add_argument("--runs-dir", default=argparse.SUPPRESS, metavar="DIR",
-                        help=f"where runs are saved (default: {config_mod.DEFAULT_RUNS_DIR})")
+    common.add_argument(
+        "--config",
+        default=argparse.SUPPRESS,
+        metavar="PATH",
+        help=f"config file (default: {config_mod.DEFAULT_CONFIG_PATH})",
+    )
+    common.add_argument(
+        "--runs-dir",
+        default=argparse.SUPPRESS,
+        metavar="DIR",
+        help=f"where runs are saved (default: {config_mod.DEFAULT_RUNS_DIR})",
+    )
 
     p = argparse.ArgumentParser(
         prog="dns-bench",
         description="Fast, polite DNS resolver benchmark with a local web UI.",
-        epilog="Run `dns-bench <command> -h` for command options.")
+        epilog="Run `dns-bench <command> -h` for command options.",
+    )
     p.add_argument("--version", action="version", version=f"dns-bench {__version__}")
-    p.add_argument("--config", default=str(config_mod.DEFAULT_CONFIG_PATH), metavar="PATH",
-                   help="config file (default: %(default)s)")
-    p.add_argument("--runs-dir", default=str(config_mod.DEFAULT_RUNS_DIR), metavar="DIR",
-                   help="where runs are saved (default: %(default)s)")
+    p.add_argument(
+        "--config",
+        default=str(config_mod.DEFAULT_CONFIG_PATH),
+        metavar="PATH",
+        help="config file (default: %(default)s)",
+    )
+    p.add_argument(
+        "--runs-dir",
+        default=str(config_mod.DEFAULT_RUNS_DIR),
+        metavar="DIR",
+        help="where runs are saved (default: %(default)s)",
+    )
     sub = p.add_subparsers(dest="cmd", metavar="<command>")
 
-    r = sub.add_parser("run", parents=[common], help="run a benchmark now",
-                       description="Run a benchmark. Overrides apply to this run only.")
-    r.add_argument("--rounds", type=_bounded_int("rounds"), metavar="N",
-                   help=_range_help("query every domain N times per server", "rounds"))
-    r.add_argument("--interval-ms", type=_bounded_int("per_server_interval_ms"), metavar="MS",
-                   help=_range_help("min gap between queries to the same server",
-                                    "per_server_interval_ms", " ms"))
-    r.add_argument("--timeout-ms", type=_bounded_int("timeout_ms"), metavar="MS",
-                   help=_range_help("per-query timeout", "timeout_ms", " ms"))
-    r.add_argument("--resolvers", metavar="A,B",
-                   help="only these resolvers (by name, comma separated; may include disabled ones)")
+    r = sub.add_parser(
+        "run",
+        parents=[common],
+        help="run a benchmark now",
+        description="Run a benchmark. Overrides apply to this run only.",
+    )
+    r.add_argument(
+        "--rounds",
+        type=_bounded_int("rounds"),
+        metavar="N",
+        help=_range_help("query every domain N times per server", "rounds"),
+    )
+    r.add_argument(
+        "--interval-ms",
+        type=_bounded_int("per_server_interval_ms"),
+        metavar="MS",
+        help=_range_help("min gap between queries to the same server", "per_server_interval_ms", " ms"),
+    )
+    r.add_argument(
+        "--timeout-ms",
+        type=_bounded_int("timeout_ms"),
+        metavar="MS",
+        help=_range_help("per-query timeout", "timeout_ms", " ms"),
+    )
+    r.add_argument(
+        "--resolvers",
+        metavar="A,B",
+        help="only these resolvers (by name, comma separated; may include disabled ones)",
+    )
     r.add_argument("--no-save", action="store_true", help="don't save the run")
     r.add_argument("--quiet", action="store_true", help="no progress or [slow]/[fail] lines")
     r.add_argument("--json", action="store_true", help="print the full run record as JSON")
@@ -433,8 +488,12 @@ def build_parser() -> argparse.ArgumentParser:
     ls = sub.add_parser("list", parents=[common], help="list saved runs")
     ls.set_defaults(func=cmd_list)
 
-    rp = sub.add_parser("report", parents=[common], help="text report for a saved run",
-                        description="Print the report for the latest run, a run id, or all runs combined.")
+    rp = sub.add_parser(
+        "report",
+        parents=[common],
+        help="text report for a saved run",
+        description="Print the report for the latest run, a run id, or all runs combined.",
+    )
     rp.add_argument("target", nargs="?", default="latest", metavar="latest|all|RUN_ID")
     rp.set_defaults(func=cmd_report)
 
