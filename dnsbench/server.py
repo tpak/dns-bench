@@ -274,10 +274,14 @@ _ROUTES = [
     (re.compile(r"^/api/status$"), {"GET": "status"}),
 ]
 
+# app.js sets styles only through CSSOM (element.style), which style-src doesn't restrict, so inline styles
+# can stay blocked. Trusted Types make the HTML-parsing sinks (innerHTML and friends) throw, and the UI
+# never needs them; 'none' also stops injected code from creating a policy.
 _HTML_CSP = (
-    "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
+    "default-src 'self'; script-src 'self'; style-src 'self'; "
     "img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; "
-    "form-action 'self'; frame-ancestors 'none'"
+    "form-action 'self'; frame-ancestors 'none'; "
+    "require-trusted-types-for 'script'; trusted-types 'none'"
 )
 
 
