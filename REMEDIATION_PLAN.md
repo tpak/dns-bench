@@ -16,8 +16,9 @@ No finding was refuted; several were downgraded. Severities below are the verifi
 phases after them are renumbered. The floor is now Python 3.13, and uv replaces pip/pyenv. The
 review findings below are kept as recorded.
 
-**Status (2026-09-27):** Phase 0 is done (PRs #2/#3). Phase 1 is done (PR #5); see its "As built"
-notes, which differ from the plan in two places. Next is Phase 2.
+**Status (2026-09-27):** Phase 0 is done (PRs #2/#3). Phase 1 is done (PRs #5/#6); see its
+"As built" notes, which differ from the plan in two places. v1.1.0 is the first release through the
+new release workflow. Next is Phase 2.
 
 ## Verdict: would a distinguished engineer approve? **No, not as-is.**
 The problems are structural, not rot. The Python core is better than typical one-shot output: an
@@ -158,8 +159,8 @@ Housekeeping. It comes first so that every later diff is linted and formatted fr
 - Add mypy (lenient) to the pre-commit hooks, which puts it in CI too.
 - `dnsbench/__main__.py`. `./dns-bench` stays as the primary shim (symlink use keeps working).
 - Tests: remove the `sys.path.insert` hacks and run `uv run python -m unittest discover -s tests`
-  (cwd is on the path). Compare against `dnsbench.__version__`, not the `"1.0.0"` literal
-  (test_runner.py:248, test_cli.py:272).
+  (cwd is on the path). ~~Compare against `dnsbench.__version__`, not the `"1.0.0"` literal~~
+  (done early, in the v1.1.0 release PR, which needed it).
 - Fix the silently skipped test (COR-11): path → `archive/dns-test.sh`, and fail instead of skipping.
 - New Python smoke tests against the **real** `config.WEB_DIR`: index.html and every referenced
   `/static/*` load; the CSP header is present; no `innerHTML|outerHTML|insertAdjacentHTML|

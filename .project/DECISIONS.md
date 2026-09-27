@@ -17,3 +17,6 @@ Append-only. One line per decision: `YYYY-MM-DD: [Topic] [Decision] — [Rationa
 2026-09-27: [CI] Actions are pinned to commit SHAs, and a pin is at least 7 days old: setup-uv v10.1.0, not the 6-day-old v10.2.0; Dependabot's monthly grouped updates use a 7-day cooldown — time for a compromised or broken release to be noticed.
 2026-09-27: [Release] release.yml re-runs ci.yml through workflow_call, and run by hand it is a dry run that publishes nothing — one definition of the checks, and a way to preview the release notes before tagging.
 2026-09-27: [Versioning] A higher minimum Python is a minor version bump — it changes what users must install, not their config or run files (README "Releasing").
+2026-09-27: [Release] release.yml publishes only commits that are on main (GitHub compare API), checked on tag pushes and on dry runs of main — the tag-name check alone would have released a tag pushed from an unmerged branch.
+2026-09-27: [Web UI] The web UI's minimum browsers are Chrome/Edge 93, Firefox 92 and Safari 15.4 (ES2022, via Phase 0's lint fixes), documented rather than reverted — a localhost UI opened in the user's own, current browser.
+2026-09-27: [Versioning] Released 1.1.0 (minor: the minimum Python rose to 3.13).
