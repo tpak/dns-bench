@@ -11,7 +11,10 @@ first, and which to use as the backup. Every run is saved. Results can be viewed
 or as charts in a browser (averages, per resolver, per domain and over time).
 
 It needs only Python 3.13+ (standard library only, no `pip install`). It doesn't need `dig`,
-and the web UI doesn't load anything from the internet.
+and the web UI doesn't load anything from the internet. The web UI needs Chrome or Edge 93,
+Firefox 92 or Safari 15.4 (iOS/iPadOS 15.4) or later. A few row tints, focus-ring shadows and
+the progress spinner use `color-mix()`, which needs Chrome/Edge 111, Firefox 113 or Safari 16.2;
+older browsers leave them out.
 
 If your `python3` is older (macOS ships 3.9, Debian 12 and Raspberry Pi OS bookworm ship
 3.11, Ubuntu 24.04 ships 3.12), run dns-bench with a newer interpreter, for example
