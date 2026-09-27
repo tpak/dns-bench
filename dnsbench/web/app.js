@@ -3585,7 +3585,7 @@
   }
   function validHostname(d) {
     let ascii = d;
-    if (/[^\x00-\x7f]/.test(d)) {
+    if (/[^\p{ASCII}]/u.test(d)) {
       try {
         ascii = new URL('http://' + d + '/').hostname;
       } catch (_) {
@@ -3777,14 +3777,14 @@
       return { scope: 'domains', msg: m };
     if (/resolver|server|\bip\b|name/i.test(m)) {
       let idx = null;
-      let mm = m.match(/resolvers?\s*\[(\d+)\]/i);
-      if (mm) idx = Number(mm[1]);
-      else if ((mm = m.match(/resolver\s*#\s*(\d+)/i))) idx = Number(mm[1]) - 1;
+      const bracket = m.match(/resolvers?\s*\[(\d+)\]/i);
+      const hash = bracket ? null : m.match(/resolver\s*#\s*(\d+)/i);
+      if (bracket) idx = Number(bracket[1]);
+      else if (hash) idx = Number(hash[1]) - 1;
       if (idx === null) {
         const quoted = [];
         const re = /['"“‘]([^'"”’]+)['"”’]/g;
-        let q;
-        while ((q = re.exec(m))) quoted.push(q[1].trim());
+        for (const q of m.matchAll(re)) quoted.push(q[1].trim());
         draft.resolvers.forEach((r, i) => {
           if (idx !== null) return;
           if (quoted.includes(r.name.trim()) || splitServers(r.serversText).some((ip) => quoted.includes(ip)))
@@ -3809,12 +3809,15 @@
     for (const e of list) {
       if (e.scope === 'resolvers') {
         if (Number.isInteger(e.index)) {
-          const arr = (g.resolvers[e.index] = g.resolvers[e.index] || []);
+          g.resolvers[e.index] ||= [];
+          const arr = g.resolvers[e.index];
           if (!arr.includes(e.msg)) arr.push(e.msg);
         } else g.resolversGeneral.push(e.msg);
       } else if (e.scope === 'domains') g.domains.push(e.msg);
-      else if (e.scope === 'settings' && e.key) (g.settings[e.key] = g.settings[e.key] || []).push(e.msg);
-      else g.general.push(e.msg);
+      else if (e.scope === 'settings' && e.key) {
+        g.settings[e.key] ||= [];
+        g.settings[e.key].push(e.msg);
+      } else g.general.push(e.msg);
     }
     return g;
   }
@@ -4429,9 +4432,9 @@
       [34, 58, 'var(--s3)'],
       [46, 20, 'var(--s4)'],
     ];
-    bars.forEach(([y, w, c]) =>
-      svg.appendChild(s('path', { d: hbarPath(20, y, w + 30, 8), style: { fill: c } })),
-    );
+    for (const [y, w, c] of bars) {
+      svg.appendChild(s('path', { d: hbarPath(20, y, w + 30, 8), style: { fill: c } }));
+    }
     svg.appendChild(s('line', { x1: 20.5, x2: 20.5, y1: 4, y2: 64, class: 'axis-line' }));
     return svg;
   }

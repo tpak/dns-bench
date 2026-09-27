@@ -149,6 +149,7 @@ textarea {
   color: inherit;
 }
 [hidden] {
+  /* biome-ignore lint/complexity/noImportantStyles: `hidden` must win over any display rule on the element. */
   display: none !important;
 }
 :focus-visible {
@@ -158,6 +159,7 @@ textarea {
 }
 .sr-only,
 .offscreen {
+  /* biome-ignore lint/complexity/noImportantStyles: screen-reader-only text must stay out of the layout whatever else applies. */
   position: absolute !important;
   width: 1px;
   height: 1px;
@@ -1414,8 +1416,10 @@ input[type="checkbox"] {
   background: color-mix(in srgb, var(--accent) 8%, transparent);
 }
 .table-empty {
+  /* biome-ignore lint/complexity/noImportantStyles: overrides the per-column alignment of the table cells it sits in. */
   text-align: center !important;
   color: var(--muted);
+  /* biome-ignore lint/complexity/noImportantStyles: overrides the table's cell padding. */
   padding: 24px !important;
 }
 .th-sort {
