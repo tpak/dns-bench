@@ -9,6 +9,14 @@ import unittest
 from pathlib import Path
 
 from dnsbench import config as C
+from dnsbench import sysdns
+
+HOME_NET = sysdns.Detected(["192.0.2.53", "192.0.2.54"], "a test")
+NOTHING = sysdns.Detected([], "a test")
+
+
+def detects(detected):
+    return lambda: detected
 
 
 def cfg(**changes):
@@ -59,9 +67,11 @@ class DefaultsTest(unittest.TestCase):
         block = re.search(r"domains=\((.*?)\)", text, re.S).group(1)
         self.assertEqual(block.split(), C.DEFAULT_DOMAINS)
 
-    def test_default_resolvers(self):
+    def test_default_resolvers_are_public_providers_only(self):
+        # No one's own ISP ships as a default: other users saw it as "unreachable" (MNT-9). A new config
+        # gets this computer's own resolvers as "System" instead (initial_config).
         names = [r["name"] for r in C.DEFAULT_RESOLVERS]
-        self.assertEqual(names, ["OpenDNS", "Cloudflare", "Google", "Quad9", "ISP"])
+        self.assertEqual(names, ["OpenDNS", "Cloudflare", "Google", "Quad9"])
         quad9 = next(r for r in C.DEFAULT_RESOLVERS if r["name"] == "Quad9")
         self.assertFalse(quad9["enabled"])
         self.assertEqual(C.DEFAULT_SETTINGS["per_server_interval_ms"], 250)
@@ -70,12 +80,6 @@ class DefaultsTest(unittest.TestCase):
         a = C.default_config()
         a["domains"].append("example.com")
         self.assertNotIn("example.com", C.default_config()["domains"])
-
-    def test_shipped_config_json_matches_defaults(self):
-        shipped = Path(__file__).resolve().parents[1] / "config.json"
-        if not shipped.exists():
-            self.skipTest("config.json not present")
-        self.assertEqual(C.validate_config(json.loads(shipped.read_text())), [])
 
 
 class NormalizeTest(unittest.TestCase):
@@ -410,11 +414,22 @@ class LoadSaveTest(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    def test_missing_file_writes_defaults(self):
-        c = C.load_config(self.path)
-        self.assertEqual(c, C.default_config())
-        self.assertTrue(self.path.exists())
-        self.assertEqual(json.loads(self.path.read_text()), C.default_config())
+    def test_missing_file_loads_the_initial_config_without_writing_it(self):
+        c = C.load_config(self.path, detect=detects(HOME_NET))
+        self.assertEqual(c, C.initial_config(detects(HOME_NET))[0])
+        self.assertEqual(c["resolvers"][-1], {"name": "System", "servers": HOME_NET.servers, "enabled": True})
+        self.assertFalse(self.path.exists())
+        self.assertFalse(self.path.parent.exists())
+
+    def test_ensure_config_creates_the_file_once(self):
+        system = C.ensure_config(self.path, detects(HOME_NET))
+        self.assertIsNotNone(system)
+        self.assertEqual(system.resolver["servers"], HOME_NET.servers)
+        self.assertEqual(json.loads(self.path.read_text()), C.initial_config(detects(HOME_NET))[0])
+        # Later calls leave the file alone, so the System entry is never detected afresh.
+        before = self.path.read_text()
+        self.assertIsNone(C.ensure_config(self.path, detects(sysdns.Detected(["198.51.100.1"]))))
+        self.assertEqual(self.path.read_text(), before)
 
     def test_invalid_json(self):
         self.path.parent.mkdir(parents=True)
@@ -462,11 +477,12 @@ class LoadSaveTest(unittest.TestCase):
         ro.chmod(0o555)
         try:
             with self.assertRaises(C.ConfigWriteError) as cm:
-                C.reset_config(ro / "c.json")
+                C.reset_config(ro / "c.json", detects(NOTHING))
             self.assertIn("cannot write", str(cm.exception))
             self.assertIsInstance(cm.exception, C.ConfigError)
             with self.assertRaises(C.ConfigWriteError):
-                C.load_config(ro / "missing.json")
+                C.ensure_config(ro / "missing.json", detects(NOTHING))
+            self.assertEqual(C.load_config(ro / "missing.json", detect=detects(NOTHING)), C.default_config())
             with self.assertRaises(C.ConfigWriteError):
                 C.save_config(C.default_config(), ro / "c.json")
             self.assertEqual(list(ro.iterdir()), [])  # no temp files left behind
@@ -519,15 +535,20 @@ class LoadSaveTest(unittest.TestCase):
         c = C.default_config()
         c["domains"] = ["a.com"]
         C.save_config(c, self.path)
-        self.assertEqual(C.reset_config(self.path), C.default_config())
-        self.assertEqual(C.load_config(self.path), C.default_config())
+        cfg, system = C.reset_config(self.path, detects(HOME_NET))
+        self.assertEqual(cfg, C.initial_config(detects(HOME_NET))[0])
+        self.assertEqual(system.resolver["servers"], HOME_NET.servers)
+        self.assertEqual(C.load_config(self.path), cfg)
+        cfg, system = C.reset_config(self.path, detects(NOTHING))  # nothing found: just the defaults
+        self.assertEqual(cfg, C.default_config())
+        self.assertIsNone(system.resolver)
 
     def test_estimate(self):
         e = C.estimate(C.default_config())
-        self.assertEqual(e["servers"], 8)
-        self.assertEqual(e["queries"], 480)
+        self.assertEqual(e["servers"], 6)
+        self.assertEqual(e["queries"], 360)
         self.assertEqual(e["max_qps_per_server"], 4.0)
-        self.assertEqual(e["max_qps_total"], 32.0)
+        self.assertEqual(e["max_qps_total"], 24.0)
         self.assertTrue(14 <= e["est_seconds"] <= 20, e)
         # More servers: all measured at once, so no extra time (the old estimate added a batch per 8)
         many = C.default_config()
@@ -539,6 +560,73 @@ class LoadSaveTest(unittest.TestCase):
         self.assertEqual(e12["servers"], 12)
         self.assertEqual(e12["est_seconds"], e["est_seconds"])
         self.assertEqual(e12["max_qps_total"], 48.0)
+
+
+class SystemResolverTest(unittest.TestCase):
+    def test_initial_config_adds_system_last(self):
+        cfg, system = C.initial_config(detects(HOME_NET))
+        self.assertEqual(cfg["resolvers"][:-1], C.default_config()["resolvers"])
+        self.assertEqual(
+            cfg["resolvers"][-1], {"name": "System", "servers": ["192.0.2.53", "192.0.2.54"], "enabled": True}
+        )
+        self.assertEqual(C.validate_config(cfg), [])
+        self.assertEqual(system.message, "System: 192.0.2.53, 192.0.2.54 (from a test).")
+
+    def test_servers_another_resolver_has_are_left_out(self):
+        # A computer set to use Cloudflare: 1.1.1.1 is measured as Cloudflare already, and listing it twice
+        # would make the config invalid. IPv4-mapped spellings count as the same server.
+        detected = sysdns.Detected(["1.1.1.1", "::ffff:192.0.2.9", "192.0.2.53"], "a test")
+        resolvers = [*C.default_config()["resolvers"], {"name": "Home", "servers": ["192.0.2.9"]}]
+        system = C.system_resolver(resolvers, detected)
+        self.assertEqual(system.resolver["servers"], ["192.0.2.53"])
+        self.assertIn("1.1.1.1 (already used by Cloudflare)", system.message)
+        self.assertIn("::ffff:192.0.2.9 (already used by Home)", system.message)
+
+    def test_nothing_new_to_add(self):
+        detected = sysdns.Detected(["1.1.1.1", "1.0.0.1"], "a test")
+        system = C.system_resolver(C.default_config()["resolvers"], detected)
+        self.assertIsNone(system.resolver)
+        self.assertIn(
+            "(1.1.1.1, 1.0.0.1) (from a test) are already in the list as Cloudflare", system.message
+        )
+
+    def test_nothing_detected(self):
+        system = C.system_resolver([], sysdns.Detected([], "/etc/resolv.conf", ["127.0.0.53"]))
+        self.assertIsNone(system.resolver)
+        self.assertEqual(
+            system.message,
+            "No system resolvers found: /etc/resolv.conf lists only 127.0.0.53, which can't be benchmarked.",
+        )
+
+    def test_unusable_duplicate_and_excess_servers_are_dropped(self):
+        found = ["224.0.0.1", "junk", "192.0.2.1", "::ffff:192.0.2.1", *(f"192.0.2.{i}" for i in range(2, 7))]
+        system = C.system_resolver(None, sysdns.Detected(found))
+        self.assertEqual(system.resolver["servers"], ["192.0.2.1", "192.0.2.2", "192.0.2.3", "192.0.2.4"])
+        self.assertEqual(system.message, "System: 192.0.2.1, 192.0.2.2, 192.0.2.3, 192.0.2.4.")
+
+    def test_an_existing_system_entry_is_updated_in_place(self):
+        cfg = C.default_config()
+        cfg["resolvers"].insert(0, {"name": "system", "servers": ["198.51.100.1"], "enabled": False})
+        system = C.system_resolver(cfg["resolvers"], sysdns.Detected(["198.51.100.1", "192.0.2.53"]))
+        self.assertEqual(
+            system.resolver["servers"], ["198.51.100.1", "192.0.2.53"]
+        )  # its own IPs aren't taken
+        out = C.with_system_resolver(cfg, system.resolver)
+        # The user's spelling and on/off choice are kept.
+        self.assertEqual(
+            out["resolvers"][0],
+            {"name": "system", "servers": ["198.51.100.1", "192.0.2.53"], "enabled": False},
+        )
+        self.assertEqual(len(out["resolvers"]), len(cfg["resolvers"]))
+        self.assertEqual(cfg["resolvers"][0]["servers"], ["198.51.100.1"])  # the input is not changed
+
+    def test_tolerates_a_hand_edited_config(self):
+        junk = ["not a resolver", {"name": 5, "servers": "1.1.1.1"}, {"servers": [None, "8.8.8.8"]}]
+        system = C.system_resolver(junk, sysdns.Detected(["8.8.8.8", "192.0.2.53"]))
+        self.assertEqual(system.resolver["servers"], ["192.0.2.53"])
+        self.assertIn("8.8.8.8 (already used by another resolver)", system.message)
+        out = C.with_system_resolver({"resolvers": "junk"}, system.resolver)
+        self.assertEqual(out["resolvers"], [system.resolver])
 
 
 if __name__ == "__main__":

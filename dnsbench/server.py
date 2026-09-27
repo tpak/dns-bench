@@ -26,7 +26,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlsplit
 
-from . import __version__, runner, storage
+from . import __version__, paths, runner, storage, sysdns
 from . import config as config_mod
 
 MAX_BODY = 1024 * 1024  # 1 MB request body cap
@@ -112,14 +112,23 @@ class DNSBenchServer(ThreadingHTTPServer):
     allow_reuse_address = True
 
     def __init__(
-        self, host: str, port: int, config_path, runs_dir, query_fn=None, web_dir=None, quiet: bool = True
+        self,
+        host: str,
+        port: int,
+        config_path,
+        runs_dir,
+        query_fn=None,
+        web_dir=None,
+        quiet: bool = True,
+        detect_fn: config_mod.Detect | None = None,
     ):
         if ":" in host:
             self.address_family = socket.AF_INET6
         self.config_path = Path(config_path)
         self.runs_dir = Path(runs_dir)
         self.query_fn = query_fn
-        self.web_dir = Path(web_dir) if web_dir else config_mod.WEB_DIR
+        self.detect_fn = detect_fn or sysdns.detect  # finds this computer's resolvers (a seam for tests)
+        self.web_dir = Path(web_dir) if web_dir else paths.WEB_DIR
         self.quiet = quiet
         self.job = JobState()
         self.config_lock = threading.Lock()
@@ -136,6 +145,8 @@ class DNSBenchServer(ThreadingHTTPServer):
                 raise HTTPError(409, "A benchmark is already running")
             with self.config_lock:
                 try:
+                    # Usually created when serve started; this covers a config.json deleted since.
+                    config_mod.ensure_config(self.config_path, self.detect_fn)
                     cfg = config_mod.load_config(self.config_path, strict=True)
                 except config_mod.ConfigWriteError as exc:  # disk problem, not bad input
                     raise HTTPError(500, "Cannot save config", exc.errors) from None
@@ -287,7 +298,9 @@ _ROUTES = [
     (re.compile(r"^/static/(?P<file>.+)$"), {"GET": "static"}),
     (re.compile(r"^/api/config$"), {"GET": "get_config", "PUT": "put_config"}),
     (re.compile(r"^/api/config/reset$"), {"POST": "reset_config"}),
+    (re.compile(r"^/api/config/system-resolver$"), {"POST": "system_resolver"}),
     (re.compile(r"^/api/defaults$"), {"GET": "defaults"}),
+    (re.compile(r"^/api/info$"), {"GET": "info"}),
     (re.compile(r"^/api/runs$"), {"GET": "runs"}),
     (re.compile(r"^/api/runs/(?P<id>[^/]+)$"), {"GET": "run"}),
     (re.compile(r"^/api/runs/(?P<id>[^/]+)/csv$"), {"GET": "run_csv"}),
@@ -535,9 +548,9 @@ class Handler(BaseHTTPRequestHandler):
     def h_get_config(self):
         with self.server.config_lock:
             try:
-                cfg = config_mod.load_config(self.server.config_path, strict=False)
-            except config_mod.ConfigWriteError as exc:
-                raise HTTPError(500, "Cannot save config", exc.errors) from None
+                cfg = config_mod.load_config(
+                    self.server.config_path, strict=False, detect=self.server.detect_fn
+                )
             except config_mod.ConfigError as exc:
                 raise HTTPError(500, "Cannot read config", exc.errors) from None
         self._json(200, cfg)
@@ -559,13 +572,42 @@ class Handler(BaseHTTPRequestHandler):
         self._read_json(required=False)
         with self.server.config_lock:
             try:
-                cfg = config_mod.reset_config(self.server.config_path)
+                cfg, _ = config_mod.reset_config(self.server.config_path, self.server.detect_fn)
             except config_mod.ConfigWriteError as exc:
                 raise HTTPError(500, "Cannot save config", exc.errors) from None
         self._json(200, cfg)
 
+    def h_system_resolver(self):
+        """This computer's resolvers as a "System" entry for the Settings draft in the body. Saves nothing:
+        the UI puts the entry into the draft, and the user saves it like any other edit."""
+        body = self._read_json(required=True)
+        if not isinstance(body, dict):
+            raise HTTPError(400, "Body must be a JSON object")
+        system = config_mod.system_resolver(body.get("resolvers"), self.server.detect_fn())
+        self._json(
+            200,
+            {
+                "resolver": system.resolver,
+                "message": system.message,
+                "detected": system.detected.servers,
+                "source": system.detected.source,
+            },
+        )
+
     def h_defaults(self):
         self._json(200, config_mod.default_config())
+
+    def h_info(self):
+        """Where this server keeps its data, for the Settings page."""
+        self._json(
+            200,
+            {
+                "version": __version__,
+                "config_path": str(self.server.config_path),
+                "config_exists": self.server.config_path.is_file(),
+                "runs_dir": str(self.server.runs_dir),
+            },
+        )
 
     # -- runs ----------------------------------------------------------------
     def _load_run(self, run_id: str) -> dict:
@@ -655,9 +697,25 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def make_server(
-    host: str, port: int, config_path, runs_dir, query_fn=None, web_dir=None, quiet: bool = True
+    host: str,
+    port: int,
+    config_path,
+    runs_dir,
+    query_fn=None,
+    web_dir=None,
+    quiet: bool = True,
+    detect_fn: config_mod.Detect | None = None,
 ) -> DNSBenchServer:
-    return DNSBenchServer(host, port, config_path, runs_dir, query_fn=query_fn, web_dir=web_dir, quiet=quiet)
+    return DNSBenchServer(
+        host,
+        port,
+        config_path,
+        runs_dir,
+        query_fn=query_fn,
+        web_dir=web_dir,
+        quiet=quiet,
+        detect_fn=detect_fn,
+    )
 
 
 def is_loopback_host(host: str) -> bool:
@@ -682,18 +740,27 @@ def server_url(server: DNSBenchServer) -> str:
 
 
 def serve(
-    host: str = "127.0.0.1",
-    port: int = 8053,
-    config_path=config_mod.DEFAULT_CONFIG_PATH,
-    runs_dir=config_mod.DEFAULT_RUNS_DIR,
+    host: str,
+    port: int,
+    config_path,
+    runs_dir,
     open_browser: bool = False,
     query_fn=None,
     quiet: bool = True,
 ) -> None:
-    """Run the web UI until Ctrl-C (KeyboardInterrupt propagates after cleanup)."""
+    """Run the web UI until Ctrl-C (KeyboardInterrupt propagates after cleanup).
+
+    A missing config is created first (ConfigError if it can't be), so Settings shows, and the first
+    run uses, one fixed System entry.
+    """
+    created = config_mod.ensure_config(config_path)
     httpd = make_server(host, port, config_path, runs_dir, query_fn=query_fn, quiet=quiet)
     url = server_url(httpd)
     print(f"DNS Bench UI: {url}  (Ctrl-C to stop)", flush=True)
+    print(f"Config: {config_path}{' (created with the defaults)' if created else ''}", file=sys.stderr)
+    if created:
+        print(f"        {created.message}", file=sys.stderr)
+    print(f"Runs:   {runs_dir}", file=sys.stderr, flush=True)
     if not is_loopback_host(host):
         print(
             "warning: listening on a non-loopback address; only loopback Host names are "

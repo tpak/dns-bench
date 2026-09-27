@@ -14,7 +14,7 @@ import time
 from datetime import UTC, datetime
 from pathlib import Path
 
-from . import __version__, report, runner, storage
+from . import __version__, paths, report, runner, storage, sysdns
 from . import config as config_mod
 
 EXIT_OK, EXIT_ERROR, EXIT_USAGE, EXIT_INTERRUPTED = 0, 1, 2, 130
@@ -137,6 +137,10 @@ def _apply_run_overrides(cfg: dict, args) -> list[str]:
 
 
 def cmd_run(args) -> int:
+    if not args.no_save:  # --no-save writes nothing, so a missing config is used as loaded, not created
+        created = config_mod.ensure_config(args.config)
+        if created is not None and not args.quiet:
+            print(f"Created {args.config} with the default resolvers. {created.message}", file=sys.stderr)
     cfg = config_mod.load_config(args.config)
     errors = _apply_run_overrides(cfg, args)
     if errors:
@@ -365,17 +369,43 @@ def cmd_config(args) -> int:
     path = Path(args.config)
     if args.path:
         print(path)
+        print(f"Runs are saved in {args.runs_dir}", file=sys.stderr)
         return EXIT_OK
     if args.reset:
-        config_mod.reset_config(path)
+        _, system = config_mod.reset_config(path)
         print(f"Config reset to defaults: {path}")
+        print(system.message)
         return EXIT_OK
+    if args.detect:
+        return _config_detect(path)
     cfg = config_mod.load_config(path, strict=False)
     print(config_mod.dumps_config(cfg), end="")
+    if not path.exists():
+        print(
+            f"({path} doesn't exist yet. This is what it will start with, on the first run or with "
+            "`dns-bench config --reset`.)",
+            file=sys.stderr,
+        )
     errors = config_mod.validate_config(cfg)
     for e in errors:
         _err(f"config problem: {e}")
     return EXIT_ERROR if errors else EXIT_OK
+
+
+def _config_detect(path: Path) -> int:
+    """Add this computer's resolvers to the config as "System", or update that entry's servers."""
+    cfg = config_mod.load_config(path, strict=False)
+    system = config_mod.system_resolver(cfg.get("resolvers"), sysdns.detect())
+    if system.resolver is None:
+        if not system.detected.servers:
+            _err(system.message)
+            return EXIT_ERROR
+        print(system.message)  # found, but every server is already configured: nothing to do
+        return EXIT_OK
+    config_mod.save_config(config_mod.with_system_resolver(cfg, system.resolver), path)
+    print(system.message)
+    print(f"Saved to {path}")
+    return EXIT_OK
 
 
 # --------------------------------------------------------------------------- #
@@ -413,39 +443,40 @@ def _range_help(text: str, key: str, unit: str = "") -> str:
     return f"{text} ({lo}-{hi}{unit}; default: from the config, built-in {config_mod.DEFAULT_SETTINGS[key]})"
 
 
+def _default_path_help() -> tuple[str, str]:
+    """The default config file and runs dir, for --help (they depend on DNSBENCH_HOME)."""
+    try:
+        default = paths.resolve()
+    except paths.DataHomeError:
+        return f"${paths.HOME_ENV}/{paths.CONFIG_NAME}", f"${paths.HOME_ENV}/{paths.RUNS_NAME}"
+    return str(default.config), str(default.runs_dir)
+
+
 def build_parser() -> argparse.ArgumentParser:
+    config_default, runs_default = _default_path_help()
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument(
         "--config",
         default=argparse.SUPPRESS,
         metavar="PATH",
-        help=f"config file (default: {config_mod.DEFAULT_CONFIG_PATH})",
+        help=f"config file (default: {config_default})",
     )
     common.add_argument(
         "--runs-dir",
         default=argparse.SUPPRESS,
         metavar="DIR",
-        help=f"where runs are saved (default: {config_mod.DEFAULT_RUNS_DIR})",
+        help=f"where runs are saved (default: {runs_default})",
     )
 
     p = argparse.ArgumentParser(
         prog="dns-bench",
         description="Fast, polite DNS resolver benchmark with a local web UI.",
-        epilog="Run `dns-bench <command> -h` for command options.",
+        epilog=f"Data is kept in the checkout, or in ${paths.HOME_ENV} if it is set. "
+        "Run `dns-bench <command> -h` for command options.",
     )
     p.add_argument("--version", action="version", version=f"dns-bench {__version__}")
-    p.add_argument(
-        "--config",
-        default=str(config_mod.DEFAULT_CONFIG_PATH),
-        metavar="PATH",
-        help="config file (default: %(default)s)",
-    )
-    p.add_argument(
-        "--runs-dir",
-        default=str(config_mod.DEFAULT_RUNS_DIR),
-        metavar="DIR",
-        help="where runs are saved (default: %(default)s)",
-    )
+    p.add_argument("--config", metavar="PATH", help=f"config file (default: {config_default})")
+    p.add_argument("--runs-dir", metavar="DIR", help=f"where runs are saved (default: {runs_default})")
     sub = p.add_subparsers(dest="cmd", metavar="<command>")
 
     r = sub.add_parser(
@@ -506,11 +537,22 @@ def build_parser() -> argparse.ArgumentParser:
     rp.add_argument("target", nargs="?", default="latest", metavar="latest|all|RUN_ID")
     rp.set_defaults(func=cmd_report)
 
-    c = sub.add_parser("config", parents=[common], help="show, locate or reset the config")
+    c = sub.add_parser("config", parents=[common], help="show, locate, reset or update the config")
     g = c.add_mutually_exclusive_group()
     g.add_argument("--show", action="store_true", help="print the config (default)")
-    g.add_argument("--reset", action="store_true", help="overwrite the config with the defaults")
-    g.add_argument("--path", action="store_true", help="print the config file path")
+    g.add_argument(
+        "--reset",
+        action="store_true",
+        help="overwrite the config with the defaults, plus this computer's own resolvers as 'System'",
+    )
+    g.add_argument(
+        "--detect",
+        action="store_true",
+        help="add this computer's own resolvers as 'System', or update that entry, and save",
+    )
+    g.add_argument(
+        "--path", action="store_true", help="print the config file path (and the runs dir, on stderr)"
+    )
     c.set_defaults(func=cmd_config)
     return p
 
@@ -525,8 +567,12 @@ def main(argv=None) -> int:
     if not getattr(args, "func", None):
         parser.print_help(sys.stderr)
         return EXIT_USAGE
-    args.config = Path(os.path.abspath(os.path.expanduser(args.config)))
-    args.runs_dir = Path(os.path.abspath(os.path.expanduser(args.runs_dir)))
+    try:
+        data = paths.resolve(args.config, args.runs_dir)
+    except paths.DataHomeError as exc:
+        _err(str(exc))
+        return EXIT_ERROR
+    args.config, args.runs_dir = data.config, data.runs_dir
     try:
         return args.func(args)
     except config_mod.ConfigError as exc:

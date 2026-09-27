@@ -29,7 +29,6 @@
   const RUN_CACHE_MAX = 6; // full run records kept in memory
   const MIN_INTERVAL_MS = 50; // config.py's hard floor for per_server_interval_ms
   const MAX_DOMAINS = 500;
-  const ORIGINAL_SECONDS_PER_QUERY = 0.8; // dns-test.sh slept 0.8 s after every query
 
   const PRESETS = [
     { name: 'Quad9', servers: ['9.9.9.9', '149.112.112.112'] },
@@ -120,6 +119,7 @@
     configProblems: [], // client-side validation of the SAVED config (it may be hand-edited)
     configInvalid: false, // the Settings draft was built from a saved config with problems
     defaults: null,
+    info: null, // GET /api/info: where the server keeps config.json and runs/
     runs: [],
     runCache: new Map(),
     aggCache: null,
@@ -1627,7 +1627,6 @@
       worst,
       qpsServer,
       qpsTotal: qpsServer * par,
-      original: total * ORIGINAL_SECONDS_PER_QUERY,
     };
   }
   function roundsValue() {
@@ -3859,6 +3858,7 @@
     try {
       const saved = await api('/api/config', { method: 'PUT', body: cfg });
       setConfig(saved?.resolvers ? saved : cfg);
+      if (state.info) state.info.config_exists = true;
       discardDraft();
       resetColors();
       state.roundsTouched = false;
@@ -3897,12 +3897,13 @@
   async function resetSettings() {
     if (
       !window.confirm(
-        'Reset resolvers, domains and settings to the built-in defaults?\n\nThis overwrites config.json. Your saved runs are not touched.',
+        "Reset resolvers, domains and settings to the built-in defaults?\n\nThis overwrites config.json and adds this computer's own resolvers as 'System'. Your saved runs are not touched.",
       )
     )
       return;
     try {
       setConfig(await api('/api/config/reset', { method: 'POST', body: {} }));
+      if (state.info) state.info.config_exists = true;
       discardDraft();
       resetColors();
       state.roundsTouched = false;
@@ -4076,6 +4077,42 @@
       const inputs = resList.querySelectorAll('.res-row:last-child input[type="text"]');
       if (inputs[0]) inputs[0].focus();
     });
+    // The server finds this computer's resolvers and leaves out any that another row already has.
+    const sysBtn = h(
+      'button',
+      {
+        type: 'button',
+        class: 'btn btn-sm',
+        title: "Add or update a 'System' row with this computer's own resolvers",
+      },
+      icon('plus', 14),
+      h('span', null, 'Add system resolvers'),
+    );
+    sysBtn.addEventListener('click', async () => {
+      sysBtn.disabled = true;
+      try {
+        const res = await api('/api/config/system-resolver', {
+          method: 'POST',
+          body: { resolvers: draftToConfig(d).resolvers },
+        });
+        if (state.draft !== d) return; // the draft was saved or discarded meanwhile
+        if (res?.resolver) {
+          const serversText = res.resolver.servers.join(', ');
+          const existing = d.resolvers.find((r) => r.name.trim().toLowerCase() === 'system');
+          if (existing) existing.serversText = serversText;
+          else d.resolvers.push({ name: res.resolver.name, serversText, enabled: true });
+          pruneSaveErrors('resolvers');
+          dropSummaryIfFixed();
+          drawResolvers();
+          onDraftChange();
+          toast(`${res.message} Save to keep it.`);
+        } else toast(res?.message || 'No system resolvers found.', 'info');
+      } catch (e) {
+        showBanner(`Could not look up this computer's resolvers: ${e.message}`);
+      } finally {
+        sysBtn.disabled = false;
+      }
+    });
     const presetSel = h('select', { class: 'input select select-sm', 'aria-label': 'Add a preset resolver' });
     presetSel.addEventListener('change', () => {
       const p = PRESETS.find((x) => x.name === presetSel.value);
@@ -4089,7 +4126,7 @@
       {
         title: 'Resolvers',
         sub: 'Each resolver is a DNS provider with one to four server addresses. Unticked resolvers stay in the list but are skipped.',
-        right: h('div', { class: 'card-tools' }, presetSel, addBtn),
+        right: h('div', { class: 'card-tools' }, sysBtn, presetSel, addBtn),
       },
       errs.resolversGeneral.length
         ? h(
@@ -4282,18 +4319,6 @@
           'Never more than one query in flight per server',
         ),
         row('Total load', `≤ ${fmtQps(est.qpsTotal)} queries/s`, `${plural(est.par, 'server')} at a time`),
-        est.total
-          ? h(
-              'div',
-              { class: 'est-compare' },
-              icon('clock', 14),
-              h(
-                'span',
-                null,
-                `The old dns-test.sh would need at least ${fmtDuration(est.original)} for the same queries.`,
-              ),
-            )
-          : null,
       );
     };
     updateEstimate();
@@ -4364,12 +4389,22 @@
         )
       : null;
 
+    const files = state.info;
+    const where =
+      files && typeof files.config_path === 'string'
+        ? h(
+            'p',
+            { class: 'muted small settings-paths' },
+            `Settings are saved in ${files.config_path}${files.config_exists ? '' : ' (not created yet)'}. Runs are saved in ${files.runs_dir}.`,
+          )
+        : null;
     return h(
       'div',
       { class: 'view settings-view' },
       summaryEl,
       resCard,
       h('div', { class: 'grid grid-settings' }, domCard, setCard),
+      where,
       h(
         'div',
         { class: 'action-bar' },
@@ -4653,11 +4688,12 @@
 
   // ================================================================ bootstrap
   async function bootstrap() {
-    const [cfgR, defR, runsR, stR] = await Promise.allSettled([
+    const [cfgR, defR, runsR, stR, infoR] = await Promise.allSettled([
       api('/api/config'),
       api('/api/defaults'),
       api('/api/runs'),
       api('/api/status'),
+      api('/api/info'),
     ]);
     if (cfgR.status === 'fulfilled' && cfgR.value) {
       setConfig(cfgR.value);
@@ -4667,6 +4703,7 @@
       showBanner(`Could not load the configuration: ${state.configError}`, 'error', cfgR.reason?.details);
     }
     if (defR.status === 'fulfilled') state.defaults = defR.value;
+    if (infoR.status === 'fulfilled') state.info = infoR.value;
     if (runsR.status === 'fulfilled') state.runs = Array.isArray(runsR.value?.runs) ? runsR.value.runs : [];
     else showBanner(`Could not load saved runs: ${runsR.reason.message}`);
     state.bootstrapped = true;

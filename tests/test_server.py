@@ -5,6 +5,7 @@ import csv
 import http.client
 import io
 import json
+import re
 import socket
 import tempfile
 import threading
@@ -13,12 +14,14 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+from dnsbench import __version__, storage, sysdns
 from dnsbench import config as C
 from dnsbench import server as SV
-from dnsbench import storage
 from dnsbench.resolver import QueryResult
 
 SECRET = "TOP-SECRET-DO-NOT-SERVE"
+ROOT = Path(__file__).resolve().parents[1]
+FAKE_SYSTEM = sysdns.Detected(["192.0.2.53"], "a test")  # what "this computer's resolvers" are in these tests
 
 
 def small_config(domains=3, interval_ms=50):
@@ -71,7 +74,13 @@ class ServerTestBase(unittest.TestCase):
         C.save_config(small_config(), self.cfg_path)
         self.fake = FakeQuery()
         self.srv = SV.make_server(
-            "127.0.0.1", 0, self.cfg_path, self.runs_dir, query_fn=self.fake, web_dir=self.web_dir
+            "127.0.0.1",
+            0,
+            self.cfg_path,
+            self.runs_dir,
+            query_fn=self.fake,
+            web_dir=self.web_dir,
+            detect_fn=lambda: FAKE_SYSTEM,
         )
         self.port = self.srv.server_address[1]
         self.thread = threading.Thread(
@@ -478,8 +487,49 @@ class ConfigApiTest(ServerTestBase):
     def test_reset(self):
         status, data = self.jreq("POST", "/api/config/reset")
         self.assertEqual(status, 200)
-        self.assertEqual(data, C.default_config())
-        self.assertEqual(C.load_config(self.cfg_path), C.default_config())
+        expected = C.initial_config(lambda: FAKE_SYSTEM)[0]  # the defaults plus this computer's resolvers
+        self.assertEqual(data, expected)
+        self.assertEqual(data["resolvers"][-1]["servers"], ["192.0.2.53"])
+        self.assertEqual(C.load_config(self.cfg_path), expected)
+
+    def test_missing_config_is_shown_but_not_created(self):
+        self.cfg_path.unlink()
+        status, data = self.jreq("GET", "/api/config")
+        self.assertEqual(status, 200)
+        self.assertEqual(data, C.initial_config(lambda: FAKE_SYSTEM)[0])
+        self.assertFalse(self.cfg_path.exists())  # a GET never writes (ARCH-4)
+        self.assertFalse(self.jreq("GET", "/api/info")[1]["config_exists"])
+
+    def test_info_says_where_the_data_is(self):
+        status, data = self.jreq("GET", "/api/info")
+        self.assertEqual(status, 200)
+        self.assertEqual(
+            data,
+            {
+                "version": __version__,
+                "config_path": str(self.cfg_path),
+                "config_exists": True,
+                "runs_dir": str(self.runs_dir),
+            },
+        )
+
+    def test_system_resolver_for_a_settings_draft(self):
+        draft = small_config()
+        status, data = self.jreq("POST", "/api/config/system-resolver", {"resolvers": draft["resolvers"]})
+        self.assertEqual(status, 200)
+        self.assertEqual(data["resolver"], {"name": "System", "servers": ["192.0.2.53"], "enabled": True})
+        self.assertEqual(data["message"], "System: 192.0.2.53 (from a test).")
+        self.assertEqual((data["detected"], data["source"]), (["192.0.2.53"], "a test"))
+        self.assertEqual(C.load_config(self.cfg_path), C.normalize_config(small_config()))  # nothing saved
+        # The draft already has that server: nothing to add
+        draft["resolvers"][0]["servers"].append("192.0.2.53")
+        status, data = self.jreq("POST", "/api/config/system-resolver", {"resolvers": draft["resolvers"]})
+        self.assertEqual(status, 200)
+        self.assertIsNone(data["resolver"])
+        self.assertIn("already in the list as Fast", data["message"])
+        # A half-edited draft is fine; a body that isn't an object is not
+        self.assertEqual(self.jreq("POST", "/api/config/system-resolver", {"resolvers": "junk"})[0], 200)
+        self.assertEqual(self.jreq("POST", "/api/config/system-resolver", [])[0], 400)
 
     def test_corrupt_config_file(self):
         self.cfg_path.write_text("{ broken")
@@ -554,6 +604,16 @@ class ConfigApiTest(ServerTestBase):
 
 
 class RunsApiTest(ServerTestBase):
+    @mock.patch.dict(C.DEFAULT_CONFIG, {"domains": ["d0.example"]})  # 60 domains would take 15 s
+    def test_a_run_creates_a_missing_config_first(self):
+        self.cfg_path.unlink()
+        _, st = self.run_job()
+        self.assertEqual(st["last_status"], "complete")
+        created = C.load_config(self.cfg_path)
+        self.assertEqual(created, C.initial_config(lambda: FAKE_SYSTEM)[0])
+        _, run = self.jreq("GET", f"/api/runs/{st['last_run_id']}")
+        self.assertEqual(run["config"]["resolvers"], created["resolvers"])
+
     def test_empty_state(self):
         self.assertEqual(self.jreq("GET", "/api/runs"), (200, {"runs": []}))
         status, _ = self.jreq("GET", "/api/aggregate?runs=all")
@@ -912,6 +972,22 @@ class AggregateCurrentConfigTest(ServerTestBase):
         self.assertEqual(agg["recommendation"]["best"], "Off")
         _, runs = self.jreq("GET", "/api/runs")
         self.assertEqual(runs["runs"][0]["medians"], {"Fast": 4.0, "Slow": 40.0})
+
+
+class ApiDocsTest(unittest.TestCase):
+    def test_readme_lists_every_api_route(self):
+        # README "JSON API" documents the API: every route in it exists, and every route is in it.
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        section = readme.split("## JSON API", 1)[1].split("\n## ", 1)[0]
+        documented = set()
+        for method, path in re.findall(r"`(GET|POST|PUT|DELETE) (/api/[^`? ]*)", section):
+            documented.add((method, re.sub(r"<[a-z_]+>", "X", path)))
+        routes = set()
+        for pattern, methods in SV._ROUTES:
+            path = re.sub(r"\(\?P<[a-z]+>[^)]*\)", "X", pattern.pattern.strip("^$")).replace("\\", "")
+            if path.startswith("/api/"):
+                routes |= {(method, path) for method in methods}
+        self.assertEqual(documented, routes)
 
 
 if __name__ == "__main__":

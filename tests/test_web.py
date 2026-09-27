@@ -1,7 +1,7 @@
 """Smoke tests for the real web UI (dnsbench/web), served by the real server.
 
 test_server.py serves stub UI files, so a missing or misnamed asset in the real UI passes there. These
-tests serve config.WEB_DIR itself. There is no JavaScript test runner (the UI has no Node tooling):
+tests serve paths.WEB_DIR itself. There is no JavaScript test runner (the UI has no Node tooling):
 Biome, run by pre-commit and in CI, parses app.js, so a syntax error fails lint instead.
 """
 
@@ -15,7 +15,7 @@ import unittest
 from html.parser import HTMLParser
 from pathlib import Path
 
-from dnsbench import config as C
+from dnsbench import paths
 from dnsbench import server as SV
 
 # Ways to turn a string into markup. The UI builds every element with createElement/textContent, and the
@@ -65,7 +65,7 @@ class RealWebUITest(unittest.TestCase):
     def setUpClass(cls) -> None:
         cls.tmp = tempfile.TemporaryDirectory()
         root = Path(cls.tmp.name)
-        # No web_dir: the server falls back to the real config.WEB_DIR. Serving files touches neither the
+        # No web_dir: the server falls back to the real paths.WEB_DIR. Serving files touches neither the
         # config nor the runs dir, so both can point into an empty temp dir.
         cls.srv = SV.make_server("127.0.0.1", 0, root / "config.json", root / "runs")
         cls.port = cls.srv.server_address[1]
@@ -98,11 +98,11 @@ class RealWebUITest(unittest.TestCase):
         return refs
 
     def test_serves_the_real_ui_directory(self):
-        self.assertEqual(self.srv.web_dir, C.WEB_DIR)
+        self.assertEqual(self.srv.web_dir, paths.WEB_DIR)
         status, headers, body = self.get("/")
         self.assertEqual(status, 200)
         self.assertEqual(headers["content-type"], "text/html; charset=utf-8")
-        self.assertEqual(body, (C.WEB_DIR / "index.html").read_bytes())
+        self.assertEqual(body, (paths.WEB_DIR / "index.html").read_bytes())
 
     def test_index_has_a_strict_csp(self):
         _, headers, _ = self.get("/")
@@ -129,7 +129,7 @@ class RealWebUITest(unittest.TestCase):
                 self.assertTrue(url.startswith("/static/"), "the UI's files are served under /static/")
                 status, headers, body = self.get(url)
                 self.assertEqual(status, 200)
-                on_disk = C.WEB_DIR / url.removeprefix("/static/")
+                on_disk = paths.WEB_DIR / url.removeprefix("/static/")
                 self.assertEqual(body, on_disk.read_bytes())
                 self.assertEqual(headers["content-type"], types[on_disk.suffix])
 
@@ -140,7 +140,7 @@ class RealWebUITest(unittest.TestCase):
         self.assertEqual(refs.inline_styles, [])
 
     def test_app_never_sets_a_style_attribute(self):
-        for n, line in enumerate((C.WEB_DIR / "app.js").read_text(encoding="utf-8").splitlines(), 1):
+        for n, line in enumerate((paths.WEB_DIR / "app.js").read_text(encoding="utf-8").splitlines(), 1):
             with self.subTest(line=n):
                 self.assertIsNone(STYLE_ATTRIBUTE.search(line), line.strip())
         for bad in ("el.setAttribute('style', s)", 'el.setAttributeNS(null, "style", s)'):
@@ -148,8 +148,8 @@ class RealWebUITest(unittest.TestCase):
         self.assertIsNone(STYLE_ATTRIBUTE.search("el.style.setProperty('color', c)"))
 
     def test_no_html_sinks_in_the_ui(self):
-        files = [p for p in sorted(C.WEB_DIR.rglob("*")) if p.is_file()]
-        self.assertIn(C.WEB_DIR / "app.js", files)
+        files = [p for p in sorted(paths.WEB_DIR.rglob("*")) if p.is_file()]
+        self.assertIn(paths.WEB_DIR / "app.js", files)
         for path in files:
             text = path.read_text(encoding="utf-8")
             for n, line in enumerate(text.splitlines(), 1):
