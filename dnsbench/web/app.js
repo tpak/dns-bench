@@ -27,98 +27,58 @@
   const DOMAIN_CHART_LIMIT = 60;
   const SLOW_TABLE_MAX = 200; // rows shown in a resolver's "Slow queries" table
   const RUN_CACHE_MAX = 6; // full run records kept in memory
-  const MIN_INTERVAL_MS = 50; // config.py's hard floor for per_server_interval_ms
-  const MAX_DOMAINS = 500;
 
-  const PRESETS = [
-    { name: 'Quad9', servers: ['9.9.9.9', '149.112.112.112'] },
-    { name: 'AdGuard', servers: ['94.140.14.14', '94.140.15.15'] },
-    { name: 'Control D', servers: ['76.76.2.0', '76.76.10.0'] },
-    { name: 'CleanBrowsing', servers: ['185.228.168.9', '185.228.169.9'] },
-  ];
-
-  const DEFAULT_SETTINGS = {
-    per_server_interval_ms: 250,
-    timeout_ms: 1000,
-    tries: 1,
-    rounds: 1,
-    slow_threshold_ms: 200,
-    record_type: 'A',
-    shuffle: true,
-  };
-
-  const SETTING_FIELDS = [
-    {
-      key: 'per_server_interval_ms',
+  // How each setting is presented in Settings, in this order. Its type, bounds and default come
+  // from GET /api/schema (state.schema), so the rules themselves are never copied here.
+  const SETTING_TEXT = {
+    per_server_interval_ms: {
       label: 'Per-server interval',
-      unit: 'ms',
-      min: 50,
-      max: 5000,
       step: 10,
       help: 'Minimum gap between two queries to the same server. This is the politeness limit: 250 ms means at most 4 queries per second to any one server.',
     },
-    {
-      key: 'rounds',
+    rounds: {
       label: 'Rounds',
-      unit: '',
-      min: 1,
-      max: 10,
       step: 1,
       help: 'How many times each domain is looked up on each server. More rounds give steadier numbers.',
     },
-    {
-      key: 'timeout_ms',
+    timeout_ms: {
       label: 'Timeout',
-      unit: 'ms',
-      min: 200,
-      max: 10000,
       step: 50,
       help: 'How long to wait for an answer before the query counts as a timeout.',
     },
-    {
-      key: 'tries',
+    tries: {
       label: 'Tries per query',
-      unit: '',
-      min: 1,
-      max: 3,
       step: 1,
       help: "With 1, a dropped packet counts as a failure. With 2 or 3, a query that only answered on a retry counts as retried: its latency is the retry's round trip, and it is penalised in the score because the first attempt cost a full timeout.",
     },
-    {
-      key: 'slow_threshold_ms',
+    slow_threshold_ms: {
       label: 'Slow threshold',
-      unit: 'ms',
-      min: 1,
-      max: 10000,
       step: 10,
       help: 'Answers slower than this are flagged as slow.',
     },
-    {
-      key: 'record_type',
+    record_type: {
       label: 'Record type',
-      type: 'select',
-      options: [
-        ['A', 'A (IPv4 address)'],
-        ['AAAA', 'AAAA (IPv6 address)'],
-      ],
+      options: { A: 'A (IPv4 address)', AAAA: 'AAAA (IPv6 address)' },
       help: 'Which DNS record type to ask for.',
     },
-    {
-      key: 'shuffle',
+    shuffle: {
       label: 'Shuffle domain order',
-      type: 'checkbox',
       help: 'Each server gets the domains in its own random order, so two servers of one provider never ask for the same name at the same moment.',
     },
-  ];
+  };
+  const SETTING_ORDER = Object.keys(SETTING_TEXT);
 
   // ================================================================ state
   const state = {
     bootstrapped: false,
+    schema: null, // GET /api/schema: defaults, setting types and bounds, limits, presets
     config: null,
     configError: null,
-    configProblems: [], // client-side validation of the SAVED config (it may be hand-edited)
+    configErrors: [], // the server's validation of the SAVED config (it may be hand-edited)
     configInvalid: false, // the Settings draft was built from a saved config with problems
-    defaults: null,
+    estimate: null, // the server's estimate of a run of the saved config
+    runEstimate: null, // the same with the header's rounds override (POST /api/estimate)
+    draftCheck: null, // POST /api/config/validate of the Settings draft: {config, errors, estimate, ...}
     info: null, // GET /api/info: where the server keeps config.json and runs/
     runs: [],
     runCache: new Map(),
@@ -138,7 +98,6 @@
     roundsTouched: false,
     sorts: {},
     ui: { domainQuery: '', domainSort: 'list', lastResolver: null, showAllDomains: false },
-    trend: { key: null, loading: false, data: null, error: null },
     trendSlot: null,
     draft: null,
     dirty: false,
@@ -299,6 +258,30 @@
   }
   function go(tab, arg) {
     location.hash = hashFor(tab, arg);
+  }
+
+  // ---------------------------------------------------------------- schema
+  /** The settings from the schema, in display order, each with its presentation (label, help, ...). */
+  function settingFields() {
+    const list = Array.isArray(state.schema?.settings) ? state.schema.settings : [];
+    const rank = (key) => {
+      const i = SETTING_ORDER.indexOf(key);
+      return i < 0 ? SETTING_ORDER.length : i;
+    };
+    return list
+      .slice()
+      .sort((a, b) => rank(a.key) - rank(b.key))
+      .map((s) => ({ ...s, ...(SETTING_TEXT[s.key] || { label: s.key, help: '' }) }));
+  }
+  function settingSchema(key) {
+    return (
+      (Array.isArray(state.schema?.settings) ? state.schema.settings : []).find((s) => s.key === key) || null
+    );
+  }
+  /** A setting's value in a run's (or the saved) config, else its default. */
+  function settingOf(settings, key) {
+    if (settings && Object.hasOwn(settings, key)) return settings[key];
+    return settingSchema(key)?.default;
   }
 
   // ---------------------------------------------------------------- formatting
@@ -491,19 +474,6 @@
     }
   }
 
-  async function mapLimit(items, limit, fn) {
-    const out = new Array(items.length);
-    let next = 0;
-    async function worker() {
-      while (next < items.length) {
-        const i = next++;
-        out[i] = await fn(items[i], i);
-      }
-    }
-    await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
-    return out;
-  }
-
   // ================================================================ banners & toasts
   /** action: optional {href, label} link shown under the message. */
   function showBanner(message, kind = 'error', details, action) {
@@ -521,7 +491,7 @@
           ? h(
               'ul',
               { class: 'banner-details' },
-              details.map((d) => h('li', null, String(d))),
+              details.map((d) => h('li', null, String(d?.message ?? d))),
             )
           : null,
         action ? h('a', { class: 'btn btn-sm banner-action', href: action.href }, action.label) : null,
@@ -1517,16 +1487,10 @@
     return m;
   }
   function dsSettings(ds) {
-    return {
-      ...DEFAULT_SETTINGS,
-      ...(ds?.config?.settings || state.config?.settings || {}),
-    };
+    const defaults = Object.fromEntries(settingFields().map((f) => [f.key, f.default]));
+    return { ...defaults, ...(ds?.config?.settings || state.config?.settings || {}) };
   }
-  /**
-   * Slow answers of one resolver, slowest first: {rows, total, cap}. total is null
-   * when it cannot be known (an older combined summary whose single list, capped
-   * across all resolvers, may have dropped this resolver's rows).
-   */
+  /** Slow answers of one resolver, slowest first: {rows, total, cap}. */
   function slowQueriesFor(ds, sel, thr) {
     const sum = ds.summary || {};
     const byDesc = (a, b) => b.ms - a.ms;
@@ -1537,19 +1501,10 @@
         .sort(byDesc);
       return { rows: all.slice(0, SLOW_TABLE_MAX), total: all.length, cap: SLOW_TABLE_MAX };
     }
-    const per = sum.slow_by_resolver;
-    if (per && typeof per === 'object' && !Array.isArray(per)) {
-      const rows = (Array.isArray(per[sel]) ? per[sel] : []).filter((r) => r && isNum(r.ms)).sort(byDesc);
-      const counts = sum.slow_count_by_resolver;
-      const total = counts && isNum(counts[sel]) ? Math.max(counts[sel], rows.length) : rows.length;
-      return { rows, total, cap: rows.length };
-    }
-    const list = Array.isArray(sum.slow) ? sum.slow : [];
-    const rows = list.filter((r) => r && r.resolver === sel);
-    const truncated = isNum(sum.slow_count) && sum.slow_count > list.length;
-    const st = sum.by_resolver?.[sel] || {};
-    const noneSlow = !isNum(st.max) || st.max < thr;
-    return { rows, total: truncated && !noneSlow ? null : rows.length, cap: list.length };
+    const per = sum.slow_by_resolver || {};
+    const rows = (Array.isArray(per[sel]) ? per[sel] : []).filter((r) => r && isNum(r.ms)).sort(byDesc);
+    const count = sum.slow_count_by_resolver?.[sel];
+    return { rows, total: isNum(count) ? Math.max(count, rows.length) : rows.length, cap: rows.length };
   }
   /** " · measured in 1 of 5 runs" for a resolver missing from some combined runs. */
   function coverageNote(ds, name) {
@@ -1596,43 +1551,35 @@
   }
 
   // ================================================================ estimate
-  function estimate(cfg, roundsOverride) {
-    const st = { ...DEFAULT_SETTINGS, ...(cfg?.settings || {}) };
-    const num = (v, d) => (isNum(v) && v > 0 ? v : d);
-    const enabled = (cfg?.resolvers || []).filter((r) => r.enabled !== false);
-    const servers = enabled.reduce((n, r) => n + (r.servers || []).length, 0);
-    const domains = (cfg?.domains || []).length;
-    const rounds = num(roundsOverride, num(st.rounds, 1));
-    // The runner never goes below the 50 ms floor, so never advertise more than that.
-    const interval = Math.max(
-      MIN_INTERVAL_MS,
-      num(st.per_server_interval_ms, DEFAULT_SETTINGS.per_server_interval_ms),
-    );
-    const timeout = num(st.timeout_ms, DEFAULT_SETTINGS.timeout_ms) * num(st.tries, 1);
-    const perServer = domains * rounds;
-    const total = perServer * servers;
-    // Every server is measured at the same time, each at its own polite pace.
-    const par = servers;
-    const seconds = servers ? (perServer * interval * 1.05) / 1000 : 0;
-    const worst = servers ? (perServer * Math.max(interval * 1.05, timeout)) / 1000 : 0;
-    const qpsServer = 1000 / interval;
-    return {
-      resolvers: enabled.length,
-      servers,
-      domains,
-      rounds,
-      total,
-      par,
-      seconds,
-      worst,
-      qpsServer,
-      qpsTotal: qpsServer * par,
-    };
-  }
+  // The server estimates every run (config.estimate); the page only picks which one to show.
+  /** The rounds the header's input asks for, within the schema's bounds. */
   function roundsValue() {
     const cfgRounds = state.config?.settings?.rounds || 1;
     const v = parseInt(els.rounds.value, 10);
-    return Number.isFinite(v) ? clamp(v, 1, 10) : cfgRounds;
+    if (!Number.isFinite(v)) return cfgRounds;
+    const b = settingSchema('rounds');
+    return b ? clamp(v, b.min, b.max) : Math.max(1, v);
+  }
+  let runEstimateSeq = 0;
+  const fetchRunEstimate = debounce(async (rounds) => {
+    const seq = ++runEstimateSeq;
+    try {
+      const est = await api('/api/estimate', { method: 'POST', body: { rounds } });
+      if (seq !== runEstimateSeq) return;
+      state.runEstimate = est;
+      updateRunControls();
+    } catch (err) {
+      console.warn('estimate unavailable:', err); // the header keeps the last one; a run reports real errors
+    }
+  }, 200);
+  /** The estimate for the header's rounds: the saved config's, or a fetched one (the last until it arrives). */
+  function runEstimate() {
+    const est = state.estimate;
+    const rounds = roundsValue();
+    if (!est || est.rounds === rounds) return est;
+    if (state.runEstimate?.rounds === rounds) return state.runEstimate;
+    fetchRunEstimate(rounds);
+    return state.runEstimate || est;
   }
 
   // ================================================================ run controls & progress
@@ -1647,7 +1594,7 @@
       h('span', null, running ? 'Running…' : 'Run benchmark'),
     );
     els.rounds.disabled = running;
-    if (cfg && state.configProblems.length) {
+    if (cfg && state.configErrors.length) {
       // Don't advertise a duration or load for a config the server will refuse to run.
       setKids(
         els.estimate,
@@ -1655,23 +1602,23 @@
           'a',
           { class: 'est-problem', href: '#settings' },
           icon('alert', 13),
-          `The saved configuration has ${plural(state.configProblems.length, 'problem')}. Fix it in Settings.`,
+          `The saved configuration has ${plural(state.configErrors.length, 'problem')}. Fix it in Settings.`,
         ),
       );
       els.estimate.title = '';
-    } else if (cfg) {
-      const est = estimate(cfg, roundsValue());
+    } else if (cfg && runEstimate()) {
+      const est = runEstimate();
       setKids(
         els.estimate,
-        h('span', { class: 'est-main' }, icon('clock', 13), `≈ ${fmtDuration(est.seconds)}`),
+        h('span', { class: 'est-main' }, icon('clock', 13), `≈ ${fmtDuration(est.est_seconds)}`),
         h('span', { class: 'est-sep', 'aria-hidden': 'true' }, '·'),
-        h('span', null, `${fmtInt(est.total)} queries`),
+        h('span', null, `${fmtInt(est.queries)} queries`),
         h('span', { class: 'est-sep', 'aria-hidden': 'true' }, '·'),
-        h('span', null, `≤ ${fmtQps(est.qpsServer)} q/s per server`),
+        h('span', null, `≤ ${fmtQps(est.max_qps_per_server)} q/s per server`),
       );
       els.estimate.title =
         `${plural(est.resolvers, 'resolver')} (${plural(est.servers, 'server')}) × ${plural(est.domains, 'domain')} × ${plural(est.rounds, 'round')}. ` +
-        `At most ${fmtQps(est.qpsServer)} queries per second to any one server, ${fmtQps(est.qpsTotal)} in total.`;
+        `At most ${fmtQps(est.max_qps_per_server)} queries per second to any one server, ${fmtQps(est.max_qps_total)} in total.`;
     } else {
       setKids(els.estimate);
     }
@@ -1704,11 +1651,10 @@
         renderProgress();
         schedulePoll(0);
       } else if (e.status === 400 && e.details && e.details.length && /config/i.test(e.message)) {
-        // Invalid saved config: list the problems (without the long config path prefix).
         showBanner(
           `Could not start the benchmark: ${e.message}. Fix the configuration in Settings and save it.`,
           'error',
-          e.details.map((m) => String(m).replace(/^(?:[A-Za-z]:)?[^:]*?\.json:\s+/, '')),
+          e.details,
           { href: '#settings', label: 'Open Settings' },
         );
       } else showBanner(`Could not start the benchmark: ${e.message}`, 'error', e.details);
@@ -1736,7 +1682,7 @@
 
   function ingestRecent(rows) {
     if (!Array.isArray(rows)) return;
-    const thr = state.config?.settings?.slow_threshold_ms || DEFAULT_SETTINGS.slow_threshold_ms;
+    const thr = settingOf(state.config?.settings, 'slow_threshold_ms');
     for (const r of rows) {
       if (!r) continue;
       const key = `${r.resolver}|${r.server}|${r.domain}|${r.round}`;
@@ -2032,65 +1978,18 @@
   }
 
   // ================================================================ trend
-  // The /api/runs rows carry each run's per-resolver medians, which is all the trend
-  // needs. Only rows from an older server without that field fall back to fetching
-  // the full run records.
-  function trendRows() {
-    return state.runs.slice(0, TREND_MAX_RUNS).reverse();
-  }
-  function rowsHaveMedians(rows) {
-    return rows.every((r) => r?.medians && typeof r.medians === 'object' && !Array.isArray(r.medians));
-  }
+  // The /api/runs rows carry each run's per-resolver medians, which is all the trend needs.
   function trendData() {
-    const rows = trendRows();
-    if (rowsHaveMedians(rows)) {
-      return rows.map((r) => ({
+    return state.runs
+      .slice(0, TREND_MAX_RUNS)
+      .reverse()
+      .map((r) => ({
         id: r.id,
         started_at: r.started_at,
         status: r.status,
-        med: r.medians,
-        names:
-          Array.isArray(r.resolvers) && r.resolvers.length ? r.resolvers.map(String) : Object.keys(r.medians),
+        med: r.medians && typeof r.medians === 'object' ? r.medians : {},
+        names: Array.isArray(r.resolvers) ? r.resolvers.map(String) : [],
       }));
-    }
-    const t = state.trend;
-    return t.key === rows.map((r) => r.id).join(',') ? t.data : null;
-  }
-
-  async function ensureTrend() {
-    const rows = trendRows();
-    if (rowsHaveMedians(rows)) return;
-    const ids = rows.map((r) => r.id);
-    const key = ids.join(',');
-    if (state.trend.key === key && (state.trend.data || state.trend.loading)) return;
-    state.trend = { key, loading: true, data: null, error: null };
-    try {
-      const runs = await mapLimit(ids, 4, (id) => loadRun(id).catch(() => null));
-      if (state.trend.key !== key) return;
-      state.trend = {
-        key,
-        loading: false,
-        error: null,
-        data: runs.filter(Boolean).map((r) => {
-          const by = r.summary?.by_resolver || {};
-          const med = {};
-          for (const n of Object.keys(by)) med[n] = by[n] ? by[n].median : null;
-          return {
-            id: r.id,
-            started_at: r.started_at,
-            status: r.status,
-            med,
-            names: resolverNames(r.summary),
-          };
-        }),
-      };
-    } catch (e) {
-      if (state.trend.key === key) state.trend = { key, loading: false, data: null, error: e.message };
-    }
-    if (state.trendSlot?.isConnected) {
-      fillTrend(state.trendSlot);
-      flushCharts();
-    }
   }
 
   function trendCard(ds) {
@@ -2098,7 +1997,6 @@
     const slot = h('div', { class: 'trend-slot' });
     state.trendSlot = slot;
     fillTrend(slot, ds);
-    ensureTrend();
     const n = Math.min(state.runs.length, TREND_MAX_RUNS);
     return card(
       {
@@ -2111,17 +2009,6 @@
 
   function fillTrend(slot) {
     const runs = trendData();
-    if (!runs) {
-      setKids(
-        slot,
-        h(
-          'div',
-          { class: 'chart-placeholder' },
-          state.trend.error ? 'Could not load the run history.' : 'Loading run history…',
-        ),
-      );
-      return;
-    }
     const nameSet = new Set();
     for (const r of runs) for (const n of r.names) nameSet.add(n);
     const names = Array.from(nameSet).sort((a, b) => colorIndex(a) - colorIndex(b));
@@ -2543,23 +2430,9 @@
     const cfgRes = (ds.config?.resolvers || []).find((r) => r.name === sel);
     const servIps = (cfgRes?.servers || []).filter((ip) => servMap[ip]);
     for (const ip of Object.keys(servMap)) if (!servIps.includes(ip)) servIps.push(ip);
-    // The server to put first: the recommendation's pick (median plus the score's
-    // failure and retry penalties, near-ties going to config order). Without a
-    // ranking entry, apply the same penalties here.
-    let fastest = rank?.fastest_server;
-    const answering = servIps.filter((ip) => servMap[ip] && isNum(servMap[ip].median));
-    if (!fastest && answering.length) {
-      const timeoutMs = isNum(settings.timeout_ms) ? settings.timeout_ms : DEFAULT_SETTINGS.timeout_ms;
-      const cost = (x) =>
-        x.median +
-        (isNum(x.failure_rate) ? x.failure_rate : 0) * timeoutMs * 2 +
-        (isNum(x.retry_rate) ? x.retry_rate : 0) * timeoutMs;
-      fastest = answering
-        .slice()
-        .sort(
-          (a, b) => cost(servMap[a]) - cost(servMap[b]) || cmpNullLast(servMap[a].p95, servMap[b].p95),
-        )[0];
-    }
+    // The server to put first is the recommendation's pick (recommend.py). A resolver without a
+    // ranking entry has no server that answered, so there is nothing to pick.
+    const fastest = rank?.fastest_server;
     const serverItems = servIps.map((ip) => ({ ip, st: servMap[ip] || {} }));
     const head = h(
       'div',
@@ -3561,86 +3434,43 @@
   }
 
   // ================================================================ views: settings
-  const IPV4_RE = /^(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}$/;
-  function looksLikeIp(v) {
-    if (IPV4_RE.test(v)) return true;
-    if (!v.includes(':')) return false;
-    const core = v.split('%')[0];
-    if (!/^[0-9a-fA-F:.]+$/.test(core)) return false;
-    return core.split('::').length <= 2 && core.split(':').length >= 3 && core.split(':').length <= 9;
-  }
-  function validHostname(d) {
-    let ascii = d;
-    if (/[^\p{ASCII}]/u.test(d)) {
-      try {
-        ascii = new URL(`http://${d}/`).hostname;
-      } catch (_) {
-        return false;
-      }
-    }
-    if (!ascii || ascii.length > 253) return false;
-    return ascii.split('.').every((l) => /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(l));
-  }
-  function parseDomains(text) {
-    const seen = new Set();
-    const list = [];
-    const invalid = [];
-    let duplicates = 0;
-    for (const raw of String(text || '').split(/[\s,;]+/)) {
-      const d = raw.trim().toLowerCase().replace(/\.$/, '');
-      if (!d) continue;
-      if (seen.has(d)) {
-        duplicates += 1;
-        continue;
-      }
-      seen.add(d);
-      list.push(d);
-      if (!validHostname(d)) invalid.push(d);
-    }
-    return { list, duplicates, invalid };
-  }
-  function splitServers(text) {
-    return String(text || '')
-      .split(/[\s,;]+/)
-      .map((x) => x.trim())
-      .filter(Boolean);
-  }
+  // The server owns every rule: it normalises and validates the draft (POST /api/config/validate,
+  // debounced), and a save is checked again there. The page keeps the form's text as typed.
 
   function draftFromConfig(cfg) {
-    // GET /api/config returns even an invalid (hand-edited) config, so tolerate odd shapes.
-    const list = (v) => (Array.isArray(v) ? v : []);
-    const settings = {
-      ...DEFAULT_SETTINGS,
-      ...(cfg?.settings && typeof cfg.settings === 'object' ? cfg.settings : {}),
-    };
+    // GET /api/config returns even an invalid (hand-edited) config, so tolerate odd shapes. Rows stay
+    // in the same order, so the server's error paths (resolvers[i]) line up with them.
+    const text = (v, sep) => (Array.isArray(v) ? v.join(sep) : v == null ? '' : String(v));
+    const saved = cfg?.settings && typeof cfg.settings === 'object' ? cfg.settings : {};
     return {
-      resolvers: list(cfg?.resolvers)
-        .filter((r) => r && typeof r === 'object')
-        .map((r) => ({
-          name: typeof r.name === 'string' ? r.name : String(r.name || ''),
-          serversText: list(r.servers).join(', '),
-          enabled: r.enabled !== false,
-        })),
-      domainsText: list(cfg?.domains).join('\n'),
+      resolvers: (Array.isArray(cfg?.resolvers) ? cfg.resolvers : []).map((r) => ({
+        name: typeof r?.name === 'string' ? r.name : text(r?.name, ''),
+        serversText: text(r?.servers, ', '),
+        enabled: r?.enabled !== false,
+      })),
+      domainsText: text(cfg?.domains, '\n'),
       settings: Object.fromEntries(
-        SETTING_FIELDS.map((f) => [f.key, f.type ? settings[f.key] : String(settings[f.key])]),
+        settingFields().map((f) => {
+          const v = settingOf(saved, f.key);
+          return [f.key, f.type === 'int' ? text(v, '') : v];
+        }),
       ),
     };
   }
-  /** Problems in a saved config, as validateDraft errors ([] when fine). Never throws. */
-  function configProblemsOf(cfg) {
-    if (!cfg) return [];
-    try {
-      const d = draftFromConfig(cfg);
-      return validateDraft(draftToConfig(d), d);
-    } catch (err) {
-      console.error(err);
-      return [];
-    }
+  /** The draft as the server takes it: raw text for servers, domains and numbers. */
+  function draftToRaw(d) {
+    return {
+      resolvers: d.resolvers.map((r) => ({ name: r.name, servers: r.serversText, enabled: !!r.enabled })),
+      domains: d.domainsText,
+      settings: { ...d.settings },
+    };
   }
-  function setConfig(cfg) {
-    state.config = cfg;
-    state.configProblems = configProblemsOf(cfg);
+  /** Apply a {config, errors, estimate} response from the config endpoints. */
+  function setConfig(res) {
+    state.config = res.config;
+    state.configErrors = Array.isArray(res.errors) ? res.errors : [];
+    state.estimate = res.estimate || null;
+    state.runEstimate = null;
     // Enabling or disabling a resolver changes what the combined view may recommend.
     if (
       state.dataset &&
@@ -3652,136 +3482,32 @@
       selectDataset('all', { rerender: 'auto' });
     }
   }
-  function draftToConfig(d) {
-    const base = state.config || {};
-    const settings = { ...(base.settings || {}) };
-    for (const f of SETTING_FIELDS) {
-      const v = d.settings[f.key];
-      if (f.type === 'checkbox') settings[f.key] = !!v;
-      else if (f.type === 'select') settings[f.key] = String(v);
-      else settings[f.key] = String(v).trim() === '' ? NaN : Number(v);
-    }
-    return {
-      ...base,
-      resolvers: d.resolvers.map((r) => ({
-        name: r.name.trim(),
-        servers: splitServers(r.serversText),
-        enabled: !!r.enabled,
-      })),
-      domains: parseDomains(d.domainsText).list,
-      settings,
-    };
-  }
-  function canonical(cfg) {
-    return JSON.stringify([
-      (Array.isArray(cfg?.resolvers) ? cfg.resolvers : []).map((r) =>
-        r && typeof r === 'object' ? [r.name, r.servers || [], r.enabled !== false] : r,
-      ),
-      cfg?.domains || [],
-      SETTING_FIELDS.map((f) => (cfg?.settings ? cfg.settings[f.key] : null)),
-    ]);
-  }
   function computeDirty() {
     if (!state.draft || !state.config) return false;
-    return canonical(draftToConfig(state.draft)) !== canonical(state.config);
+    return JSON.stringify(state.draft) !== JSON.stringify(draftFromConfig(state.config));
   }
 
-  function validateDraft(cfg, draft) {
-    const errs = [];
-    const add = (scope, msg, extra) => errs.push({ scope, msg, ...(extra || {}) });
-    const names = new Map();
-    const ips = new Map();
-    if (!cfg.resolvers.length) add('resolvers', 'Add at least one resolver.');
-    cfg.resolvers.forEach((r, i) => {
-      const label = r.name ? `${r.name}` : `Resolver ${i + 1}`;
-      if (!r.name) add('resolvers', `Resolver ${i + 1}: give it a name.`, { index: i });
-      else if (r.name.length > 40)
-        add('resolvers', `${label}: the name must be 40 characters or fewer.`, { index: i });
-      else if (r.name.includes(','))
-        add('resolvers', `${label}: the name cannot contain commas.`, { index: i });
-      else {
-        const k = r.name.toLowerCase();
-        if (names.has(k)) {
-          const msg = `"${r.name}" is used twice. Resolver names must be unique.`;
-          add('resolvers', msg, { index: names.get(k) });
-          add('resolvers', msg, { index: i });
-        } else names.set(k, i);
-      }
-      if (!r.servers.length) add('resolvers', `${label}: add at least one server IP address.`, { index: i });
-      if (r.servers.length > 4)
-        add('resolvers', `${label}: at most 4 servers (found ${r.servers.length}).`, { index: i });
-      for (const ip of r.servers) {
-        if (!looksLikeIp(ip)) {
-          add('resolvers', `${label}: "${ip}" is not a valid IPv4 or IPv6 address.`, { index: i });
-          continue;
-        }
-        const k = ip.toLowerCase();
-        if (ips.has(k)) {
-          const other = cfg.resolvers[ips.get(k)];
-          add(
-            'resolvers',
-            `${label}: ${ip} is already used by ${ips.get(k) === i ? 'this resolver' : (other?.name) || 'another resolver'}.`,
-            { index: i },
-          );
-        } else ips.set(k, i);
-      }
-    });
-    if (cfg.resolvers.length && !cfg.resolvers.some((r) => r.enabled))
-      add('resolvers', 'Enable at least one resolver.');
-    const p = parseDomains(draft.domainsText);
-    if (!p.list.length) add('domains', 'Add at least one domain.');
-    if (p.list.length > MAX_DOMAINS)
-      add('domains', `Too many domains: ${fmtInt(p.list.length)} (the maximum is ${MAX_DOMAINS}).`);
-    if (p.invalid.length)
-      add(
-        'domains',
-        `Not valid domain name${p.invalid.length > 1 ? 's' : ''}: ${p.invalid.slice(0, 5).join(', ')}${p.invalid.length > 5 ? ` and ${p.invalid.length - 5} more` : ''}.`,
-      );
-    for (const f of SETTING_FIELDS) {
-      if (f.type === 'select') {
-        if (!f.options.some(([v]) => v === cfg.settings[f.key]))
-          add('settings', `${f.label} must be one of ${f.options.map(([v]) => v).join(' or ')}.`, {
-            key: f.key,
-          });
-        continue;
-      }
-      if (f.type) continue;
-      const v = cfg.settings[f.key];
-      if (!Number.isInteger(v) || v < f.min || v > f.max)
-        add('settings', `${f.label} must be a whole number from ${fmtInt(f.min)} to ${fmtInt(f.max)}.`, {
+  /** Where a server error belongs in the form, from its path (see README "JSON API"). */
+  function errorTarget(e) {
+    const path = String(e?.path ?? '');
+    const msg = String(e?.message ?? e);
+    let m = /^resolvers\[(\d+)\]/.exec(path);
+    if (m) return { scope: 'resolvers', index: Number(m[1]), msg };
+    if (path === 'resolvers') return { scope: 'resolvers', msg };
+    if (path === 'domains' || path.startsWith('domains[')) return { scope: 'domains', msg };
+    m = /^settings\.(\w+)$/.exec(path);
+    if (m) {
+      const f = settingFields().find((x) => x.key === m[1]);
+      // A range error reads better with the field's own name than as settings.<key>.
+      if (f && e.code === 'out_of_range')
+        return {
+          scope: 'settings',
           key: f.key,
-        });
+          msg: `${f.label} must be a whole number from ${fmtInt(f.min)} to ${fmtInt(f.max)}.`,
+        };
+      return { scope: 'settings', key: m[1], msg };
     }
-    return errs;
-  }
-
-  /** Map a server-side validation message onto the field it is about. */
-  function classifyServerError(msg, draft) {
-    const m = String(msg);
-    for (const f of SETTING_FIELDS) if (m.includes(f.key)) return { scope: 'settings', key: f.key, msg: m };
-    if (/^\s*domains?\b/i.test(m) || (/\bdomain/i.test(m) && !/resolver/i.test(m)))
-      return { scope: 'domains', msg: m };
-    if (/resolver|server|\bip\b|name/i.test(m)) {
-      let idx = null;
-      const bracket = m.match(/resolvers?\s*\[(\d+)\]/i);
-      const hash = bracket ? null : m.match(/resolver\s*#\s*(\d+)/i);
-      if (bracket) idx = Number(bracket[1]);
-      else if (hash) idx = Number(hash[1]) - 1;
-      if (idx === null) {
-        const quoted = [];
-        const re = /['"“‘]([^'"”’]+)['"”’]/g;
-        for (const q of m.matchAll(re)) quoted.push(q[1].trim());
-        draft.resolvers.forEach((r, i) => {
-          if (idx !== null) return;
-          if (quoted.includes(r.name.trim()) || splitServers(r.serversText).some((ip) => quoted.includes(ip)))
-            idx = i;
-        });
-      }
-      if (idx !== null && idx >= 0 && idx < draft.resolvers.length)
-        return { scope: 'resolvers', index: idx, msg: m };
-      return { scope: 'resolvers', msg: m };
-    }
-    return { scope: 'general', msg: m };
+    return { scope: 'general', msg };
   }
   function groupErrors(list) {
     const g = {
@@ -3808,13 +3534,30 @@
     return g;
   }
 
+  let draftCheckSeq = 0;
+  const checkDraft = debounce(async () => {
+    const d = state.draft;
+    if (!d) return;
+    const seq = ++draftCheckSeq;
+    try {
+      const res = await api('/api/config/validate', { method: 'POST', body: draftToRaw(d) });
+      if (seq !== draftCheckSeq || state.draft !== d) return; // a newer edit or another draft
+      state.draftCheck = res;
+      if (state.settingsHooks) state.settingsHooks.refresh();
+    } catch (err) {
+      console.warn('draft check unavailable:', err); // the form keeps the last check; Save re-validates
+    }
+  }, 250);
+
   function onDraftChange() {
     state.dirty = computeDirty();
+    checkDraft();
     if (state.settingsHooks) state.settingsHooks.refresh();
     updateTabs();
   }
   function discardDraft() {
     state.draft = null;
+    state.draftCheck = null;
     state.dirty = false;
     state.saveErrors = null;
     state.configInvalid = false;
@@ -3845,19 +3588,10 @@
 
   async function saveSettings() {
     if (!state.draft || state.saving) return;
-    const cfg = draftToConfig(state.draft);
-    const clientErrs = validateDraft(cfg, state.draft);
-    if (clientErrs.length) {
-      state.saveErrors = groupErrors(clientErrs);
-      render();
-      focusFirstError();
-      return;
-    }
     state.saving = true;
     if (state.settingsHooks) state.settingsHooks.refresh();
     try {
-      const saved = await api('/api/config', { method: 'PUT', body: cfg });
-      setConfig(saved?.resolvers ? saved : cfg);
+      setConfig(await api('/api/config', { method: 'PUT', body: draftToRaw(state.draft) }));
       if (state.info) state.info.config_exists = true;
       discardDraft();
       resetColors();
@@ -3868,7 +3602,7 @@
       render();
     } catch (e) {
       if (e.status === 400 && e.details && e.details.length) {
-        state.saveErrors = groupErrors(e.details.map((m) => classifyServerError(m, state.draft)));
+        state.saveErrors = groupErrors(e.details.map(errorTarget));
         render();
         focusFirstError();
       } else showBanner(`Could not save settings: ${e.message}`);
@@ -3917,7 +3651,7 @@
   }
 
   function viewSettings() {
-    if (!state.config) {
+    if (!state.config || !state.schema) {
       return emptyPanel(
         'Configuration unavailable',
         state.configError || 'The configuration could not be loaded.',
@@ -3931,14 +3665,21 @@
     }
     if (!state.draft) {
       state.draft = draftFromConfig(state.config);
+      state.draftCheck = {
+        config: state.config,
+        errors: state.configErrors,
+        estimate: state.estimate,
+        duplicate_domains: 0,
+      };
       // A hand-edited config.json can be invalid (the server still returns it so it
       // can be fixed here). Show its problems inline and let the user save a fix.
-      const problems = configProblemsOf(state.config);
-      state.configInvalid = problems.length > 0;
+      state.configInvalid = state.configErrors.length > 0;
       if (state.configInvalid && !state.saveErrors)
-        state.saveErrors = { ...groupErrors(problems), fromLoad: true };
+        state.saveErrors = { ...groupErrors(state.configErrors.map(errorTarget)), fromLoad: true };
     }
     const d = state.draft;
+    const limits = state.schema.limits || {};
+    const presets = Array.isArray(state.schema.presets) ? state.schema.presets : [];
     const errs = state.saveErrors || groupErrors([]);
     // Editing a field clears its error both on screen and in state.saveErrors;
     // once none are left, the summary at the top goes too.
@@ -3988,7 +3729,7 @@
         class: 'input',
         type: 'text',
         value: r.name,
-        maxlength: '40',
+        maxlength: String(limits.name_length),
         placeholder: 'Name',
         'aria-label': `Resolver ${i + 1} name`,
         autocomplete: 'off',
@@ -4053,7 +3794,7 @@
       setKids(
         presetSel,
         h('option', { value: '' }, 'Add a preset…'),
-        PRESETS.map((p) => {
+        presets.map((p) => {
           const exists = d.resolvers.some((r) => r.name.trim().toLowerCase() === p.name.toLowerCase());
           return h(
             'option',
@@ -4093,12 +3834,16 @@
       try {
         const res = await api('/api/config/system-resolver', {
           method: 'POST',
-          body: { resolvers: draftToConfig(d).resolvers },
+          body: { resolvers: draftToRaw(d).resolvers },
         });
         if (state.draft !== d) return; // the draft was saved or discarded meanwhile
         if (res?.resolver) {
           const serversText = res.resolver.servers.join(', ');
           const existing = d.resolvers.find((r) => r.name.trim().toLowerCase() === 'system');
+          if (existing?.serversText === serversText) {
+            toast(`${res.message} The System row already has them.`, 'info');
+            return;
+          }
           if (existing) existing.serversText = serversText;
           else d.resolvers.push({ name: res.resolver.name, serversText, enabled: true });
           pruneSaveErrors('resolvers');
@@ -4115,7 +3860,7 @@
     });
     const presetSel = h('select', { class: 'input select select-sm', 'aria-label': 'Add a preset resolver' });
     presetSel.addEventListener('change', () => {
-      const p = PRESETS.find((x) => x.name === presetSel.value);
+      const p = presets.find((x) => x.name === presetSel.value);
       if (!p) return;
       d.resolvers.push({ name: p.name, serversText: p.servers.join(', '), enabled: true });
       drawResolvers();
@@ -4150,21 +3895,31 @@
     });
     ta.value = d.domainsText;
     const info = h('div', { class: 'domain-info', id: 'domains-info' });
+    // From the server's last check of the draft (it lags the typing by a moment).
     const updateDomainInfo = () => {
-      const p = parseDomains(d.domainsText);
-      const over = p.list.length > MAX_DOMAINS;
+      const check = state.draftCheck || {};
+      const list = Array.isArray(check.config?.domains) ? check.config.domains : [];
+      const errors = Array.isArray(check.errors) ? check.errors : [];
+      const invalid = errors
+        .map((e) => /^domains\[(\d+)\]$/.exec(String(e.path)))
+        .filter(Boolean)
+        .map((m) => String(list[Number(m[1])]));
+      const more = errors.some((e) => e.path === 'domains' && e.code === 'more_errors');
+      const dupes = isNum(check.duplicate_domains) ? check.duplicate_domains : 0;
       setKids(
         info,
-        h('strong', { class: over ? 'text-critical' : '' }, plural(p.list.length, 'domain')),
-        h('span', { class: 'muted' }, ` of ${MAX_DOMAINS} max`),
-        p.duplicates
-          ? h('span', { class: 'muted' }, ` · ${plural(p.duplicates, 'duplicate')} will be removed`)
-          : null,
-        p.invalid.length
+        h(
+          'strong',
+          { class: list.length > limits.domains ? 'text-critical' : '' },
+          plural(list.length, 'domain'),
+        ),
+        h('span', { class: 'muted' }, ` of ${fmtInt(limits.domains)} max`),
+        dupes ? h('span', { class: 'muted' }, ` · ${plural(dupes, 'duplicate')} will be removed`) : null,
+        invalid.length
           ? h(
               'span',
               { class: 'text-critical' },
-              ` · ${fmtInt(p.invalid.length)} invalid: ${p.invalid.slice(0, 3).join(', ')}${p.invalid.length > 3 ? '…' : ''}`,
+              ` · ${fmtInt(invalid.length)}${more ? '+' : ''} invalid: ${invalid.slice(0, 3).join(', ')}${invalid.length > 3 || more ? '…' : ''}`,
             )
           : null,
       );
@@ -4177,13 +3932,13 @@
     });
     const resetDomains = h(
       'button',
-      { type: 'button', class: 'btn btn-sm', disabled: !state.defaults?.domains },
+      { type: 'button', class: 'btn btn-sm', disabled: !state.schema.defaults?.domains },
       icon('refresh', 14),
       h('span', null, 'Reset domains to defaults'),
     );
     resetDomains.addEventListener('click', () => {
-      if (!state.defaults?.domains) return;
-      d.domainsText = state.defaults.domains.join('\n');
+      if (!state.schema.defaults?.domains) return;
+      d.domainsText = state.schema.defaults.domains.join('\n');
       ta.value = d.domainsText;
       clearErr(ta, 'domains');
       updateDomainInfo();
@@ -4212,15 +3967,15 @@
     );
 
     // ---- benchmark settings
-    const fields = SETTING_FIELDS.map((f) => {
+    const fields = settingFields().map((f) => {
       const id = `set-${f.key}`;
       const fe = errs.settings[f.key] || [];
       let input;
-      if (f.type === 'select') {
+      if (f.type === 'choice') {
         input = h(
           'select',
           { class: 'input select', id },
-          f.options.map(([v, l]) => h('option', { value: v }, l)),
+          (f.choices || []).map((v) => h('option', { value: v }, f.options?.[v] || v)),
         );
         input.value = d.settings[f.key];
         input.addEventListener('change', () => {
@@ -4228,7 +3983,7 @@
           clearErr(input, 'settings', f.key);
           onDraftChange();
         });
-      } else if (f.type === 'checkbox') {
+      } else if (f.type === 'bool') {
         input = h('input', { type: 'checkbox', id, checked: !!d.settings[f.key] });
         input.addEventListener('change', () => {
           d.settings[f.key] = input.checked;
@@ -4260,7 +4015,7 @@
             fe.map((m) => h('div', null, m)),
           )
         : null;
-      if (f.type === 'checkbox') {
+      if (f.type === 'bool') {
         return h(
           'div',
           { class: `field field-check${fe.length ? ' has-error' : ''}` },
@@ -4276,7 +4031,7 @@
           'label',
           { class: 'field-label', for: id },
           h('span', null, f.label),
-          f.min !== undefined
+          f.type === 'int'
             ? h(
                 'span',
                 { class: 'field-range' },
@@ -4292,7 +4047,8 @@
 
     const estBox = h('div', { class: 'estimate' });
     const updateEstimate = () => {
-      const est = estimate(draftToConfig(d));
+      const est = state.draftCheck?.estimate || state.estimate;
+      if (!est) return;
       const row = (label, value, sub) =>
         h(
           'div',
@@ -4305,20 +4061,26 @@
         estBox,
         row(
           'Estimated duration',
-          `≈ ${fmtDuration(est.seconds)}`,
-          est.worst > est.seconds * 1.5 ? `Up to ${fmtDuration(est.worst)} if servers keep timing out` : null,
+          `≈ ${fmtDuration(est.est_seconds)}`,
+          est.worst_seconds > est.est_seconds * 1.5
+            ? `Up to ${fmtDuration(est.worst_seconds)} if servers keep timing out`
+            : null,
         ),
         row(
           'Queries per run',
-          fmtInt(est.total),
+          fmtInt(est.queries),
           `${plural(est.resolvers, 'resolver')} · ${plural(est.servers, 'server')} · ${plural(est.domains, 'domain')} × ${plural(est.rounds, 'round')}`,
         ),
         row(
           'Load on each server',
-          `≤ ${fmtQps(est.qpsServer)} queries/s`,
+          `≤ ${fmtQps(est.max_qps_per_server)} queries/s`,
           'Never more than one query in flight per server',
         ),
-        row('Total load', `≤ ${fmtQps(est.qpsTotal)} queries/s`, `${plural(est.par, 'server')} at a time`),
+        row(
+          'Total load',
+          `≤ ${fmtQps(est.max_qps_total)} queries/s`,
+          `${plural(est.servers, 'server')} at a time`,
+        ),
       );
     };
     updateEstimate();
@@ -4365,6 +4127,7 @@
       revertBtn.disabled = !state.dirty || state.saving;
       resetBtn.disabled = state.saving;
       updateEstimate();
+      updateDomainInfo();
     };
     state.settingsHooks = { refresh };
     refresh();
@@ -4416,7 +4179,7 @@
 
   // ================================================================ empty & shell
   function emptyRunsPanel() {
-    const est = estimate(state.config || {});
+    const est = state.estimate;
     const btn = h(
       'button',
       {
@@ -4437,8 +4200,8 @@
       h(
         'p',
         { class: 'empty-text' },
-        state.config
-          ? `DNS Bench will look up ${plural(est.domains, 'domain')} on ${plural(est.resolvers, 'resolver')} (${plural(est.servers, 'server')}). That takes about ${fmtDuration(est.seconds)}, and no server ever gets more than ${fmtQps(est.qpsServer)} queries per second.`
+        state.config && est
+          ? `DNS Bench will look up ${plural(est.domains, 'domain')} on ${plural(est.resolvers, 'resolver')} (${plural(est.servers, 'server')}). That takes about ${fmtDuration(est.est_seconds)}, and no server ever gets more than ${fmtQps(est.max_qps_per_server)} queries per second.`
           : 'Waiting for the configuration…',
       ),
       btn,
@@ -4688,21 +4451,28 @@
 
   // ================================================================ bootstrap
   async function bootstrap() {
-    const [cfgR, defR, runsR, stR, infoR] = await Promise.allSettled([
+    const [cfgR, schemaR, runsR, stR, infoR] = await Promise.allSettled([
       api('/api/config'),
-      api('/api/defaults'),
+      api('/api/schema'),
       api('/api/runs'),
       api('/api/status'),
       api('/api/info'),
     ]);
-    if (cfgR.status === 'fulfilled' && cfgR.value) {
+    if (schemaR.status === 'fulfilled' && schemaR.value) {
+      state.schema = schemaR.value;
+      const rounds = settingSchema('rounds');
+      if (rounds) {
+        els.rounds.min = String(rounds.min);
+        els.rounds.max = String(rounds.max);
+      }
+    } else showBanner(`Could not load the settings' rules: ${schemaR.reason?.message || 'Unknown error'}`);
+    if (cfgR.status === 'fulfilled' && cfgR.value?.config) {
       setConfig(cfgR.value);
       state.configError = null;
     } else {
       state.configError = cfgR.reason ? cfgR.reason.message : 'Unknown error';
       showBanner(`Could not load the configuration: ${state.configError}`, 'error', cfgR.reason?.details);
     }
-    if (defR.status === 'fulfilled') state.defaults = defR.value;
     if (infoR.status === 'fulfilled') state.info = infoR.value;
     if (runsR.status === 'fulfilled') state.runs = Array.isArray(runsR.value?.runs) ? runsR.value.runs : [];
     else showBanner(`Could not load saved runs: ${runsR.reason.message}`);

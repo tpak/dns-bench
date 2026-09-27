@@ -14,7 +14,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from dnsbench import __version__, storage, sysdns
+from dnsbench import __version__, recommend, storage, sysdns
 from dnsbench import config as C
 from dnsbench import server as SV
 from dnsbench.resolver import QueryResult
@@ -436,13 +436,14 @@ C_MB = 1024 * 1024
 
 
 class ConfigApiTest(ServerTestBase):
-    def test_get_config_and_defaults(self):
+    def test_get_config_with_its_problems_and_estimate(self):
         status, data = self.jreq("GET", "/api/config")
         self.assertEqual(status, 200)
-        self.assertEqual(data["domains"], ["d0.example", "d1.example", "d2.example"])
-        status, data = self.jreq("GET", "/api/defaults")
-        self.assertEqual(status, 200)
-        self.assertEqual(data, C.default_config())
+        self.assertEqual(set(data), {"config", "errors", "estimate"})
+        self.assertEqual(data["config"], C.normalize_config(small_config()))
+        self.assertEqual(data["errors"], [])
+        self.assertEqual(data["estimate"], C.estimate(small_config()))
+        self.assertEqual(data["estimate"]["queries"], 6)  # 2 enabled servers x 3 domains
 
     def test_put_valid_config_normalises_and_saves(self):
         cfg = small_config()
@@ -450,10 +451,12 @@ class ConfigApiTest(ServerTestBase):
         cfg["resolvers"][0]["servers"] = "192.0.2.1, 2001:0db8::0001"
         status, data = self.jreq("PUT", "/api/config", cfg)
         self.assertEqual(status, 200, data)
-        self.assertEqual(data["domains"], ["example.com", "b.org"])
-        self.assertEqual(data["resolvers"][0]["servers"], ["192.0.2.1", "2001:db8::1"])
+        saved = data["config"]
+        self.assertEqual(saved["domains"], ["example.com", "b.org"])
+        self.assertEqual(saved["resolvers"][0]["servers"], ["192.0.2.1", "2001:db8::1"])
+        self.assertEqual((data["errors"], data["estimate"]["domains"]), ([], 2))
         on_disk = json.loads(self.cfg_path.read_text())
-        self.assertEqual(on_disk, data)
+        self.assertEqual(on_disk, saved)
         self.assertEqual(self.jreq("GET", "/api/config")[1], data)
 
     def test_put_charset_content_type_ok(self):
@@ -470,8 +473,10 @@ class ConfigApiTest(ServerTestBase):
         status, data = self.jreq("PUT", "/api/config", cfg)
         self.assertEqual(status, 400)
         self.assertEqual(data["error"], "Invalid config")
-        self.assertTrue(any("not-an-ip" in d for d in data["details"]))
-        self.assertTrue(any("per_server_interval_ms" in d for d in data["details"]))
+        details = {d["path"]: d for d in data["details"]}
+        self.assertEqual(details["resolvers[0].servers[0]"]["code"], "invalid")
+        self.assertIn("not-an-ip", details["resolvers[0].servers[0]"]["message"])
+        self.assertEqual(details["settings.per_server_interval_ms"]["code"], "out_of_range")
         self.assertEqual(self.cfg_path.read_text(), before)
 
     def test_put_bad_bodies(self):
@@ -488,15 +493,15 @@ class ConfigApiTest(ServerTestBase):
         status, data = self.jreq("POST", "/api/config/reset")
         self.assertEqual(status, 200)
         expected = C.initial_config(lambda: FAKE_SYSTEM)[0]  # the defaults plus this computer's resolvers
-        self.assertEqual(data, expected)
-        self.assertEqual(data["resolvers"][-1]["servers"], ["192.0.2.53"])
+        self.assertEqual(data["config"], expected)
+        self.assertEqual(data["config"]["resolvers"][-1]["servers"], ["192.0.2.53"])
         self.assertEqual(C.load_config(self.cfg_path), expected)
 
     def test_missing_config_is_shown_but_not_created(self):
         self.cfg_path.unlink()
         status, data = self.jreq("GET", "/api/config")
         self.assertEqual(status, 200)
-        self.assertEqual(data, C.initial_config(lambda: FAKE_SYSTEM)[0])
+        self.assertEqual(data["config"], C.initial_config(lambda: FAKE_SYSTEM)[0])
         self.assertFalse(self.cfg_path.exists())  # a GET never writes (ARCH-4)
         self.assertFalse(self.jreq("GET", "/api/info")[1]["config_exists"])
 
@@ -535,7 +540,10 @@ class ConfigApiTest(ServerTestBase):
         self.cfg_path.write_text("{ broken")
         status, data = self.jreq("GET", "/api/config")
         self.assertEqual(status, 500)
-        self.assertIn("not valid JSON", " ".join(data["details"]))
+        (detail,) = data["details"]
+        self.assertEqual((detail["path"], detail["code"]), ("", "invalid_json"))
+        self.assertIn("not valid JSON", detail["message"])
+        self.assertNotIn(self.tmp.name, detail["message"])  # no absolute paths in API errors (SEC-8)
         status, data = self.jreq("POST", "/api/run")
         self.assertEqual(status, 400)
         # the UI can still fix it
@@ -548,7 +556,7 @@ class ConfigApiTest(ServerTestBase):
                 body["settings"]["rounds"] = bad
                 status, data = self.jreq("PUT", "/api/config", body)
                 self.assertEqual((status, data["error"]), (400, "Invalid config"))
-                self.assertTrue(any("settings.rounds" in d for d in data["details"]))
+                self.assertIn("settings.rounds", [d["path"] for d in data["details"]])
         for raw in (b'{"settings": {"rounds": ' + b"9" * 5000 + b"}}", b"[" * 100000 + b"]" * 100000):
             with self.subTest(raw=raw[:10]):
                 status, data = self.jreq("PUT", "/api/config", raw=raw)
@@ -565,7 +573,16 @@ class ConfigApiTest(ServerTestBase):
             with self.subTest(path=path, raw=raw[:14]):
                 status, data = self.jreq(method, path, raw=raw)
                 self.assertEqual((status, data["error"]), (400, "Malformed JSON"))
-                self.assertEqual(data["details"], [f"nested more than {C.MAX_JSON_DEPTH} levels deep"])
+                self.assertEqual(
+                    data["details"],
+                    [
+                        {
+                            "path": "",
+                            "code": "malformed_json",
+                            "message": f"nested more than {C.MAX_JSON_DEPTH} levels deep",
+                        }
+                    ],
+                )
         self.assertFalse(self.jreq("GET", "/api/status")[1]["running"])
 
     def test_bad_number_in_config_file_keeps_settings_usable(self):
@@ -573,16 +590,22 @@ class ConfigApiTest(ServerTestBase):
         bad["settings"]["rounds"] = "--5"
         self.cfg_path.write_text(json.dumps(bad))
         status, data = self.jreq("GET", "/api/config")
-        self.assertEqual((status, data["settings"]["rounds"]), (200, "--5"))
+        self.assertEqual((status, data["config"]["settings"]["rounds"]), (200, "--5"))
+        self.assertEqual([d["path"] for d in data["errors"]], ["settings.rounds"])
+        self.assertEqual(data["estimate"]["rounds"], 1)  # an unusable value counts as the default
         status, data = self.jreq("POST", "/api/run")
         self.assertEqual((status, data["error"]), (400, "Invalid config"))
 
     def test_config_write_failure_is_500_not_invalid_input(self):
-        err = C.ConfigWriteError("cannot write config.json: Permission denied")
-        with mock.patch.object(C, "_atomic_write_text", side_effect=err):
+        with mock.patch.object(
+            C, "_atomic_write_text_raw", side_effect=PermissionError(13, "Permission denied")
+        ):
             status, data = self.jreq("PUT", "/api/config", small_config())
             self.assertEqual((status, data["error"]), (500, "Cannot save config"))
-            self.assertIn("Permission denied", data["details"][0])
+            self.assertEqual(
+                data["details"],
+                [{"path": "", "code": "write_failed", "message": "cannot write the file: Permission denied"}],
+            )
             status, data = self.jreq("POST", "/api/config/reset")
             self.assertEqual((status, data["error"]), (500, "Cannot save config"))
             self.cfg_path.unlink()  # first-run default creation fails too
@@ -590,17 +613,36 @@ class ConfigApiTest(ServerTestBase):
             self.assertEqual((status, data["error"]), (500, "Cannot save config"))
         self.assertEqual(self.fake.calls, 0)
 
+    def test_an_absurd_number_in_the_config_file_is_shown_not_a_500(self):
+        bad = small_config()
+        bad["settings"]["rounds"] = 10**400
+        self.cfg_path.write_text(json.dumps(bad))
+        status, data = self.jreq("GET", "/api/config")
+        self.assertEqual(status, 200)
+        self.assertEqual(
+            [(d["path"], d["code"]) for d in data["errors"]], [("settings.rounds", "out_of_range")]
+        )
+        self.assertEqual(data["estimate"]["rounds"], 10)  # clamped to the limit
+        self.assertEqual(self.jreq("POST", "/api/estimate", {"config": bad})[0], 200)
+
     def test_invalid_but_parseable_config_is_shown(self):
         bad = small_config()
         bad["settings"]["rounds"] = 99
         self.cfg_path.write_text(json.dumps(bad))
         status, data = self.jreq("GET", "/api/config")
         self.assertEqual(status, 200)
-        self.assertEqual(data["settings"]["rounds"], 99)
+        self.assertEqual(data["config"]["settings"]["rounds"], 99)
+        self.assertEqual(
+            [(d["path"], d["code"]) for d in data["errors"]], [("settings.rounds", "out_of_range")]
+        )
         status, data = self.jreq("POST", "/api/run")
         self.assertEqual(status, 400)
         self.assertEqual(data["error"], "Invalid config")
-        self.assertTrue(data["details"])
+        # The same structured error, without the config file's path in front of it
+        self.assertEqual(
+            [(d["path"], d["code"]) for d in data["details"]], [("settings.rounds", "out_of_range")]
+        )
+        self.assertTrue(data["details"][0]["message"].startswith("settings.rounds: "))
 
 
 class RunsApiTest(ServerTestBase):
@@ -738,7 +780,9 @@ class RunsApiTest(ServerTestBase):
         status, data = self.jreq("POST", "/api/run")
         self.assertEqual(status, 500, data)
         self.assertEqual(data["error"], "Cannot save runs")
-        self.assertIn("cannot write to", data["details"][0])
+        self.assertEqual(data["details"][0]["code"], "runs_dir_unwritable")
+        self.assertIn("cannot write to the runs folder", data["details"][0]["message"])
+        self.assertNotIn(self.tmp.name, data["details"][0]["message"])
         self.assertEqual(self.fake.calls, 0)
         self.assertFalse(self.jreq("GET", "/api/status")[1]["running"])
 
@@ -780,7 +824,8 @@ class RunsApiTest(ServerTestBase):
         status, data = self.jreq("POST", "/api/run", {"rounds": 10})
         self.assertEqual(status, 400, data)
         self.assertEqual(data["error"], "Invalid run settings")
-        self.assertIn("the limit is 50,000", data["details"][0])
+        self.assertEqual((data["details"][0]["path"], data["details"][0]["code"]), ("", "too_many_queries"))
+        self.assertIn("the limit is 50,000", data["details"][0]["message"])
         self.assertEqual(self.fake.calls, 0)
 
     def test_a_crashed_run_is_saved_and_reported(self):
@@ -972,6 +1017,100 @@ class AggregateCurrentConfigTest(ServerTestBase):
         self.assertEqual(agg["recommendation"]["best"], "Off")
         _, runs = self.jreq("GET", "/api/runs")
         self.assertEqual(runs["runs"][0]["medians"], {"Fast": 4.0, "Slow": 40.0})
+
+
+class SchemaAndDraftApiTest(ServerTestBase):
+    def test_schema_is_the_python_rules(self):
+        status, schema = self.jreq("GET", "/api/schema")
+        self.assertEqual(status, 200)
+        self.assertEqual(schema, SV.api_schema())
+        self.assertEqual(schema["defaults"], C.default_config())
+        self.assertEqual(schema["settings"], C.setting_schema())
+        self.assertEqual(schema["presets"], C.PRESETS)
+        self.assertEqual(
+            schema["limits"],
+            {
+                "resolvers": C.MAX_RESOLVERS,
+                "servers_per_resolver": C.MAX_SERVERS_PER_RESOLVER,
+                "name_length": C.MAX_NAME_LEN,
+                "domains": C.MAX_DOMAINS,
+                "hostname_length": C.MAX_HOSTNAME_LEN,
+                "queries_per_run": C.MAX_QUERIES_PER_RUN,
+                "min_interval_ms": C.MIN_INTERVAL_MS,
+                "request_bytes": SV.MAX_BODY,
+            },
+        )
+        self.assertEqual(schema["error_codes"], C.ERROR_CODES)
+        self.assertEqual(
+            schema["scoring"]["weights"],
+            {"median": recommend.W_MEDIAN, "p95": recommend.W_P95, "mean": recommend.W_MEAN},
+        )
+        self.assertEqual(schema["scoring"]["failure_weight"], recommend.FAILURE_WEIGHT)
+
+    def test_validate_a_raw_settings_draft(self):
+        draft = {
+            "resolvers": [
+                {"name": " Fast ", "servers": "192.0.2.1, 192.0.2.9", "enabled": True},
+                {"name": "Slow", "servers": "192.0.2.9 not-an-ip", "enabled": True},
+            ],
+            "domains": "A.com\na.com.\nb.com\n-bad.com",
+            "settings": {"rounds": "2", "timeout_ms": "", "shuffle": True},
+        }
+        before = self.cfg_path.read_text()
+        status, data = self.jreq("POST", "/api/config/validate", draft)
+        self.assertEqual(status, 200)
+        self.assertEqual(
+            data["config"]["resolvers"][0],
+            {"name": "Fast", "servers": ["192.0.2.1", "192.0.2.9"], "enabled": True},
+        )
+        self.assertEqual(data["config"]["domains"], ["a.com", "b.com", "-bad.com"])
+        self.assertEqual(data["config"]["settings"]["rounds"], 2)
+        self.assertEqual(data["duplicate_domains"], 1)
+        self.assertEqual(
+            [(e["path"], e["code"]) for e in data["errors"]],
+            [
+                ("resolvers[1].servers[0]", "duplicate"),
+                ("resolvers[1].servers[1]", "invalid"),
+                ("domains[2]", "invalid"),
+                ("settings.timeout_ms", "out_of_range"),
+            ],
+        )
+        self.assertEqual((data["estimate"]["rounds"], data["estimate"]["domains"]), (2, 3))
+        self.assertEqual(self.cfg_path.read_text(), before)  # nothing is saved
+        status, data = self.jreq("POST", "/api/config/validate", [1])
+        self.assertEqual((status, data["details"][0]["code"]), (400, "type"))
+
+    def test_estimate(self):
+        status, est = self.jreq("POST", "/api/estimate", {})
+        self.assertEqual((status, est), (200, C.estimate(small_config())))
+        status, est = self.jreq("POST", "/api/estimate", {"rounds": 3})
+        self.assertEqual((est["rounds"], est["queries"]), (3, 18))
+        other = {"resolvers": [{"name": "X", "servers": ["192.0.2.7"]}], "domains": ["a.com"]}
+        status, est = self.jreq("POST", "/api/estimate", {"config": other})
+        self.assertEqual((est["servers"], est["queries"]), (1, 1))
+        status, data = self.jreq("POST", "/api/estimate", {"rounds": 11})
+        self.assertEqual(status, 400)
+        self.assertEqual([(d["path"], d["code"]) for d in data["details"]], [("rounds", "out_of_range")])
+
+    def test_every_error_detail_is_structured(self):
+        # One of each kind of error response that has details
+        bad = small_config()
+        bad["resolvers"][0]["servers"] = ["nope"]
+        responses = [
+            self.jreq("PUT", "/api/config", bad),
+            self.jreq("PUT", "/api/config", raw=b"{ nope"),
+            self.jreq("POST", "/api/run", {"rounds": 0}),
+            self.jreq("GET", "/api/aggregate?runs=nope"),
+            self.jreq("GET", "/api/aggregate?runs=20200101T000000Z"),
+        ]
+        for status, data in responses:
+            with self.subTest(error=data.get("error")):
+                self.assertGreaterEqual(status, 400)
+                self.assertTrue(data["details"])
+                for d in data["details"]:
+                    self.assertEqual(set(d), {"path", "code", "message"})
+                    self.assertTrue(all(isinstance(v, str) for v in d.values()))
+                    self.assertNotIn(self.tmp.name, d["message"])
 
 
 class ApiDocsTest(unittest.TestCase):

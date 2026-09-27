@@ -19,7 +19,7 @@ review findings below are kept as recorded.
 **Status (2026-09-28):** Phase 0 is done (PRs #2/#3). Phase 1 is done (PRs #5/#6); see its
 "As built" notes, which differ from the plan in two places. v1.1.0 is the first release through the
 new release workflow. Phase 2 is done (PR #8). Phase 3 is done (PR #9). Phase 4 is done (PR #10).
-Next is Phase 5.
+Phase 5 is done (PR #11). Next is Phase 6.
 
 ## Verdict: would a distinguished engineer approve? **No, not as-is.**
 The problems are structural, not rot. The Python core is better than typical one-shot output: an
@@ -301,7 +301,7 @@ cli.py:
 - `pre-commit run --all-files` only checks tracked files, so new files must be `git add`ed before it
   covers them.
 
-### Phase 5 — One source of truth: validation & API contract (M)
+### Phase 5 — One source of truth: validation & API contract (M) — ✅ done (PR #11)
 Done before the layering so the error format changes only once.
 - config.py: per-section validators returning structured `ValidationError(path, code, message)`.
   `ConfigError` carries them; `str()` keeps today's CLI text. API `details` becomes
@@ -319,6 +319,35 @@ Done before the layering so the error format changes only once.
   - index.html `max="10"` comes from the schema.
 - Contract tests: schema == the Python constants; no known bound literals in the web files;
   structured-error round trip through the API.
+
+**As built (2026-09-28)**, where it differs from the plan above or adds to it:
+- **Paths and codes.** `path` points into the normalised config, with 0-based indices
+  (`resolvers[0].servers[1]`, `domains[3]`, `settings.rounds`), a section name, or `""` for the
+  whole config or file. Codes are listed in `config.ERROR_CODES`, which the schema includes.
+  Non-config details (`malformed_json`, `runs_dir_unwritable`, `invalid_run_id`, `not_found`) use
+  the same shape. Messages are unchanged except file problems, which now read
+  `<file>: not valid JSON: ...` in the CLI; the API never sends the file's path. A 500 no longer
+  echoes the exception.
+- **Config responses.** `GET/PUT /api/config` and `POST /api/config/reset` return
+  `{config, errors, estimate}`, so the UI gets the saved config's problems from the server (it used
+  to validate them itself). `GET /api/defaults` is removed: the schema has the defaults.
+  `POST /api/config/validate` returns the same three fields for a draft, plus `duplicate_domains`.
+- **Settings UX is unchanged.** Errors are listed after Save, from the server's 400, and placed by
+  path. The estimate and the domain line (count, duplicates, invalid names) follow the debounced
+  validate call. An out-of-range number reads "Rounds must be a whole number from 1 to 10.", built
+  from the field's label and the schema's bounds. Labels and help text stay in app.js as
+  presentation; types, bounds, defaults and units come from the schema.
+- **Estimate.** `config.estimate` never raises on a draft (an unusable setting counts as its
+  default), adds resolvers/domains/rounds, and its worst case is
+  `per server × tries × max(interval × 1.10, timeout)`.
+- **Compat code removed** (FE-8, MNT-14): the trend's fallback to fetching full runs, the slow-query
+  fallback for summaries without `slow_by_resolver`, and the put-first ranking fallback. app.js is
+  about 230 lines shorter.
+- Checked in headless Firefox by a script injected into a copy of the UI. It edited Settings, saved an
+  invalid then a valid draft, added system resolvers and changed the header's rounds; every step
+  showed what it should, with no script errors.
+- Left for Phase 6: a corrupt run file's 500 `error` text can still include its path (StorageError);
+  `CorruptRun` replaces it.
 
 ### Phase 6 — Backend layering & typed model (L)
 - `dnsbench/models.py`: `TypedDict`s for `QueryRow` (adds `truncated`), `RunRecord`
