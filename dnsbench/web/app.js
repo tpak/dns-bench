@@ -493,7 +493,7 @@
   async function loadRuns() {
     try {
       const res = await api('/api/runs');
-      state.runs = Array.isArray(res && res.runs) ? res.runs : [];
+      state.runs = Array.isArray(res?.runs) ? res.runs : [];
       return true;
     } catch (e) {
       showBanner(`Could not load saved runs: ${e.message}`);
@@ -527,7 +527,7 @@
         'div',
         { class: 'banner-body' },
         h('div', { class: 'banner-msg' }, msg),
-        details && details.length
+        details?.length
           ? h(
               'ul',
               { class: 'banner-details' },
@@ -574,7 +574,7 @@
   // order (then first appearance), so filtering or re-sorting never repaints.
   function resetColors() {
     state.colors = new Map();
-    for (const r of (state.config && state.config.resolvers) || []) colorIndex(r.name);
+    for (const r of state.config?.resolvers || []) colorIndex(r.name);
   }
   function colorIndex(name) {
     const key = String(name);
@@ -612,15 +612,14 @@
   }
   function onScrollTip() {
     if (els.tooltip.hidden) return;
-    if (tipAnchor && tipAnchor.isConnected) placeTip(...anchorPoint(tipAnchor));
+    if (tipAnchor?.isConnected) placeTip(...anchorPoint(tipAnchor));
     else hideTip();
   }
   function positionTip(evt) {
     if (els.tooltip.hidden) return;
     if (evt && typeof evt.clientX === 'number' && (evt.clientX || evt.clientY))
       placeTip(evt.clientX, evt.clientY);
-    else if (evt && evt.currentTarget && evt.currentTarget.getBoundingClientRect)
-      placeTip(...anchorPoint(evt.currentTarget));
+    else if (evt?.currentTarget?.getBoundingClientRect) placeTip(...anchorPoint(evt.currentTarget));
   }
   function placeTip(x, y) {
     const tip = els.tooltip;
@@ -1516,11 +1515,11 @@
   // ================================================================ dataset helpers
   function resolverNames(sum) {
     if (sum && Array.isArray(sum.resolvers) && sum.resolvers.length) return sum.resolvers.map(String);
-    return Object.keys((sum && sum.by_resolver) || {});
+    return Object.keys(sum?.by_resolver || {});
   }
   function domainNames(sum) {
     if (sum && Array.isArray(sum.domains) && sum.domains.length) return sum.domains.map(String);
-    return Object.keys((sum && sum.by_domain) || {});
+    return Object.keys(sum?.by_domain || {});
   }
   function rankMap(rec) {
     const m = new Map();
@@ -1530,7 +1529,7 @@
   function dsSettings(ds) {
     return {
       ...DEFAULT_SETTINGS,
-      ...((ds && ds.config && ds.config.settings) || (state.config && state.config.settings) || {}),
+      ...(ds?.config?.settings || state.config?.settings || {}),
     };
   }
   /**
@@ -1558,7 +1557,7 @@
     const list = Array.isArray(sum.slow) ? sum.slow : [];
     const rows = list.filter((r) => r && r.resolver === sel);
     const truncated = isNum(sum.slow_count) && sum.slow_count > list.length;
-    const st = (sum.by_resolver || {})[sel] || {};
+    const st = sum.by_resolver?.[sel] || {};
     const noneSlow = !isNum(st.max) || st.max < thr;
     return { rows, total: truncated && !noneSlow ? null : rows.length, cap: list.length };
   }
@@ -1591,7 +1590,7 @@
       '|' +
       res
         .filter((r) => r && r.enabled !== false)
-        .map((r) => String(r && r.name))
+        .map((r) => String(r?.name))
         .join('\n')
     );
   }
@@ -1599,7 +1598,7 @@
   function datasetLabel(ds) {
     if (!ds) return '';
     if (ds.kind === 'aggregate') return `All ${plural(ds.runIds.length, 'run')} combined`;
-    const when = fmtDate(ds.run && ds.run.started_at);
+    const when = fmtDate(ds.run?.started_at);
     return (
       (ds.key === 'latest' || (state.runs[0] && state.runs[0].id === ds.id) ? 'Latest run · ' : 'Run of ') +
       when
@@ -1608,11 +1607,11 @@
 
   // ================================================================ estimate
   function estimate(cfg, roundsOverride) {
-    const st = { ...DEFAULT_SETTINGS, ...((cfg && cfg.settings) || {}) };
+    const st = { ...DEFAULT_SETTINGS, ...(cfg?.settings || {}) };
     const num = (v, d) => (isNum(v) && v > 0 ? v : d);
-    const enabled = ((cfg && cfg.resolvers) || []).filter((r) => r.enabled !== false);
+    const enabled = (cfg?.resolvers || []).filter((r) => r.enabled !== false);
     const servers = enabled.reduce((n, r) => n + (r.servers || []).length, 0);
-    const domains = ((cfg && cfg.domains) || []).length;
+    const domains = (cfg?.domains || []).length;
     const rounds = num(roundsOverride, num(st.rounds, 1));
     // The runner never goes below the 50 ms floor, so never advertise more than that.
     const interval = Math.max(
@@ -1642,7 +1641,7 @@
     };
   }
   function roundsValue() {
-    const cfgRounds = (state.config && state.config.settings && state.config.settings.rounds) || 1;
+    const cfgRounds = state.config?.settings?.rounds || 1;
     const v = parseInt(els.rounds.value, 10);
     return Number.isFinite(v) ? clamp(v, 1, 10) : cfgRounds;
   }
@@ -1651,7 +1650,7 @@
   function updateRunControls() {
     const running = !!state.job.running;
     const cfg = state.config;
-    if (cfg && !state.roundsTouched) els.rounds.value = String((cfg.settings && cfg.settings.rounds) || 1);
+    if (cfg && !state.roundsTouched) els.rounds.value = String(cfg.settings?.rounds || 1);
     els.runBtn.disabled = running || !cfg;
     setKids(
       els.runBtn,
@@ -1703,7 +1702,7 @@
     els.runBtn.disabled = true;
     try {
       const res = await api('/api/run', { method: 'POST', body: { rounds } });
-      state.job = { running: true, done: 0, total: (res && res.total) || 0, elapsed_s: 0, eta_s: null };
+      state.job = { running: true, done: 0, total: res?.total || 0, elapsed_s: 0, eta_s: null };
       state.cancelling = false;
       resetLive();
       renderProgress();
@@ -1748,9 +1747,7 @@
 
   function ingestRecent(rows) {
     if (!Array.isArray(rows)) return;
-    const thr =
-      (state.config && state.config.settings && state.config.settings.slow_threshold_ms) ||
-      DEFAULT_SETTINGS.slow_threshold_ms;
+    const thr = state.config?.settings?.slow_threshold_ms || DEFAULT_SETTINGS.slow_threshold_ms;
     for (const r of rows) {
       if (!r) continue;
       const key = `${r.resolver}|${r.server}|${r.domain}|${r.round}`;
@@ -1783,8 +1780,8 @@
     }
     state.pollFailures = 0;
     const wasRunning = !!state.job.running;
-    ingestRecent(st && st.recent);
-    state.job = { ...(st || {}), running: !!(st && st.running) };
+    ingestRecent(st?.recent);
+    state.job = { ...(st || {}), running: !!st?.running };
     renderProgress();
     if (state.job.running) {
       schedulePoll(POLL_MS);
@@ -2000,14 +1997,14 @@
           key,
           id: null,
           run: null,
-          summary: (agg && agg.summary) || {},
-          recommendation: (agg && agg.recommendation) || {},
+          summary: agg?.summary || {},
+          recommendation: agg?.recommendation || {},
           runIds: agg && Array.isArray(agg.run_ids) ? agg.run_ids : state.runs.map((r) => r.id),
-          config: (agg && agg.config) || (newest && newest.config) || state.config,
+          config: agg?.config || newest?.config || state.config,
           results: null,
           // {name: {runs, of, last_run}}: how many of the combined runs measured each resolver.
           coverage:
-            agg && agg.coverage && typeof agg.coverage === 'object' && !Array.isArray(agg.coverage)
+            agg?.coverage && typeof agg.coverage === 'object' && !Array.isArray(agg.coverage)
               ? agg.coverage
               : null,
         };
@@ -2053,7 +2050,7 @@
     return state.runs.slice(0, TREND_MAX_RUNS).reverse();
   }
   function rowsHaveMedians(rows) {
-    return rows.every((r) => r && r.medians && typeof r.medians === 'object' && !Array.isArray(r.medians));
+    return rows.every((r) => r?.medians && typeof r.medians === 'object' && !Array.isArray(r.medians));
   }
   function trendData() {
     const rows = trendRows();
@@ -2086,7 +2083,7 @@
         loading: false,
         error: null,
         data: runs.filter(Boolean).map((r) => {
-          const by = (r.summary && r.summary.by_resolver) || {};
+          const by = r.summary?.by_resolver || {};
           const med = {};
           for (const n of Object.keys(by)) med[n] = by[n] ? by[n].median : null;
           return {
@@ -2101,7 +2098,7 @@
     } catch (e) {
       if (state.trend.key === key) state.trend = { key, loading: false, data: null, error: e.message };
     }
-    if (state.trendSlot && state.trendSlot.isConnected) {
+    if (state.trendSlot?.isConnected) {
       fillTrend(state.trendSlot);
       flushCharts();
     }
@@ -2193,7 +2190,7 @@
     }
     const best = ranking.find((r) => r.resolver === rec.best) || {};
     const owner = (ip) => {
-      const bs = (ds.summary && ds.summary.by_server) || {};
+      const bs = ds.summary?.by_server || {};
       // Suggested IPs come from the best and backup resolvers; ask them first, since in
       // combined runs a renamed resolver can list the same IP under its old name.
       for (const name of [rec.best, rec.backup])
@@ -2396,7 +2393,7 @@
     // resolver seen in only some runs is not directly comparable with the others.
     const cov = ds.kind === 'aggregate' && ds.coverage ? ds.coverage : null;
     const covOf = (name) => {
-      const c = cov && cov[name];
+      const c = cov?.[name];
       return c && isNum(c.runs) && isNum(c.of) ? c : null;
     };
     const runsCol = cov
@@ -2547,20 +2544,20 @@
           },
           dot(n),
           h('span', { class: 'chip-name' }, n),
-          h('span', { class: 'chip-meta' }, fmtMsU(byRes[n] && byRes[n].median)),
+          h('span', { class: 'chip-meta' }, fmtMsU(byRes[n]?.median)),
         ),
       ),
     );
 
     // servers
-    const servMap = (sum.by_server && sum.by_server[sel]) || {};
-    const cfgRes = ((ds.config && ds.config.resolvers) || []).find((r) => r.name === sel);
-    const servIps = ((cfgRes && cfgRes.servers) || []).filter((ip) => servMap[ip]);
+    const servMap = sum.by_server?.[sel] || {};
+    const cfgRes = (ds.config?.resolvers || []).find((r) => r.name === sel);
+    const servIps = (cfgRes?.servers || []).filter((ip) => servMap[ip]);
     for (const ip of Object.keys(servMap)) if (!servIps.includes(ip)) servIps.push(ip);
     // The server to put first: the recommendation's pick (median plus the score's
     // failure and retry penalties, near-ties going to config order). Without a
     // ranking entry, apply the same penalties here.
-    let fastest = rank && rank.fastest_server;
+    let fastest = rank?.fastest_server;
     const answering = servIps.filter((ip) => servMap[ip] && isNum(servMap[ip].median));
     if (!fastest && answering.length) {
       const timeoutMs = isNum(settings.timeout_ms) ? settings.timeout_ms : DEFAULT_SETTINGS.timeout_ms;
@@ -2723,7 +2720,7 @@
     } else {
       const bd = sum.by_domain || {};
       histValues = domainNames(sum)
-        .map((d) => bd[d] && bd[d][sel] && bd[d][sel].median)
+        .map((d) => bd[d]?.[sel]?.median)
         .filter(isNum);
       histSub = 'Per-domain medians across all runs (raw samples are not kept in combined view), 10 bins.';
       countLabel = 'domains';
@@ -2738,7 +2735,7 @@
     // per-domain
     const bd = sum.by_domain || {};
     const domainItems = domainNames(sum)
-      .map((d) => ({ d, st: (bd[d] && bd[d][sel]) || null }))
+      .map((d) => ({ d, st: bd[d]?.[sel] || null }))
       .filter((x) => x.st);
     domainItems.sort((a, b) => {
       const an = !isNum(a.st.median);
@@ -3018,7 +3015,7 @@
       return emptyPanel('No per-domain data', 'This dataset does not contain per-domain results.');
 
     const rows = domains.map((d, idx) => {
-      const cells = names.map((n) => (byDomain[d] && byDomain[d][n]) || null);
+      const cells = names.map((n) => byDomain[d]?.[n] || null);
       const meds = cells.map((c) => (c && isNum(c.median) ? c.median : null));
       const vals = meds.filter(isNum);
       const allFailed = !vals.length && cells.some((c) => c && c.n > 0);
@@ -3121,7 +3118,7 @@
     }
 
     function heatCell(c, name, domain) {
-      if (!c || !c.n) return h('td', { class: 'heat heat-none' }, '–');
+      if (!c?.n) return h('td', { class: 'heat heat-none' }, '–');
       let td;
       if (!c.ok || !isNum(c.median)) {
         td = h(
@@ -3164,7 +3161,7 @@
               'th',
               { scope: 'col', class: 'num res-col' },
               h('div', { class: 'res-head' }, dot(n), h('span', { class: 'res-head-name', title: n }, n)),
-              h('div', { class: 'res-head-sub' }, 'avg ' + fmtMsU(byRes[n] && byRes[n].mean)),
+              h('div', { class: 'res-head-sub' }, 'avg ' + fmtMsU(byRes[n]?.mean)),
             ),
           ),
           h(
@@ -3261,10 +3258,10 @@
           median: c ? c.median : null,
           p95: c ? c.p95 : null,
           valueUnit: 'ms',
-          extra: c && c.failures && c.ok ? `${c.failures} failed` : '',
+          extra: c?.failures && c.ok ? `${c.failures} failed` : '',
           extraClass: 'text-critical',
-          missingText: c && c.n ? `× all ${fmtInt(c.n)} failed` : 'not queried in this dataset',
-          missingMuted: !(c && c.n),
+          missingText: c?.n ? `× all ${fmtInt(c.n)} failed` : 'not queried in this dataset',
+          missingMuted: !c?.n,
           tip: () => statTip(`${n} · ${d}`, c || {}, null, colorOf(n)),
         };
       });
@@ -3304,35 +3301,35 @@
               key: 'median',
               label: 'Median',
               num: true,
-              get: (r) => r.c && r.c.median,
-              render: (r) => fmtMs(r.c && r.c.median),
+              get: (r) => r.c?.median,
+              render: (r) => fmtMs(r.c?.median),
             },
             {
               key: 'mean',
               label: 'Mean',
               num: true,
-              get: (r) => r.c && r.c.mean,
-              render: (r) => fmtMs(r.c && r.c.mean),
+              get: (r) => r.c?.mean,
+              render: (r) => fmtMs(r.c?.mean),
             },
             {
               key: 'p95',
               label: 'p95',
               num: true,
-              get: (r) => r.c && r.c.p95,
-              render: (r) => fmtMs(r.c && r.c.p95),
+              get: (r) => r.c?.p95,
+              render: (r) => fmtMs(r.c?.p95),
             },
             {
               key: 'ok',
               label: 'OK / n',
               num: true,
-              get: (r) => r.c && r.c.ok,
+              get: (r) => r.c?.ok,
               render: (r) => (r.c ? `${fmtInt(r.c.ok)} / ${fmtInt(r.c.n)}` : '—'),
             },
           ],
           names.map((n) => ({ n, c: cells[n] || null })),
           { defaultSort: { key: 'median', dir: 1 }, wrapClass: 'mt' },
         ),
-        samples && samples.length
+        samples?.length
           ? h(
               'details',
               { class: 'samples' },
@@ -3625,17 +3622,17 @@
     const list = (v) => (Array.isArray(v) ? v : []);
     const settings = {
       ...DEFAULT_SETTINGS,
-      ...(cfg && cfg.settings && typeof cfg.settings === 'object' ? cfg.settings : {}),
+      ...(cfg?.settings && typeof cfg.settings === 'object' ? cfg.settings : {}),
     };
     return {
-      resolvers: list(cfg && cfg.resolvers)
+      resolvers: list(cfg?.resolvers)
         .filter((r) => r && typeof r === 'object')
         .map((r) => ({
           name: typeof r.name === 'string' ? r.name : String(r.name || ''),
           serversText: list(r.servers).join(', '),
           enabled: r.enabled !== false,
         })),
-      domainsText: list(cfg && cfg.domains).join('\n'),
+      domainsText: list(cfg?.domains).join('\n'),
       settings: Object.fromEntries(
         SETTING_FIELDS.map((f) => [f.key, f.type ? settings[f.key] : String(settings[f.key])]),
       ),
@@ -3688,11 +3685,11 @@
   }
   function canonical(cfg) {
     return JSON.stringify([
-      (Array.isArray(cfg && cfg.resolvers) ? cfg.resolvers : []).map((r) =>
+      (Array.isArray(cfg?.resolvers) ? cfg.resolvers : []).map((r) =>
         r && typeof r === 'object' ? [r.name, r.servers || [], r.enabled !== false] : r,
       ),
-      (cfg && cfg.domains) || [],
-      SETTING_FIELDS.map((f) => (cfg && cfg.settings ? cfg.settings[f.key] : null)),
+      cfg?.domains || [],
+      SETTING_FIELDS.map((f) => (cfg?.settings ? cfg.settings[f.key] : null)),
     ]);
   }
   function computeDirty() {
@@ -3734,7 +3731,7 @@
           const other = cfg.resolvers[ips.get(k)];
           add(
             'resolvers',
-            `${label}: ${ip} is already used by ${ips.get(k) === i ? 'this resolver' : (other && other.name) || 'another resolver'}.`,
+            `${label}: ${ip} is already used by ${ips.get(k) === i ? 'this resolver' : (other?.name) || 'another resolver'}.`,
             { index: i },
           );
         } else ips.set(k, i);
@@ -3871,7 +3868,7 @@
     if (state.settingsHooks) state.settingsHooks.refresh();
     try {
       const saved = await api('/api/config', { method: 'PUT', body: cfg });
-      setConfig(saved && saved.resolvers ? saved : cfg);
+      setConfig(saved?.resolvers ? saved : cfg);
       discardDraft();
       resetColors();
       state.roundsTouched = false;
@@ -3964,7 +3961,7 @@
     const clearErr = (el, scope, key) => {
       pruneSaveErrors(scope, key);
       dropSummaryIfFixed();
-      const box = el && el.closest('.has-error');
+      const box = el?.closest('.has-error');
       if (!box) return;
       box.classList.remove('has-error');
       for (const m of box.querySelectorAll(':scope > .field-error')) m.remove();
@@ -4153,12 +4150,12 @@
     });
     const resetDomains = h(
       'button',
-      { type: 'button', class: 'btn btn-sm', disabled: !(state.defaults && state.defaults.domains) },
+      { type: 'button', class: 'btn btn-sm', disabled: !state.defaults?.domains },
       icon('refresh', 14),
       h('span', null, 'Reset domains to defaults'),
     );
     resetDomains.addEventListener('click', () => {
-      if (!state.defaults || !state.defaults.domains) return;
+      if (!state.defaults?.domains) return;
       d.domainsText = state.defaults.domains.join('\n');
       ta.value = d.domainsText;
       clearErr(ta, 'domains');
@@ -4357,26 +4354,25 @@
     state.settingsHooks = { refresh };
     refresh();
 
-    summaryEl =
-      state.saveErrors && state.saveErrors.all.length
-        ? h(
+    summaryEl = state.saveErrors?.all.length
+      ? h(
+          'div',
+          { class: 'error-summary', role: 'alert' },
+          h(
             'div',
-            { class: 'error-summary', role: 'alert' },
-            h(
-              'div',
-              { class: 'error-summary-title' },
-              icon('alert', 16),
-              state.saveErrors.fromLoad
-                ? `The saved configuration has ${plural(state.saveErrors.all.length, 'problem')} to fix. Benchmarks cannot run until it is fixed and saved.`
-                : `Not saved: ${plural(state.saveErrors.all.length, 'problem')} to fix`,
-            ),
-            h(
-              'ul',
-              null,
-              state.saveErrors.all.map((m) => h('li', null, m)),
-            ),
-          )
-        : null;
+            { class: 'error-summary-title' },
+            icon('alert', 16),
+            state.saveErrors.fromLoad
+              ? `The saved configuration has ${plural(state.saveErrors.all.length, 'problem')} to fix. Benchmarks cannot run until it is fixed and saved.`
+              : `Not saved: ${plural(state.saveErrors.all.length, 'problem')} to fix`,
+          ),
+          h(
+            'ul',
+            null,
+            state.saveErrors.all.map((m) => h('li', null, m)),
+          ),
+        )
+      : null;
 
     return h(
       'div',
@@ -4468,9 +4464,7 @@
     const meta = [];
     if (ds && ds.kind === 'run' && ds.run) {
       const run = ds.run;
-      meta.push(
-        `${fmtInt(Array.isArray(run.results) ? run.results.length : ds.summary.overall && ds.summary.overall.n)} queries`,
-      );
+      meta.push(`${fmtInt(Array.isArray(run.results) ? run.results.length : ds.summary.overall?.n)} queries`);
       meta.push(plural(resolverNames(ds.summary).length, 'resolver'));
       meta.push(plural(domainNames(ds.summary).length, 'domain'));
       meta.push(`took ${fmtDuration(run.duration_s)}`);
@@ -4481,7 +4475,7 @@
       meta.push(plural(resolverNames(ds.summary).length, 'resolver'));
       meta.push(plural(domainNames(ds.summary).length, 'domain'));
     }
-    const cancelled = ds && ds.kind === 'run' && ds.run && ds.run.status && ds.run.status !== 'complete';
+    const cancelled = ds && ds.kind === 'run' && ds.run?.status && ds.run.status !== 'complete';
     setKids(
       bar,
       h('label', { class: 'dataset-label', for: 'dataset-select' }, 'Showing'),
@@ -4592,7 +4586,7 @@
       console.error(err);
       view = emptyPanel(
         'Something went wrong',
-        `This view could not be drawn: ${err && err.message ? err.message : err}`,
+        `This view could not be drawn: ${err?.message ? err.message : err}`,
       );
     }
     els.main.setAttribute('aria-labelledby', 'tab-' + state.route.tab);
@@ -4680,15 +4674,10 @@
       state.configError = null;
     } else {
       state.configError = cfgR.reason ? cfgR.reason.message : 'Unknown error';
-      showBanner(
-        `Could not load the configuration: ${state.configError}`,
-        'error',
-        cfgR.reason && cfgR.reason.details,
-      );
+      showBanner(`Could not load the configuration: ${state.configError}`, 'error', cfgR.reason?.details);
     }
     if (defR.status === 'fulfilled') state.defaults = defR.value;
-    if (runsR.status === 'fulfilled')
-      state.runs = Array.isArray(runsR.value && runsR.value.runs) ? runsR.value.runs : [];
+    if (runsR.status === 'fulfilled') state.runs = Array.isArray(runsR.value?.runs) ? runsR.value.runs : [];
     else showBanner(`Could not load saved runs: ${runsR.reason.message}`);
     state.bootstrapped = true;
     resetColors();
@@ -4767,7 +4756,7 @@
     render();
     bootstrap().catch((err) => {
       console.error(err);
-      showBanner(`DNS Bench failed to start: ${err && err.message ? err.message : err}`);
+      showBanner(`DNS Bench failed to start: ${err?.message ? err.message : err}`);
       state.bootstrapped = true;
       render();
     });
