@@ -128,6 +128,12 @@ the runs directory before sending any queries.
 The dataset picker at the top chooses which data every tab shows: the latest run, any single
 run, or **All runs combined**.
 
+Everything works from the keyboard. The arrow keys move between the tabs; Tab reaches each chart
+once, and the arrow keys (Home and End too) then move between its bars or points. Sorting a table,
+picking a resolver or closing a domain's details leaves the keyboard where it was. After a Settings
+save that fails, the list of problems gets the focus, and each problem takes you to its field. The
+page also follows the system's light or dark theme and its reduced-motion setting.
+
 The server listens on 127.0.0.1 only. It rejects requests whose `Host` header isn't
 localhost (protection against DNS rebinding). A state-changing request must be
 `Content-Type: application/json`, and if it comes from a web page, that page must be the UI
