@@ -1,0 +1,84 @@
+# Lint and test every push to main and every pull request. release.yml reuses this workflow, so a
+# release runs exactly the same checks. The `ci-passed` job is the one check branch protection requires.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }} # a caller (release) gets its own group
+  # A new push to a PR supersedes the run in progress; runs on main and release tags always finish.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+        with:
+          enable-cache: false # no dependencies to cache; pre-commit's hook envs are cached below
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/pre-commit
+          key: pre-commit-${{ runner.os }}-${{ hashFiles('.pre-commit-config.yaml') }}
+      # The same hooks and pinned versions as a local commit (.pre-commit-config.yaml).
+      - run: uvx pre-commit@4.6.2 run --all-files --show-diff-on-failure --color=always
+
+  test:
+    name: test (${{ matrix.os }}, py${{ matrix.python }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        python: ["3.13", "3.14"]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+        with:
+          python-version: ${{ matrix.python }} # sets UV_PYTHON for every `uv run` below
+          enable-cache: false # stdlib only: nothing to cache
+      - name: Unit tests
+        run: uv run python -m unittest discover -s tests -v
+      # `uv run` puts the chosen Python first on PATH, so the launcher's `#!/usr/bin/env python3` finds it.
+      - name: Launcher, from the checkout and through a symlink in another directory
+        run: |
+          uv run ./dns-bench --version
+          ln -s "$PWD/dns-bench" "$RUNNER_TEMP/dns-bench"
+          cd "$RUNNER_TEMP" && uv run ./dns-bench --version
+      - name: Launcher refuses Python 3.12 with a clear message
+        if: matrix.python == '3.13'
+        run: |
+          if out=$(uv run --python 3.12 python ./dns-bench --version 2>&1); then
+            echo "::error::the launcher ran under Python 3.12: $out"
+            exit 1
+          fi
+          echo "$out"
+          grep -q "needs Python 3.13 or newer" <<<"$out"
+
+  # One stable check name for branch protection, however the matrix above changes.
+  ci-passed:
+    if: always()
+    needs: [lint, test]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - env:
+          LINT: ${{ needs.lint.result }}
+          TEST: ${{ needs.test.result }}
+        run: |
+          echo "lint: $LINT, test: $TEST"
+          test "$LINT" = success && test "$TEST" = success
