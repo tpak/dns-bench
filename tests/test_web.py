@@ -224,6 +224,19 @@ class NoRuleCopiesTest(unittest.TestCase):
                     self.assertNotIn(ip, self.js)
 
 
+class PageStructureTest(unittest.TestCase):
+    def test_main_stays_a_landmark_and_the_tabs_control_the_panel(self):
+        # role="tabpanel" on <main> hid the page's main landmark from screen readers (FE-9).
+        html = (paths.WEB_DIR / "index.html").read_text(encoding="utf-8")
+        main = re.search(r"<main\b[^>]*>", html)
+        self.assertIsNotNone(main)
+        self.assertNotIn("role=", main.group(0))
+        self.assertRegex(html, r'<div id="view" role="tabpanel"')
+        tabs = re.findall(r'<a role="tab"[^>]*>', html)
+        self.assertEqual(len(tabs), 5)
+        self.assertTrue(all('aria-controls="view"' in tab for tab in tabs), tabs)
+
+
 class ApiContractTest(unittest.TestCase):
     """Every endpoint app.js calls exists, with the method it uses (REMEDIATION_PLAN.md Phase 7)."""
 
