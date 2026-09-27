@@ -416,10 +416,20 @@ class JobManager:
     def stop(self, wait_s: float | None = None) -> bool:
         """Cancel a running job and wait for it to save the partial run.
 
-        A query already in flight can't be interrupted, so by default this waits for up to one full
-        query timeout plus a margin for writing the files (at least 5 s). Returns False if the job is
-        still running.
+        A job still starting (its config and runs dir being checked) is waited for first, then
+        cancelled, so a shutdown never abandons it. A query already in flight can't be interrupted,
+        so by default this waits for up to one full query timeout plus a margin for writing the files
+        (at least 5 s). Returns False if the job is still running.
         """
+        deadline = time.monotonic() + 5.0
+        while True:
+            with self._lock:
+                starting = self._state.starting
+            if not starting:
+                break
+            if time.monotonic() > deadline:
+                return False
+            time.sleep(0.02)
         if not self.cancel():
             return True
         with self._lock:

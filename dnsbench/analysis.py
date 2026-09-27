@@ -172,6 +172,13 @@ class Analysis:
             raise NoRuns
         newest = runs[0]
         config = newest.get("config") or {}
+        try:
+            return self._combine(runs, config, current)
+        except (KeyError, TypeError, ValueError, AttributeError) as exc:  # migrate() let odd data through
+            raise CorruptRun(newest["id"], f"{type(exc).__name__}: {exc}") from exc
+
+    def _combine(self, runs: list[RunRecord], config: dict[str, Any], current: list[str] | None) -> Aggregate:
+        newest = runs[0]
         summary = stats.summarize(stats.merge_runs(runs), **stats.orders_from_config(config))
         cov = coverage(runs)
         if current is None:

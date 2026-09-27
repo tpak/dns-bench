@@ -176,6 +176,18 @@ class AggregateTest(AnalysisTestBase):
         self.assertEqual(agg["recommendation"]["ranking"], run["recommendation"]["ranking"])
         self.assertEqual(agg["summary"]["by_resolver"], run["summary"]["by_resolver"])
 
+    def test_odd_data_is_a_corrupt_run_not_a_crash(self):
+        # A run file whose rows pass migrate() but can't be analysed: an explicit aggregate of it raised
+        # AttributeError (an HTTP 500 with no details) before.
+        run = make_run()
+        run["config"]["settings"]["timeout_ms"] = {"nested": True}
+        self.repo.dir.mkdir(parents=True)
+        (self.repo.dir / "20260925T023456Z.json").write_text(json.dumps(run))
+        with self.assertRaises(storage.CorruptRun):
+            self.runs.aggregate(["20260925T023456Z"])
+        with self.assertRaises(storage.CorruptRun):
+            self.runs.load("20260925T023456Z")
+
     def test_aggregate_all_skips_corrupt(self):
         self.save(make_run())
         self.repo.dir.joinpath("20260101T000000Z.json").write_text("{ nope")

@@ -255,6 +255,26 @@ class JobManagerTest(ServiceTestBase):
             starter.join(5)
         self.wait_idle()
 
+    def test_stop_waits_for_a_job_that_is_still_starting(self):
+        # A shutdown during prepare() used to find nothing running and let the job start afterwards.
+        release = threading.Event()
+        real_prepare = self.service.prepare
+
+        def slow_prepare(*args, **kwargs):
+            release.wait(5)
+            return real_prepare(*args, **kwargs)
+
+        with mock.patch.object(self.service, "prepare", side_effect=slow_prepare):
+            starter = threading.Thread(target=self.jobs.start)
+            starter.start()
+            time.sleep(0.1)
+            threading.Timer(0.2, release.set).start()
+            self.assertTrue(self.jobs.stop())
+            starter.join(5)
+        st = self.jobs.status()
+        self.assertFalse(st["running"])
+        self.assertIn(st["last_status"], ("cancelled", "complete"))  # it ran, and stop() waited for it
+
     def test_a_failed_start_leaves_it_startable(self):
         self.cfg_path.write_text("{ nope")
         with self.assertRaises(C.ConfigError):

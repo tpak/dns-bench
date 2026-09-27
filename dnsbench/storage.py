@@ -86,14 +86,19 @@ def migrate(raw: object, run_id: str) -> RunRecord:
         if ms is not None and (isinstance(ms, bool) or not isinstance(ms, (int, float))):
             raise CorruptRun(run_id, f"result #{i + 1} has a latency that isn't a number")
         rows.append({"attempts": 1, "truncated": False, **row})
-    config = raw.get("config")
+    config = raw.get("config", {})
+    if not isinstance(config, dict):
+        raise CorruptRun(run_id, "config is not an object")
+    for key, kind in (("resolvers", list), ("domains", list), ("settings", dict)):
+        if key in config and not isinstance(config[key], kind):
+            raise CorruptRun(run_id, f"config.{key} is not {'a list' if kind is list else 'an object'}")
     record: dict[str, Any] = {k: v for k, v in raw.items() if k not in DERIVED_KEYS}
     record.update(
         schema=RUN_SCHEMA,
         kind="run",
         id=run_id,
         results=rows,
-        config=config if isinstance(config, dict) else {},
+        config=config,
     )
     return cast(RunRecord, record)
 

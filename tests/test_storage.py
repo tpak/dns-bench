@@ -124,6 +124,9 @@ class RepositoryTest(unittest.TestCase):
             "20260105T000000Z": json.dumps({"schema": 2, "results": []}),
             "20260106T000000Z": json.dumps({"results": [make_run()["results"][0] | {"ms": "fast"}]}),
             "20260107T000000Z": "[" * 100000 + "]" * 100000,  # absurd nesting: the same on every Python
+            "20260108T000000Z": json.dumps({"results": [], "config": "x"}),
+            "20260109T000000Z": json.dumps({"results": [], "config": {"settings": "x"}}),
+            "20260110T000000Z": json.dumps({"results": [], "config": {"resolvers": {}}}),
         }
         for run_id, text in cases.items():
             (self.repo.dir / f"{run_id}.json").write_text(text)
