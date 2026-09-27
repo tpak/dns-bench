@@ -4,6 +4,7 @@ import csv
 import http.client
 import io
 import json
+import socket
 import tempfile
 import threading
 import time
@@ -103,6 +104,15 @@ class ServerTestBase(unittest.TestCase):
         headers_out = {k.lower(): v for k, v in resp.getheaders()}
         conn.close()
         return resp.status, headers_out, content
+
+    def raw_request(self, data: bytes) -> bytes:
+        """Send bytes as-is (for requests http.client won't build) and return the whole response."""
+        with socket.create_connection(("127.0.0.1", self.port), timeout=10) as sock:
+            sock.sendall(data)
+            chunks = []
+            while chunk := sock.recv(65536):
+                chunks.append(chunk)
+        return b"".join(chunks)
 
     def jreq(self, method, path, body=None, **kw):
         status, headers, content = self.req(method, path, body, **kw)
@@ -222,6 +232,86 @@ class SecurityTest(ServerTestBase):
         status, data = self.jreq("GET", "/", headers={"Host": "attacker.example"})
         self.assertEqual(status, 403)
         self.assertIn("error", data)
+
+    def test_cross_origin_state_changes_are_refused(self):
+        port = self.port
+        for method, path, body in (
+            ("PUT", "/api/config", small_config()),
+            ("POST", "/api/config/reset", {}),
+            ("POST", "/api/run", {}),
+            ("POST", "/api/run/cancel", {}),
+            ("OPTIONS", "/api/config", None),
+            ("DELETE", "/api/config", None),
+        ):
+            for origin in (
+                "http://evil.example",
+                "null",  # sandboxed iframes and file:// pages
+                f"http://127.0.0.1:{port + 1}",
+                f"https://127.0.0.1:{port}",
+                f"http://localhost:{port}",  # this server, but not the name the request was sent to
+                f"http://127.0.0.1:{port}.evil.example",
+            ):
+                with self.subTest(method=method, path=path, origin=origin):
+                    status, headers, content = self.req(method, path, body, headers={"Origin": origin})
+                    self.assertEqual(status, 403, content)
+                    self.assertEqual(json.loads(content)["error"], "Forbidden: cross-origin request")
+                    self.assertFalse([h for h in headers if h.startswith("access-control-")], headers)
+        # nothing was started or changed
+        self.assertEqual(self.fake.calls, 0)
+        self.assertEqual(C.load_config(self.cfg_path), C.normalize_config(small_config()))
+
+    def test_same_origin_and_originless_state_changes_are_allowed(self):
+        cfg = small_config()
+        for host in (f"127.0.0.1:{self.port}", f"localhost:{self.port}", f"[::1]:{self.port}", "localhost"):
+            for origin in (f"http://{host}", f"HTTP://{host.upper()}"):
+                with self.subTest(host=host, origin=origin):
+                    status, data = self.jreq(
+                        "PUT", "/api/config", cfg, headers={"Host": host, "Origin": origin}
+                    )
+                    self.assertEqual(status, 200, data)
+        # curl and scripts send no Origin; a web page can't leave it out
+        self.assertEqual(self.jreq("PUT", "/api/config", cfg)[0], 200)
+        # A GET has no side effects: it is answered even cross-origin, but without CORS headers the
+        # browser never lets the other site read the response.
+        status, headers, _ = self.req("GET", "/api/config", headers={"Origin": "http://evil.example"})
+        self.assertEqual(status, 200)
+        self.assertFalse([h for h in headers if h.startswith("access-control-")], headers)
+
+    def test_duplicate_host_or_origin_headers_are_refused(self):
+        port = self.port
+        body = b"{}"
+        for extra in (
+            "Host: evil.example\r\n",
+            f"Origin: http://127.0.0.1:{port}\r\nOrigin: http://evil.example\r\n",
+        ):
+            with self.subTest(extra=extra):
+                resp = self.raw_request(
+                    (
+                        f"POST /api/run/cancel HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n{extra}"
+                        f"Content-Type: application/json\r\nContent-Length: {len(body)}\r\n\r\n"
+                    ).encode()
+                    + body
+                )
+                self.assertTrue(resp.startswith(b"HTTP/1.0 403 "), resp[:80])
+
+    def test_options_is_405_without_cors_headers(self):
+        status, headers, _ = self.req("OPTIONS", "/api/config")
+        self.assertEqual(status, 405)
+        self.assertFalse([h for h in headers if h.startswith("access-control-")], headers)
+
+    def test_cross_origin_isolation_headers_on_every_response(self):
+        for method, path, extra in (
+            ("GET", "/", None),
+            ("GET", "/static/app.js", None),
+            ("GET", "/api/status", None),
+            ("GET", "/api/nope", None),
+            ("GET", "/api/config", {"Host": "evil.example"}),
+            ("PUT", "/api/config", {"Origin": "http://evil.example"}),
+        ):
+            with self.subTest(method=method, path=path):
+                _, headers, _ = self.req(method, path, {} if method == "PUT" else None, headers=extra)
+                self.assertEqual(headers["cross-origin-resource-policy"], "same-origin")
+                self.assertEqual(headers["cross-origin-opener-policy"], "same-origin")
 
     def test_state_changing_requires_json_content_type(self):
         for method, path in (

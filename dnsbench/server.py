@@ -1,8 +1,10 @@
 """Local web UI + JSON API (stdlib ThreadingHTTPServer).
 
 Binds 127.0.0.1 by default. Requests whose Host header is not a loopback
-name are rejected (DNS-rebinding protection) and state-changing requests must
-be ``Content-Type: application/json`` (blocks simple cross-site form posts).
+name are rejected (DNS-rebinding protection). State-changing requests must be
+``Content-Type: application/json``, which a cross-site form can't send and which
+forces a CORS preflight that is never granted. Their ``Origin``, when present,
+must also be this server's own origin.
 """
 
 from __future__ import annotations
@@ -332,6 +334,9 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("X-Frame-Options", "DENY")
         self.send_header("Referrer-Policy", "no-referrer")
+        # Other sites can't embed our responses (e.g. <script src>) or keep a handle on our window.
+        self.send_header("Cross-Origin-Resource-Policy", "same-origin")
+        self.send_header("Cross-Origin-Opener-Policy", "same-origin")
         for k, v in (headers or {}).items():
             self.send_header(k, v)
         self.end_headers()
@@ -348,14 +353,18 @@ class Handler(BaseHTTPRequestHandler):
             obj["details"] = list(details)
         self._json(status, obj, headers)
 
-    def _host_ok(self) -> bool:
-        host = (self.headers.get("Host") or "").strip().lower()
+    def _request_host(self) -> str | None:
+        """The Host header (lower-cased) if it names this server, else None: DNS-rebinding protection."""
+        values = self.headers.get_all("Host") or []
+        if len(values) != 1:
+            return None
+        host = values[0].strip().lower()
         if not host:
-            return False
+            return None
         if host.startswith("["):
             end = host.find("]")
             if end < 0:
-                return False
+                return None
             name, rest = host[: end + 1], host[end + 1 :]
         else:
             name, sep, port = host.partition(":")
@@ -363,15 +372,26 @@ class Handler(BaseHTTPRequestHandler):
         if rest:
             port = rest[1:]
             if not rest.startswith(":") or not port.isdigit():
-                return False
+                return None
             if int(port) != self.server.server_address[1]:
-                return False
-        return name in self.server.allowed_hosts
+                return None
+        return host if name in self.server.allowed_hosts else None
+
+    def _origin_ok(self, host: str) -> bool:
+        """Browsers send Origin with every request that isn't a GET or HEAD, and a page can't remove or
+        forge it, so a cross-site one is refused. A request without Origin is not from a browser page."""
+        origins = self.headers.get_all("Origin") or []
+        if not origins:
+            return True
+        return len(origins) == 1 and origins[0].strip().lower() == f"http://{host}"
 
     def _dispatch(self, method: str):
         try:
-            if not self._host_ok():
+            host = self._request_host()
+            if host is None:
                 raise HTTPError(403, "Forbidden: this server only answers requests for localhost")
+            if method != "GET" and not self._origin_ok(host):  # HEAD is dispatched as GET
+                raise HTTPError(403, "Forbidden: cross-origin request")
             path = urlsplit(self.path).path
             for pattern, methods in _ROUTES:
                 m = pattern.match(path)
