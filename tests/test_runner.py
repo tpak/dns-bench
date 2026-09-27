@@ -11,7 +11,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from dnsbench import runner
+from dnsbench import __version__, runner
 from dnsbench.resolver import QueryResult
 
 # Physical timestamps are taken inside the fake query_fn, a few microseconds
@@ -304,7 +304,7 @@ class RunnerBehaviourTest(unittest.TestCase):
         self.assertRegex(run["id"], r"^\d{8}T\d{6}Z$")
         self.assertRegex(run["started_at"], r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$")
         self.assertRegex(run["finished_at"], r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$")
-        self.assertEqual(run["version"], "1.0.0")
+        self.assertEqual(run["version"], __version__)
         self.assertEqual(run["status"], "complete")
         self.assertIsInstance(run["duration_s"], float)
         self.assertTrue(run["host"])
