@@ -2,7 +2,8 @@
 
 ## In Progress
 
-- Phase 5 — validation & API contract, branch `phase-5-api-contract` (PR #11)
+- Phase 5 — validation & API contract, branch `phase-5-api-contract` (PR #11; review fixes pushed, waiting to merge)
+- Phase 6 — backend layering & typed model, branch `phase-6-layering` (stacked on Phase 5)
 
 ## Up Next
 
@@ -10,7 +11,7 @@
 - Tag ruleset for `v*` tags (Chris's call): restrict updates and deletions, with the admin role as bypass so a bad tag can still be deleted; never restrict creation, or the release tag push is rejected
 - Consider Dependabot's `pre-commit` ecosystem for the hook revs (would replace manual `pre-commit autoupdate`; CLAUDE.md §7.2 would change) — `.project/research/2026-09-27-ci-actions.md`
 - Re-enable Biome's `noDescendingSpecificity` with a visual check of every view (Phase 7)
-- Phases 6–7 — see REMEDIATION_PLAN.md (worked through in order)
+- Phase 7 — frontend (REMEDIATION_PLAN.md)
 - Phase 8 — measurement validity; changes results, ships separately (not in the current push)
 
 ## Done This Week

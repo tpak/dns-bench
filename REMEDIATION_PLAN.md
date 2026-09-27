@@ -19,7 +19,7 @@ review findings below are kept as recorded.
 **Status (2026-09-28):** Phase 0 is done (PRs #2/#3). Phase 1 is done (PRs #5/#6); see its
 "As built" notes, which differ from the plan in two places. v1.1.0 is the first release through the
 new release workflow. Phase 2 is done (PR #8). Phase 3 is done (PR #9). Phase 4 is done (PR #10).
-Phase 5 is done (PR #11). Next is Phase 6.
+Phase 5 is done (PR #11). Phase 6 is done (PR #12). Next is Phase 7.
 
 ## Verdict: would a distinguished engineer approve? **No, not as-is.**
 The problems are structural, not rot. The Python core is better than typical one-shot output: an
@@ -349,7 +349,7 @@ Done before the layering so the error format changes only once.
 - Left for Phase 6: a corrupt run file's 500 `error` text can still include its path (StorageError);
   `CorruptRun` replaces it.
 
-### Phase 6 — Backend layering & typed model (L)
+### Phase 6 — Backend layering & typed model (L) — ✅ done (PR #12)
 - `dnsbench/models.py`: `TypedDict`s for `QueryRow` (adds `truncated`), `RunRecord`
   (`schema: 1`, `kind: "run"|"aggregate"`), `LatencyStats`, `Summary` and `Recommendation`, plus
   typed `QueryFn` and `ProgressFn` callables. mypy tightened on stats/recommend/config.
@@ -379,6 +379,41 @@ Done before the layering so the error format changes only once.
   - The formula string is generated from the `W_*` constants and reused by report.py and the README.
 - `estimate` moves to the service; small helpers are de-duplicated (MNT-12); caches are no longer
   process-global (MNT-18).
+
+**As built (2026-09-28)**, where it differs from the plan above or adds to it:
+- **Models.** `models.py` has the planned TypedDicts, plus `RankEntry`, `Note`, `Coverage`,
+  `Aggregate` (`kind: "aggregate"`) and `ProgressEvent`. `QueryFn` is a Protocol. mypy is strict
+  (annotated defs, spelled-out generics, no `Any` returns) on ten core modules: config, stats,
+  recommend, report, models, storage, analysis, service, paths, sysdns. cli, server, runner,
+  resolver and the tests stay lenient.
+- **Storage.** `RunRepository(runs_dir)` has `path/exists/ids/stamp/load/save/check_writable`;
+  `rescue_run` and `migrate` are functions. `CorruptRun` messages name no file paths (this closes
+  the Phase 5 leftover). `check_writable` returns just the reason; each front end words it.
+  `migrate` fills `attempts`/`truncated` on old rows and drops the stored summary and
+  recommendation. New files still store them, plus `analysis_version`, as a snapshot.
+- **Analysis.** `Analysis(repo)` has `load/list_runs/latest_id/aggregate`, with the cache keyed by
+  the file's mtime_ns, its size and `ANALYSIS_VERSION`. An unreadable file is logged once per file
+  version through `logging` and skipped in lists. The UI's footer shows `analysis v1`, taken from
+  the schema.
+- **Service.** `BenchmarkService` does `prepare(Overrides) → RunPlan`, `execute` and
+  `persist → SaveResult` (with rescue). `InvalidRun` (the overrides are the problem: CLI exit 2, API
+  400 "Invalid run settings") and `RunsDirUnwritable` replace the front ends' own checks. The config
+  lock moved into the service. `JobManager` sets a `starting` flag under its lock, runs `prepare`
+  outside it, then takes the lock again to start the thread. Jobs are built once and handed to
+  `run_benchmark(jobs=...)`. `estimate` moved here from config.py.
+- **Recommend.** `rank()` returns `Ranked` records (the public `RankEntry` plus what the next steps
+  need, instead of `_`-prefixed keys popped at the end). `choose()` returns a `Choice`; `explain()`
+  returns the summary and the notes. Every note's text is byte-identical to before: the v1 fixtures
+  and all 9 real runs in `runs/` reproduce their stored recommendations exactly.
+  `SCORE_FORMULA` is used by the report, and a test checks it against the README.
+- **Helpers merged:** `report.local_time` and `report.table` (the CLI's `list` uses both) and
+  `runner.utc_iso` (the job's start time).
+- **Tests.** Tests are reorganised: `test_storage` (repository, migrate), plus new `test_analysis`,
+  `test_report` and `test_service` (estimate, prepare, persist, JobManager); `tests/samples.py`
+  holds the shared sample runs. A test checks that a one-run aggregate matches the single-run view.
+- **Checked:** every file in `runs/` loads through `migrate()`. In headless Firefox, a benchmark
+  started from the UI ran through `JobManager`, was saved as schema 1 with analysis v1 and coded
+  notes, and showed up in History.
 
 ### Phase 7 — Frontend, single file (M)
 - Organize app.js into clear sections. A single rAF-batched `scheduleRender()` replaces the
