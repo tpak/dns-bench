@@ -624,6 +624,7 @@ def system_resolver(resolvers: object, detected: sysdns.Detected) -> SystemResol
     keep: list[str] = []
     kept: set[str] = set()
     taken: dict[str, str] = {}
+    extra: list[str] = []  # usable, but over the per-resolver limit
     for s in detected.servers:
         try:
             ip = ipaddress.ip_address(s)
@@ -637,6 +638,8 @@ def system_resolver(resolvers: object, detected: sysdns.Detected) -> SystemResol
         elif len(keep) < MAX_SERVERS_PER_RESOLVER:
             keep.append(normalize_server(s))
             kept.add(key)
+        else:
+            extra.append(s)
     source = f" (from {detected.source})" if detected.source else ""
     if not detected.servers:
         return SystemResolver(None, f"No system resolvers found: {detected.describe_empty()}.", detected)
@@ -649,6 +652,8 @@ def system_resolver(resolvers: object, detected: sysdns.Detected) -> SystemResol
             detected,
         )
     message = f"{SYSTEM_NAME}: {', '.join(keep)}{source}."
+    if extra:
+        message += f" Left out, over the limit of {MAX_SERVERS_PER_RESOLVER} servers: {', '.join(extra)}."
     if taken:
         message += (
             " Left out: " + ", ".join(f"{s} (already used by {name})" for s, name in taken.items()) + "."

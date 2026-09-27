@@ -53,12 +53,14 @@ class Detected:
 
 
 def parse_scutil(text: str) -> list[str]:
-    """Nameservers of the default (domain-less) resolvers in ``scutil --dns`` output, in order.
+    """Nameservers of the default resolver in ``scutil --dns`` output: the first block, in the first
+    section, that has no ``domain`` line and lists at least one server.
 
-    Only the first section counts: the "(for scoped queries)" section repeats the same servers per
-    interface. A link-local IPv6 server without a zone gets its block's interface, so it can be reached.
+    Only that one block counts. Another domain-less block (a VPN's, say) belongs to another network,
+    and one System entry must never mix two networks' resolvers. The "(for scoped queries)" section
+    repeats servers per interface, so it is skipped. A link-local IPv6 server without a zone gets its
+    block's interface, so it can be reached.
     """
-    servers: list[str] = []
     blocks: list[list[str]] = []
     for line in text.splitlines():
         if line.startswith("DNS configuration") and blocks:
@@ -71,6 +73,7 @@ def parse_scutil(text: str) -> list[str]:
         if any(_SCUTIL_DOMAIN_RE.match(line) for line in block):
             continue
         interface = next((m.group(1) for line in block if (m := _SCUTIL_IFINDEX_RE.match(line))), None)
+        servers = []
         for line in block:
             m = _SCUTIL_NAMESERVER_RE.match(line)
             if not m:
@@ -79,7 +82,9 @@ def parse_scutil(text: str) -> list[str]:
             if interface and "%" not in server and _is_link_local_v6(server):
                 server = f"{server}%{interface}"
             servers.append(server)
-    return servers
+        if servers:
+            return servers
+    return []
 
 
 def parse_resolv_conf(text: str) -> list[str]:

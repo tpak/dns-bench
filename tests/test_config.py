@@ -602,7 +602,11 @@ class SystemResolverTest(unittest.TestCase):
         found = ["224.0.0.1", "junk", "192.0.2.1", "::ffff:192.0.2.1", *(f"192.0.2.{i}" for i in range(2, 7))]
         system = C.system_resolver(None, sysdns.Detected(found))
         self.assertEqual(system.resolver["servers"], ["192.0.2.1", "192.0.2.2", "192.0.2.3", "192.0.2.4"])
-        self.assertEqual(system.message, "System: 192.0.2.1, 192.0.2.2, 192.0.2.3, 192.0.2.4.")
+        self.assertEqual(
+            system.message,
+            "System: 192.0.2.1, 192.0.2.2, 192.0.2.3, 192.0.2.4. "
+            "Left out, over the limit of 4 servers: 192.0.2.5, 192.0.2.6.",
+        )
 
     def test_an_existing_system_entry_is_updated_in_place(self):
         cfg = C.default_config()

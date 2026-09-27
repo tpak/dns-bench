@@ -62,6 +62,16 @@ class ParseTest(unittest.TestCase):
         # gets its block's interface, since it can't be reached without one.
         self.assertEqual(sysdns.parse_scutil(SCUTIL), ["192.168.8.1", "fe80::1%en0"])
 
+    def test_scutil_never_mixes_in_a_second_default_resolver(self):
+        # A full-tunnel VPN can add a second domain-less block: that's another network's resolver.
+        text = (
+            "DNS configuration\n\nresolver #1\n  domain   : local\n  nameserver[0] : 10.9.9.9\n\n"
+            "resolver #2\n  search domain[0] : lan\n\n"  # no servers: not the one
+            "resolver #3\n  nameserver[0] : 192.168.1.1\n  if_index : 15 (en0)\n\n"
+            "resolver #4\n  nameserver[0] : 10.8.0.1\n  if_index : 20 (utun3)\n"
+        )
+        self.assertEqual(sysdns.parse_scutil(text), ["192.168.1.1"])
+
     def test_scutil_keeps_a_zone_it_already_has(self):
         text = "DNS configuration\n\nresolver #1\n  nameserver[0] : fe80::1%en1\n  if_index : 15 (en0)\n"
         self.assertEqual(sysdns.parse_scutil(text), ["fe80::1%en1"])
