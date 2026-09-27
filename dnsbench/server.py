@@ -12,6 +12,7 @@ from __future__ import annotations
 import contextlib
 import csv
 import io
+import ipaddress
 import json
 import re
 import socket
@@ -639,6 +640,16 @@ def make_server(
     return DNSBenchServer(host, port, config_path, runs_dir, query_fn=query_fn, web_dir=web_dir, quiet=quiet)
 
 
+def is_loopback_host(host: str) -> bool:
+    """True if a server bound to ``host`` accepts connections only from this machine."""
+    if host.strip().lower() == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host.strip().strip("[]")).is_loopback
+    except ValueError:  # "", a hostname, or junk: can't tell, so assume other machines can reach it
+        return False
+
+
 def server_url(server: DNSBenchServer) -> str:
     host, port = str(server.server_address[0]), server.server_address[1]  # always str for AF_INET/6
     if host in ("0.0.0.0", ""):
@@ -663,7 +674,7 @@ def serve(
     httpd = make_server(host, port, config_path, runs_dir, query_fn=query_fn, quiet=quiet)
     url = server_url(httpd)
     print(f"DNS Bench UI: {url}  (Ctrl-C to stop)", flush=True)
-    if host not in ("127.0.0.1", "localhost", "::1"):
+    if not is_loopback_host(host):
         print(
             "warning: listening on a non-loopback address; only loopback Host names are "
             "accepted, and there is no authentication.",

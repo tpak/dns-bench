@@ -13,6 +13,23 @@ release notes.
 - An optional `dns-bench` command on your PATH: run `uv tool install --editable .` in the checkout
   (README, "Installing a `dns-bench` command"). `./dns-bench` still needs no install.
 
+### Changed
+
+- `dns-bench serve` refuses a `--host` that other machines can reach (such as `0.0.0.0` or a LAN
+  address) unless you add `--allow-remote`, because the web UI has no authentication. The README
+  shows how to reach the UI from another computer over an SSH tunnel instead.
+
+### Security
+
+- The web UI's API refuses a state-changing request whose `Origin` is not the UI's own, so another
+  web page can't change your config or start and cancel runs. Requests without an `Origin` header,
+  such as from `curl`, work as before.
+- Responses carry `Cross-Origin-Resource-Policy` and `Cross-Origin-Opener-Policy`. The page's
+  Content Security Policy no longer allows inline styles, and requires Trusted Types.
+- The server drops a client that stalls for 15 seconds while sending a request. Malformed requests
+  get a JSON error with the usual security headers instead of an HTML page, and an odd port in the
+  `Host` header (such as `localhost:²`) is refused with 403 instead of causing a 500.
+
 ## [1.1.0] - 2026-09-27
 
 ### Added

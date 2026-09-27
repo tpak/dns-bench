@@ -264,10 +264,16 @@ def _raise_interrupt(signum, frame):
 def cmd_serve(args) -> int:
     from . import server
 
+    if not args.allow_remote and not server.is_loopback_host(args.host):
+        _err(
+            f"refusing to listen on {args.host or 'every interface'}: other machines could reach it, and "
+            "the web UI has no authentication. To use it from another machine, forward the port over "
+            f"SSH instead (ssh -L {args.port}:127.0.0.1:{args.port} <this machine>), or add --allow-remote"
+        )
+        return EXIT_USAGE
     # Explicit handlers: Ctrl-C and `kill` both stop cleanly (a running job is
     # cancelled and its partial run saved), even if SIGINT was inherited as ignored.
-    signal.signal(signal.SIGINT, _raise_interrupt)
-    signal.signal(signal.SIGTERM, _raise_interrupt)
+    previous = {sig: signal.signal(sig, _raise_interrupt) for sig in (signal.SIGINT, signal.SIGTERM)}
     try:
         server.serve(args.host, args.port, args.config, args.runs_dir, open_browser=args.open, quiet=False)
     except (OSError, OverflowError) as exc:
@@ -276,6 +282,10 @@ def cmd_serve(args) -> int:
     except KeyboardInterrupt:
         print("\nStopped.", file=sys.stderr)
         return EXIT_INTERRUPTED
+    finally:
+        for sig, handler in previous.items():
+            if handler is not None:  # None: installed outside Python, can't be put back
+                signal.signal(sig, handler)
     return EXIT_OK
 
 
@@ -485,6 +495,12 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--host", default="127.0.0.1", help="bind address (default: %(default)s)")
     s.add_argument("--port", type=_port, default=8053, help="port, 0-65535 (default: %(default)s)")
     s.add_argument("--open", action="store_true", help="open the UI in your browser")
+    s.add_argument(
+        "--allow-remote",
+        action="store_true",
+        help="allow a --host that other machines can reach (there is no authentication; "
+        "prefer an SSH tunnel: ssh -L 8053:127.0.0.1:8053 <host>)",
+    )
     s.set_defaults(func=cmd_serve)
 
     ls = sub.add_parser("list", parents=[common], help="list saved runs")

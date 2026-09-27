@@ -215,6 +215,33 @@ class CliTest(unittest.TestCase):
         self.assertEqual(parser.parse_args(["serve", "--port", "0"]).port, 0)
         self.assertEqual(parser.parse_args(["serve"]).port, 8053)
 
+    def test_serve_refuses_a_reachable_host_without_allow_remote(self):
+        from dnsbench import server
+
+        before = {sig: signal.getsignal(sig) for sig in (signal.SIGINT, signal.SIGTERM)}
+        with mock.patch.object(server, "serve") as serve:
+            for host in ("0.0.0.0", "::", "", "192.0.2.10", "2001:db8::1", "my-laptop.local"):
+                with self.subTest(host=host):
+                    code, _, err = self.cli("serve", "--host", host)
+                    self.assertEqual(code, cli.EXIT_USAGE)
+                    self.assertIn("refusing to listen", err)
+                    self.assertIn("ssh -L 8053:127.0.0.1:8053", err)
+            serve.assert_not_called()
+            for args in (
+                ("--host", "127.0.0.1"),
+                ("--host", "localhost"),
+                ("--host", "::1"),
+                ("--host", "127.0.0.2"),
+                ("--host", "0.0.0.0", "--allow-remote"),
+            ):
+                with self.subTest(args=args):
+                    serve.reset_mock()
+                    code, _, err = self.cli("serve", *args)
+                    self.assertEqual(code, cli.EXIT_OK, err)
+                    self.assertEqual(serve.call_args.args[0], args[1])
+        # serve's Ctrl-C/kill handlers are put back afterwards
+        self.assertEqual({sig: signal.getsignal(sig) for sig in before}, before)
+
     def test_unwritable_runs_dir_fails_before_any_query(self):
         blocker = Path(self.tmp.name) / "not-a-dir"
         blocker.write_text("x")

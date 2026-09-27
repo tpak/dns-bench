@@ -97,7 +97,7 @@ exit code is 130.
 | Command | What it does |
 |---|---|
 | `dns-bench run [--rounds N] [--interval-ms N] [--timeout-ms N] [--resolvers A,B] [--no-save] [--quiet] [--json]` | Runs a benchmark. The overrides apply to this run only and are not saved to the config. `--resolvers` picks resolvers by name, even disabled ones (e.g. `--resolvers Quad9,Cloudflare`). `--json` prints the full run record instead of the text report. |
-| `dns-bench serve [--host 127.0.0.1] [--port 8053] [--open]` | Starts the web UI and JSON API. `--open` opens it in your browser. |
+| `dns-bench serve [--host 127.0.0.1] [--port 8053] [--open] [--allow-remote]` | Starts the web UI and JSON API. `--open` opens it in your browser. A `--host` that other machines can reach needs `--allow-remote` (see [The web UI](#the-web-ui)). |
 | `dns-bench list` | Lists saved runs, newest first. |
 | `dns-bench report [latest\|all\|RUN_ID]` | Prints the text report for the latest run, a specific run, or `all` runs combined. |
 | `dns-bench config [--show\|--reset\|--path]` | Shows the config (the default), resets it to the defaults, or prints its path. |
@@ -126,9 +126,20 @@ The dataset picker at the top chooses which data every tab shows: the latest run
 run, or **All runs combined**.
 
 The server listens on 127.0.0.1 only. It rejects requests whose `Host` header isn't
-localhost (protection against DNS rebinding), and state-changing requests must be
-`Content-Type: application/json` (blocks cross-site form posts). There is no
-authentication, so don't expose it with `--host 0.0.0.0` on an untrusted network.
+localhost (protection against DNS rebinding). A state-changing request must be
+`Content-Type: application/json`, and if it comes from a web page, that page must be the UI
+itself (its `Origin` header is checked), so other sites can't change your config or start runs.
+The page runs under a strict Content Security Policy.
+
+There is no authentication, so `serve` refuses a `--host` that other machines can reach, such
+as `0.0.0.0` or a LAN address, unless you add `--allow-remote`. To use the UI from another
+computer, forward the port over SSH instead and keep the default host:
+
+```sh
+ssh -L 8053:127.0.0.1:8053 you@machine-running-dns-bench
+```
+
+Then open http://127.0.0.1:8053/ on the computer you ran `ssh` on.
 
 ## Configuration (`config.json`)
 
