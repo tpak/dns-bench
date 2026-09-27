@@ -288,11 +288,6 @@ textarea {
   font-size: 13px;
   color: var(--text-2);
 }
-.rounds-field .input {
-  width: 62px;
-  height: 36px;
-  text-align: center;
-}
 .run-estimate {
   flex-basis: 100%;
   display: flex;
@@ -572,6 +567,11 @@ textarea {
 }
 .input-num {
   font-variant-numeric: tabular-nums;
+}
+.rounds-field .input {
+  width: 62px;
+  height: 36px;
+  text-align: center;
 }
 .select {
   padding-right: 8px;
@@ -1111,9 +1111,6 @@ input[type="checkbox"] {
   color: var(--surface);
   border-color: transparent;
 }
-.chip[aria-current="true"] .chip-meta {
-  color: color-mix(in srgb, var(--surface) 70%, transparent);
-}
 .chip[aria-current="true"] .dot {
   box-shadow: 0 0 0 2px var(--surface);
 }
@@ -1128,6 +1125,9 @@ input[type="checkbox"] {
   font-weight: 500;
   font-variant-numeric: tabular-nums;
   font-size: 12px;
+}
+.chip[aria-current="true"] .chip-meta {
+  color: color-mix(in srgb, var(--surface) 70%, transparent);
 }
 .chip-sm {
   padding: 3px 10px 3px 8px;
@@ -1387,6 +1387,15 @@ input[type="checkbox"] {
   border-bottom: 1px solid var(--grid);
   vertical-align: middle;
 }
+.history-table td,
+.history-table th {
+  padding-top: 10px;
+  padding-bottom: 10px;
+}
+.heat-table td,
+.heat-table th {
+  border-bottom-color: var(--surface);
+}
 .data-table thead th {
   background: var(--surface-2);
   color: var(--text-2);
@@ -1396,12 +1405,6 @@ input[type="checkbox"] {
 }
 .data-table tbody th {
   font-weight: 550;
-}
-.data-table tbody tr:last-child > * {
-  border-bottom: 0;
-}
-.data-table tbody tr:hover > * {
-  background: var(--hover);
 }
 .data-table .num {
   text-align: right;
@@ -1414,6 +1417,12 @@ input[type="checkbox"] {
 }
 .data-table tr.is-current > * {
   background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+.data-table tbody tr:last-child > * {
+  border-bottom: 0;
+}
+.data-table tbody tr:hover > * {
+  background: var(--hover);
 }
 .table-empty {
   /* biome-ignore lint/complexity/noImportantStyles: overrides the per-column alignment of the table cells it sits in. */
@@ -1476,11 +1485,6 @@ input[type="checkbox"] {
   max-width: 16ch;
   overflow: hidden;
   text-overflow: ellipsis;
-}
-.history-table td,
-.history-table th {
-  padding-top: 10px;
-  padding-bottom: 10px;
 }
 .data-table td.wrap {
   white-space: normal;
@@ -1657,14 +1661,6 @@ input[type="checkbox"] {
 .samples {
   margin-top: 14px;
 }
-.domain-detail .data-table th,
-.domain-detail .data-table td {
-  padding: 7px 8px;
-}
-.domain-detail .data-table th:first-child,
-.domain-detail .data-table td:first-child {
-  padding-left: 12px;
-}
 .samples summary {
   cursor: pointer;
   font-weight: 600;
@@ -1691,13 +1687,6 @@ input[type="checkbox"] {
   left: 0;
   z-index: 1;
   background: var(--surface);
-}
-.heat-table tbody tr:hover th {
-  background: var(--surface-2);
-}
-.heat-table td,
-.heat-table th {
-  border-bottom-color: var(--surface);
 }
 .heat-table td.heat {
   position: relative;
@@ -1741,6 +1730,18 @@ input[type="checkbox"] {
 }
 .heat-table tr.is-selected th {
   box-shadow: inset 3px 0 0 var(--accent);
+}
+.heat-table tbody tr:hover th {
+  background: var(--surface-2);
+}
+/* biome-ignore lint/style/noDescendingSpecificity: the domain detail's table is never the heat table, so these rules can't compete with the .heat-table ones above. */
+.domain-detail .data-table th,
+.domain-detail .data-table td {
+  padding: 7px 8px;
+}
+.domain-detail .data-table th:first-child,
+.domain-detail .data-table td:first-child {
+  padding-left: 12px;
 }
 .res-col {
   min-width: 96px;
@@ -1808,6 +1809,10 @@ input[type="checkbox"] {
   font-weight: 600;
   color: var(--muted);
   border-bottom: 1px solid var(--border);
+}
+.input-unit .input {
+  flex: 1;
+  min-width: 0;
 }
 .res-row .input {
   width: 100%;
@@ -1921,10 +1926,6 @@ input[type="checkbox"] {
   display: flex;
   align-items: center;
   gap: 8px;
-}
-.input-unit .input {
-  flex: 1;
-  min-width: 0;
 }
 .input-unit .unit {
   color: var(--muted);
