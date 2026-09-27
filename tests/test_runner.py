@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import _thread
 import itertools
 import random
 import threading
@@ -433,6 +434,29 @@ class RunnerBehaviourTest(unittest.TestCase):
         self.assertGreater(len(run["results"]), 0)
         self.assertLess(len(run["results"]), 160)
         self.assertNotIn("error", runner.run_benchmark(make_config(), query_fn=FakeDNS(latency=0.0)))
+
+    def test_second_interrupt_stops_waiting_for_queries_in_flight(self):
+        cfg = make_config(resolvers=2, servers_per=2, domains=40, interval_ms=50)
+        stuck = threading.Event()
+
+        def qfn(server, domain, **kw):
+            if server == "10.0.0.1" and not stuck.is_set():
+                stuck.set()
+                time.sleep(1.0)  # a query in flight that takes its whole (long) timeout
+            return QueryResult("ok", ms=2.0, rcode="NOERROR", answers=1)
+
+        # Two Ctrl-Cs in the calling thread: the first cancels, the second arrives while the run
+        # waits for the stuck query.
+        timers = [threading.Timer(0.3, _thread.interrupt_main), threading.Timer(0.5, _thread.interrupt_main)]
+        for timer in timers:
+            timer.start()
+        t0 = time.monotonic()
+        run = runner.run_benchmark(cfg, query_fn=qfn)
+        self.assertLess(time.monotonic() - t0, 0.9)  # didn't wait out the 1 s query
+        self.assertEqual(run["status"], "cancelled")
+        n = len(run["results"])
+        time.sleep(0.8)  # the stuck query finishes now: its row must not be added afterwards
+        self.assertEqual(len(run["results"]), n)
 
     def test_cancel_before_start(self):
         cancel = threading.Event()

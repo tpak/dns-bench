@@ -9,6 +9,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import tomllib
 import unittest
 from pathlib import Path
@@ -190,6 +191,59 @@ class CliTest(unittest.TestCase):
         self.assertIn("stopped early after an internal error (ValueError", err)
         self.assertIn("and were saved", err)
         self.assertEqual([r["status"] for r in storage.list_runs(self.runs)], ["partial"])
+
+    def test_sigterm_saves_partial_run_like_ctrl_c(self):
+        def terminate(n):
+            if n == 2:
+                os.kill(os.getpid(), signal.SIGTERM)
+
+        self.fake.on_call = terminate
+        cfg = small_config()
+        cfg["domains"] = [f"d{i}.example" for i in range(30)]
+        C.save_config(cfg, self.cfg)
+        before = {sig: signal.getsignal(sig) for sig in (signal.SIGINT, signal.SIGTERM)}
+        code, out, err = self.cli("run")
+        self.assertEqual(code, cli.EXIT_INTERRUPTED, err)
+        self.assertIn("Cancelling", err)
+        self.assertIn("CANCELLED", out)
+        self.assertEqual([r["status"] for r in storage.list_runs(self.runs)], ["cancelled"])
+        self.assertEqual({sig: signal.getsignal(sig) for sig in before}, before)
+
+    def test_second_ctrl_c_saves_without_waiting_for_queries_in_flight(self):
+        # The first Ctrl-C comes while one query is stuck (like a server that never answers, with a
+        # long timeout); the second comes while the run waits for it. The run is saved at once.
+        def stuck(n):
+            if n == 2:
+                os.kill(os.getpid(), signal.SIGINT)
+                threading.Timer(0.3, os.kill, (os.getpid(), signal.SIGINT)).start()
+                time.sleep(3)
+
+        self.fake.on_call = stuck
+        cfg = small_config()
+        cfg["domains"] = [f"d{i}.example" for i in range(30)]
+        C.save_config(cfg, self.cfg)
+        t0 = time.monotonic()
+        code, out, err = self.cli("run")
+        self.assertLess(time.monotonic() - t0, 2.5)
+        self.assertEqual(code, cli.EXIT_INTERRUPTED, err)
+        self.assertIn("Press Ctrl-C again to save it now", err)
+        self.assertIn("CANCELLED", out)
+        rows = storage.list_runs(self.runs)
+        self.assertEqual([r["status"] for r in rows], ["cancelled"])
+        self.assertLess(rows[0]["n_queries"], 60)
+
+    def test_signals_during_the_save_are_ignored(self):
+        real_save = storage.save_run_safely
+
+        def save(run, runs_dir):
+            os.kill(os.getpid(), signal.SIGINT)  # Ctrl-C just as the run is being saved
+            os.kill(os.getpid(), signal.SIGTERM)
+            return real_save(run, runs_dir)
+
+        with mock.patch.object(storage, "save_run_safely", save):
+            code, _, err = self.cli("run")
+        self.assertEqual(code, cli.EXIT_OK, err)
+        self.assertEqual([r["status"] for r in storage.list_runs(self.runs)], ["complete"])
 
     def test_report_errors(self):
         self.assertEqual(self.cli("report")[0], 1)  # no runs yet

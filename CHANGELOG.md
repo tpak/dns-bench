@@ -34,6 +34,9 @@ release notes.
   runs folder became unwritable). As with `dns-bench run`, the full record is written to the
   system's temp folder instead, and the UI's error message says where. The UI also checks that the
   runs folder is writable before sending any queries.
+- `dns-bench run` stopped with `kill` (SIGTERM) now saves the queries done so far, like Ctrl-C, instead
+  of exiting without saving. A second Ctrl-C saves straight away instead of waiting for the
+  queries still in flight, and a Ctrl-C while the run is being saved no longer interrupts the save.
 - An internal error while a benchmark is running no longer throws away the queries already measured.
   The run stops, is saved with the status `partial` and the error, and its report says so.
   `dns-bench run` exits with 1 in that case.

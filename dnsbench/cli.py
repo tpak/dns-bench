@@ -169,22 +169,41 @@ def cmd_run(args) -> int:
 
     progress = Progress(est["queries"], s["slow_threshold_ms"], quiet=args.quiet)
     cancel = threading.Event()
+    signals = {"count": 0, "measuring": True}
 
-    def on_sigint(signum, frame):
+    def on_signal(signum, frame):
+        # Ctrl-C (SIGINT) and `kill` (SIGTERM) alike. The first stops the run once the queries in flight
+        # are answered or time out; a second stops waiting for them. Neither may interrupt the save.
+        signals["count"] += 1
+        if not signals["measuring"]:
+            return
+        if signals["count"] > 1:
+            raise KeyboardInterrupt  # run_benchmark returns what it has, without waiting
         cancel.set()
-        signal.signal(signal.SIGINT, signal.default_int_handler)  # 2nd Ctrl-C: hard interrupt
         if not args.quiet:
             sys.stderr.write("\r\x1b[K" if progress.tty else "\n")
-            sys.stderr.write("Cancelling: waiting for in-flight queries, then saving the partial run...\n")
+            sys.stderr.write(
+                f"Cancelling: waiting up to {s['timeout_ms'] / 1000:g} s for the queries in flight, then "
+                "saving the partial run. Press Ctrl-C again to save it now.\n"
+            )
             sys.stderr.flush()
 
-    previous = signal.signal(signal.SIGINT, on_sigint)
+    previous = {sig: signal.signal(sig, on_signal) for sig in (signal.SIGINT, signal.SIGTERM)}
     try:
-        run = runner.run_benchmark(cfg, progress=progress, cancel_event=cancel)
+        try:
+            run = runner.run_benchmark(cfg, progress=progress, cancel_event=cancel)
+        finally:
+            signals["measuring"] = False
+            progress.finish()
+        return _finish_run(args, run, est)
     finally:
-        signal.signal(signal.SIGINT, previous)
-        progress.finish()
+        for sig, handler in previous.items():
+            if handler is not None:  # None: installed outside Python, can't be put back
+                signal.signal(sig, handler)
 
+
+def _finish_run(args, run: dict, est: dict) -> int:
+    """Save and report a finished (or stopped) run; returns the exit code."""
     saved = None
     if args.no_save:
         storage.finalize_run(run)

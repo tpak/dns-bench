@@ -106,6 +106,11 @@ def run_benchmark(
     are recorded as ``error`` rows), the run stops the same way and comes back
     with ``status == "partial"`` and the crash in ``error``, so the queries
     already measured are still returned and can be saved.
+
+    A KeyboardInterrupt in the calling thread cancels the run like
+    ``cancel_event``. A second one, once cancelled, stops waiting for the
+    queries still in flight (up to one timeout each): the record is returned at
+    once, and rows that finish later are dropped.
     """
     query_fn = query_fn or resolver.query
     cancel_event = cancel_event or threading.Event()
@@ -123,7 +128,7 @@ def run_benchmark(
     total = sum(len(j["items"]) for j in jobs)
     results: list[dict] = []
     lock = threading.Lock()  # guards results and state
-    state: dict = {"done": 0, "crash": None}
+    state: dict = {"done": 0, "crash": None, "closed": False}  # closed: the record has been returned
 
     started_wall = datetime.now(UTC)
     t0 = clock()
@@ -189,6 +194,8 @@ def run_benchmark(
                 "attempts": attempts,
             }
             with lock:
+                if state["closed"]:  # the caller stopped waiting (a second Ctrl-C): nothing more to report
+                    return
                 results.append(row)
                 state["done"] += 1
                 if progress is not None:
@@ -200,19 +207,29 @@ def run_benchmark(
     max_workers = max(1, len(jobs))
     seeds = [rng.getrandbits(64) for _ in jobs]
     interrupted = False
-    with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="dnsbench") as pool:
+    abandoned = False  # a second interrupt: don't wait for the queries still in flight
+    pool = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="dnsbench")
+    try:
         futures = [pool.submit(worker, job, seed) for job, seed in zip(jobs, seeds, strict=True)]
         pending = set(futures)
         while pending:
             try:
                 _, pending = wait(pending, timeout=0.2)
             except KeyboardInterrupt:
+                if cancel_event.is_set():
+                    abandoned = True
+                    break
                 interrupted = True
                 cancel_event.set()
-    for f in futures:
-        exc = f.exception()
-        if exc is not None:
-            raise exc
+    finally:
+        pool.shutdown(wait=not abandoned, cancel_futures=True)
+    with lock:
+        state["closed"] = True
+    if not abandoned:  # an abandoned future may still be running: .exception() would wait for it
+        for f in futures:
+            exc = f.exception()
+            if exc is not None:
+                raise exc
 
     finished_wall = datetime.now(UTC)
     duration = clock() - t0

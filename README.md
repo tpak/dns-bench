@@ -92,7 +92,8 @@ Recommendation: Use Cloudflare: put 1.0.0.1 first and 8.8.8.8 (Google) second. .
 While a run is going, `[slow]` and `[fail]` lines are printed to stderr, like the original
 did, along with a live progress line showing done/total, elapsed time and ETA. Press Ctrl-C
 to stop early: the queries already done are still saved (with status `cancelled`) and the
-exit code is 130.
+exit code is 130. The first Ctrl-C waits for the queries still in flight, at most one timeout;
+press it again to save straight away. `kill` (SIGTERM) works like Ctrl-C.
 
 ## Commands
 
