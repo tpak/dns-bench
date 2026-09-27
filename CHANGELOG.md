@@ -19,6 +19,13 @@ release notes.
   address) unless you add `--allow-remote`, because the web UI has no authentication. The README
   shows how to reach the UI from another computer over an SSH tunnel instead.
 
+### Fixed
+
+- A benchmark started from the web UI is no longer lost when it can't be saved (a full disk, or the
+  runs folder became unwritable). As with `dns-bench run`, the full record is written to the
+  system's temp folder instead, and the UI's error message says where. The UI also checks that the
+  runs folder is writable before sending any queries.
+
 ### Security
 
 - The web UI's API refuses a state-changing request whose `Origin` is not the UI's own, so another

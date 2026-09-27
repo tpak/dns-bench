@@ -143,6 +143,10 @@ class DNSBenchServer(ThreadingHTTPServer):
                     raise HTTPError(400, "Invalid config", exc.errors) from None
             if rounds is not None:
                 cfg["settings"]["rounds"] = rounds
+            # Before any DNS traffic, like the CLI: a run that can't be saved isn't worth measuring.
+            problem = storage.check_writable(self.runs_dir)
+            if problem:
+                raise HTTPError(500, "Cannot save runs", [problem])
             est = config_mod.estimate(cfg)
             total = sum(len(j["items"]) for j in runner.build_jobs(cfg))
             job.running = True
@@ -186,18 +190,25 @@ class DNSBenchServer(ThreadingHTTPServer):
                 cfg, query_fn=self.query_fn, progress=self._on_progress, cancel_event=cancel_event
             )
             status = run["status"]
-            storage.save_run(run, self.runs_dir)
-            run_id = run["id"]
-        except Exception as exc:  # report, never crash the server
+            saved = storage.save_run_safely(run, self.runs_dir)
+            if saved.path is not None:
+                run_id = run["id"]
+            if saved.error is not None:
+                error = saved.error
+                if saved.rescued is not None:
+                    error += f"; the full run record was written to {saved.rescued} instead"
+                self.log_line(error)
+        except Exception as exc:  # the job's own thread: report the failure, never take the server down
             error = f"{type(exc).__name__}: {exc}"
             self.log_line(f"benchmark failed: {error}")
-        with self.job.lock:
-            self.job.running = False
-            self.job.t_end = time.monotonic()
-            if run_id:
-                self.job.last_run_id = run_id
-            self.job.last_status = status
-            self.job.error = error
+        finally:  # whatever happened, the job is over: never leave the UI showing a run that isn't going
+            with self.job.lock:
+                self.job.running = False
+                self.job.t_end = time.monotonic()
+                if run_id:
+                    self.job.last_run_id = run_id
+                self.job.last_status = status
+                self.job.error = error
 
     def cancel_job(self) -> bool:
         with self.job.lock:

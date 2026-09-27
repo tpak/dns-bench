@@ -1,6 +1,8 @@
 """Persist runs: <runs_dir>/<id>.json (full record) + <id>.txt (text report).
 
-Runs are never deleted or overwritten by the tool.
+Runs are never deleted or overwritten by the tool. A finished run is never
+silently lost either: ``save_run_safely`` falls back to the system temp dir
+when the runs dir can't take it.
 """
 
 from __future__ import annotations
@@ -11,6 +13,7 @@ import re
 import sys
 import tempfile
 import threading
+from dataclasses import dataclass
 from pathlib import Path
 
 from . import recommend as recommend_mod
@@ -104,6 +107,62 @@ def save_run(run: dict, runs_dir) -> Path:
         if os.path.exists(tmp):
             os.unlink(tmp)
     return json_path
+
+
+def check_writable(runs_dir) -> str | None:
+    """Why a run could not be saved in ``runs_dir``, or None if it can. Checked before any DNS traffic."""
+    runs_dir = Path(runs_dir)
+    try:
+        runs_dir.mkdir(parents=True, exist_ok=True)
+        fd, probe = tempfile.mkstemp(prefix=".tmp-", suffix=".part", dir=str(runs_dir))
+        os.close(fd)
+        os.unlink(probe)
+    except OSError as exc:
+        return f"cannot write to {runs_dir}: {exc.strerror or exc}"
+    return None
+
+
+def rescue_run(run: dict) -> Path | None:
+    """Last resort when the runs dir fails mid-save: write the record to the system temp dir.
+
+    Returns the file's path, or None if that fails too.
+    """
+    try:
+        fd, path = tempfile.mkstemp(prefix=f"dns-bench-{run.get('id', 'run')}-", suffix=".json")
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(run, fh, indent=2, ensure_ascii=False)
+            fh.write("\n")
+        return Path(path)
+    except OSError:
+        return None
+
+
+@dataclass
+class SaveResult:
+    """What ``save_run_safely`` did with a run."""
+
+    path: Path | None  # the saved <id>.json; None if it could not be written
+    error: str | None = None  # what went wrong, worded for the user; None if everything was saved
+    rescued: Path | None = None  # where the record went instead, when <id>.json could not be written
+
+
+def save_run_safely(run: dict, runs_dir) -> SaveResult:
+    """``save_run`` that never loses a finished run to a disk problem (full disk, permissions changed).
+
+    The run always ends up finalized. If its ``.json`` could not be written, the record is rescued to
+    the system temp dir. A ``.json`` saved without its ``.txt`` report counts as saved, with an error.
+    """
+    try:
+        return SaveResult(save_run(run, runs_dir))
+    except OSError as exc:
+        why = exc.strerror or str(exc)
+        if "summary" not in run or "recommendation" not in run:
+            finalize_run(run)
+        json_path = Path(runs_dir) / f"{run.get('id')}.json"
+        if valid_run_id(run.get("id")) and json_path.is_file():
+            error = f"the run was saved as {json_path}, but its text report could not be written: {why}"
+            return SaveResult(json_path, error)
+        return SaveResult(None, f"could not save run to {runs_dir}: {why}", rescue_run(run))
 
 
 def _warn(path: Path, msg: str) -> None:

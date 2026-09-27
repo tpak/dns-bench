@@ -671,6 +671,45 @@ class RunsApiTest(ServerTestBase):
         self.assertEqual(self.jreq("POST", "/api/run", raw=b"{ nope")[0], 400)
         self.assertEqual(self.fake.calls, 0)
 
+    def test_unwritable_runs_dir_is_refused_before_any_query(self):
+        blocker = Path(self.tmp.name) / "not-a-dir"
+        blocker.write_text("x")
+        self.srv.runs_dir = blocker / "runs"
+        status, data = self.jreq("POST", "/api/run")
+        self.assertEqual(status, 500, data)
+        self.assertEqual(data["error"], "Cannot save runs")
+        self.assertIn("cannot write to", data["details"][0])
+        self.assertEqual(self.fake.calls, 0)
+        self.assertFalse(self.jreq("GET", "/api/status")[1]["running"])
+
+    def test_a_run_that_cannot_be_saved_is_rescued(self):
+        rescue_dir = Path(self.tmp.name) / "rescue"
+        rescue_dir.mkdir()
+        with (
+            mock.patch.object(storage, "save_run", side_effect=OSError(28, "No space left on device")),
+            mock.patch.object(tempfile, "tempdir", str(rescue_dir)),
+        ):
+            _, st = self.run_job()
+        self.assertFalse(st["running"])
+        self.assertEqual(st["last_status"], "complete")
+        self.assertIsNone(st["last_run_id"])  # nothing in runs/ to point the UI at
+        self.assertIn("could not save run", st["error"])
+        self.assertIn("No space left on device", st["error"])
+        (rescued,) = rescue_dir.glob("dns-bench-*.json")
+        self.assertIn(str(rescued), st["error"])
+        record = json.loads(rescued.read_text(encoding="utf-8"))
+        self.assertEqual(len(record["results"]), 6)
+        self.assertIn("recommendation", record)
+
+    def test_job_state_is_reset_whatever_happens(self):
+        # SystemExit gets past `except Exception` (and the default thread excepthook ignores it): the
+        # job must still end, or the UI would show a benchmark running forever and refuse new ones.
+        with mock.patch.object(storage, "save_run", side_effect=SystemExit):
+            _, st = self.run_job()
+        self.assertFalse(st["running"])
+        self.assertEqual(self.jreq("POST", "/api/run")[0], 202)  # a new run can start
+        self.wait_idle()
+
     def test_conflict_and_cancel(self):
         C.save_config(small_config(domains=40, interval_ms=100), self.cfg_path)  # ~4 s run
         self.assertEqual(self.jreq("POST", "/api/run/cancel")[0], 409)

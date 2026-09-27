@@ -9,7 +9,6 @@ import json
 import os
 import signal
 import sys
-import tempfile
 import threading
 import time
 from datetime import UTC, datetime
@@ -137,30 +136,6 @@ def _apply_run_overrides(cfg: dict, args) -> list[str]:
     return config_mod.validate_config(cfg)
 
 
-def _check_runs_dir(runs_dir: Path) -> str | None:
-    """Make sure a run can be saved BEFORE sending any DNS traffic."""
-    try:
-        runs_dir.mkdir(parents=True, exist_ok=True)
-        fd, probe = tempfile.mkstemp(prefix=".tmp-", suffix=".part", dir=str(runs_dir))
-        os.close(fd)
-        os.unlink(probe)
-    except OSError as exc:
-        return f"cannot write to {runs_dir}: {exc.strerror or exc}"
-    return None
-
-
-def _rescue_run(run: dict) -> Path | None:
-    """Last resort when the runs dir fails mid-save: keep the data in the temp dir."""
-    try:
-        fd, path = tempfile.mkstemp(prefix=f"dns-bench-{run.get('id', 'run')}-", suffix=".json")
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            json.dump(run, fh, indent=2, ensure_ascii=False)
-            fh.write("\n")
-        return Path(path)
-    except OSError:
-        return None
-
-
 def cmd_run(args) -> int:
     cfg = config_mod.load_config(args.config)
     errors = _apply_run_overrides(cfg, args)
@@ -169,7 +144,7 @@ def cmd_run(args) -> int:
             _err(e)
         return EXIT_USAGE
     if not args.no_save:
-        problem = _check_runs_dir(args.runs_dir)
+        problem = storage.check_writable(args.runs_dir)
         if problem:
             _err(problem + " (use --runs-dir DIR, or --no-save)")
             return EXIT_ERROR
@@ -210,17 +185,11 @@ def cmd_run(args) -> int:
         signal.signal(signal.SIGINT, previous)
         progress.finish()
 
-    saved_path = None
-    save_error = None
+    saved = None
     if args.no_save:
         storage.finalize_run(run)
     else:
-        try:
-            saved_path = storage.save_run(run, args.runs_dir)
-        except OSError as exc:  # full disk, permissions changed mid-run, ...
-            save_error = exc
-            if "summary" not in run or "recommendation" not in run:
-                storage.finalize_run(run)
+        saved = storage.save_run_safely(run, args.runs_dir)
 
     # The report goes out first, so the measurements are never lost.
     if args.json:
@@ -229,23 +198,16 @@ def cmd_run(args) -> int:
     else:
         sys.stdout.write(report.render_text(run))
     sys.stdout.flush()
-    if saved_path is not None:
-        txt = saved_path.with_suffix(".txt")
-        print(f"Saved: {saved_path} (report: {txt.name})", file=sys.stderr)
-    if save_error is not None:
-        why = save_error.strerror or save_error
-        json_path = args.runs_dir / f"{run.get('id')}.json"
-        if storage.valid_run_id(run.get("id")) and json_path.is_file():
-            _err(f"the run was saved as {json_path}, but its text report could not be written: {why}")
-        else:
-            _err(f"could not save run to {args.runs_dir}: {why}")
-        rescued = _rescue_run(run)
-        if rescued is not None:
-            _err(f"the full run record was written to {rescued} instead")
+    if saved is not None and saved.error is None and saved.path is not None:
+        print(f"Saved: {saved.path} (report: {saved.path.with_suffix('.txt').name})", file=sys.stderr)
+    if saved is not None and saved.error is not None:
+        _err(saved.error)
+        if saved.rescued is not None:
+            _err(f"the full run record was written to {saved.rescued} instead")
     if run["status"] == "cancelled":
         print(f"Run cancelled after {len(run['results'])} of {est['queries']} queries.", file=sys.stderr)
         return EXIT_INTERRUPTED
-    if save_error is not None:
+    if saved is not None and saved.error is not None:
         return EXIT_ERROR
     overall = (run.get("summary") or {}).get("overall") or {}
     if run.get("results") and not overall.get("ok"):
