@@ -6,19 +6,17 @@ import json
 import os
 import signal
 import subprocess
-import sys
 import tempfile
 import threading
 import unittest
 from pathlib import Path
 from unittest import mock
 
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT))
+from dnsbench import __version__, cli, resolver, storage
+from dnsbench import config as C
+from dnsbench.resolver import QueryResult
 
-from dnsbench import __version__, cli, resolver, storage  # noqa: E402
-from dnsbench import config as C  # noqa: E402
-from dnsbench.resolver import QueryResult  # noqa: E402
+ROOT = Path(__file__).resolve().parents[1]
 
 
 def small_config():

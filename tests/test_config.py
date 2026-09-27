@@ -3,12 +3,9 @@ from __future__ import annotations
 import json
 import os
 import re
-import sys
 import tempfile
 import unittest
 from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from dnsbench import config as C
 
@@ -54,10 +51,10 @@ class DefaultsTest(unittest.TestCase):
         self.assertEqual(C.DEFAULT_DOMAINS[-1], "realestate.com.au")
 
     def test_default_domains_match_original_script(self):
-        original = Path(__file__).resolve().parents[2] / "dns-test.sh"
-        if not original.exists():
-            self.skipTest("original dns-test.sh not present")
-        text = original.read_text()
+        # The script is tracked in archive/, so a missing file is a failure, not a skip: this test was
+        # skipped without anyone noticing after the script moved there.
+        original = Path(__file__).resolve().parents[1] / "archive" / "dns-test.sh"
+        text = original.read_text(encoding="utf-8")
         block = re.search(r"domains=\((.*?)\)", text, re.S).group(1)
         self.assertEqual(block.split(), C.DEFAULT_DOMAINS)
 

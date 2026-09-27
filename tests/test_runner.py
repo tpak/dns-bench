@@ -2,14 +2,10 @@ from __future__ import annotations
 
 import itertools
 import random
-import sys
 import threading
 import time
 import unittest
 from collections import Counter, defaultdict
-from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from dnsbench import __version__, runner
 from dnsbench.resolver import QueryResult

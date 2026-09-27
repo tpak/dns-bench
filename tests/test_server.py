@@ -4,15 +4,12 @@ import csv
 import http.client
 import io
 import json
-import sys
 import tempfile
 import threading
 import time
 import unittest
 from pathlib import Path
 from unittest import mock
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from dnsbench import config as C
 from dnsbench import server as SV
