@@ -133,7 +133,7 @@ def _apply_run_overrides(cfg: dict, args) -> list[str]:
         keep = {w.casefold() for w in wanted}
         for r in cfg["resolvers"]:
             r["enabled"] = r["name"].casefold() in keep
-    return config_mod.validate_config(cfg)
+    return [str(e) for e in config_mod.validate_config(cfg)]
 
 
 def cmd_run(args) -> int:
@@ -576,8 +576,8 @@ def main(argv=None) -> int:
     try:
         return args.func(args)
     except config_mod.ConfigError as exc:
-        for e in exc.errors:
-            _err(e)
+        for message in exc.messages:
+            _err(message)
         return EXIT_ERROR
     except KeyboardInterrupt:
         print("\nInterrupted.", file=sys.stderr)

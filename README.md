@@ -276,15 +276,21 @@ Raw results can also be downloaded as CSV from the History tab, or from
 
 | Method & path | Purpose |
 |---|---|
-| `GET /api/config` · `PUT /api/config` · `POST /api/config/reset` · `GET /api/defaults` | Read, validate and save, reset, or get the defaults. Reading a config that doesn't exist yet returns what it would start with, without creating it. |
+| `GET /api/config` · `PUT /api/config` · `POST /api/config/reset` | Read, save, or reset the config. Each returns `{"config", "errors", "estimate"}`: the (normalised) config, its problems (`[]` when valid; a hand-edited file can have some) and what a run of it costs. Reading a config that doesn't exist yet returns what it would start with, without creating it. |
+| `POST /api/config/validate` | Body: a config draft, which may be raw form input (servers and domains as text, numbers as strings). Returns the same three fields for it, plus `duplicate_domains`, and saves nothing. |
 | `POST /api/config/system-resolver` | Body: a Settings draft (`{"resolvers": [...]}`). Returns this computer's resolvers as a System entry for it (`resolver`, or `null` if there is nothing to add) and a `message`. Saves nothing. |
+| `POST /api/estimate` (`{"rounds": N, "config": {...}}`, both optional) | What a run costs: queries, expected and worst-case seconds, load per server and in total. Without `config`, of the saved config. |
+| `GET /api/schema` | The rules: the defaults, each setting's type and bounds, the limits, the presets, the scoring constants and the error codes. The web UI builds its forms from this instead of keeping its own copy. |
 | `GET /api/info` | The version, and where the config file (and whether it exists yet) and the runs folder are. |
 | `GET /api/runs` · `GET /api/runs/<id>` · `GET /api/runs/<id>/csv` | List runs, get one run in full, or download its raw results as CSV. |
 | `GET /api/aggregate?runs=all` or `?runs=id1,id2` | Merged summary and recommendation for several runs, plus `coverage` (how many of the runs measured each resolver). |
 | `POST /api/run` (`{"rounds": N}` optional) · `GET /api/status` · `POST /api/run/cancel` | Start a background benchmark, poll its progress, or cancel it. |
 
-Errors come back as `{"error": "...", "details": [...]}` with a matching HTTP status. The
-request body limit is 1 MB.
+Errors come back as `{"error": "...", "details": [...]}` with a matching HTTP status. Each detail is
+`{"path", "code", "message"}`: `path` says where the problem is (`resolvers[0].servers[1]`,
+`domains[3]`, `settings.rounds`, or `""` for the whole config or request), `code` what kind it is
+(`GET /api/schema` lists the config ones), and `message` is the sentence the command line prints.
+Messages never include a file's absolute path. The request body limit is 1 MB.
 
 ## Project layout
 

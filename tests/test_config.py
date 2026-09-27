@@ -116,7 +116,7 @@ class NormalizeTest(unittest.TestCase):
         self.assertLess(time.perf_counter() - t0, 0.5)
         self.assertEqual(n["domains"], [huge])
         errors = C.validate_config(n)
-        self.assertTrue(any("longer than 253 characters" in e for e in errors), errors)
+        self.assertTrue(any("longer than 253 characters" in e.message for e in errors), errors)
         long_but_valid = ".".join(["bücher" + "a" * 50] * 3)  # 170 characters: still encoded
         encoded = C.normalize_domain(long_but_valid)
         self.assertTrue(encoded.startswith("xn--"), encoded)
@@ -165,10 +165,16 @@ class NormalizeTest(unittest.TestCase):
 
 
 class ValidateTest(unittest.TestCase):
-    def assertInvalid(self, c, fragment):
+    def assertInvalid(self, c, fragment, path=None, code=None):
+        """``c`` has an error whose message contains ``fragment`` (with ``path`` and ``code``, if given)."""
         errors = C.validate_config(c)
         self.assertTrue(errors, "expected errors")
-        self.assertTrue(any(fragment in e for e in errors), f"{fragment!r} not in {errors}")
+        match = [e for e in errors if fragment in e.message]
+        self.assertTrue(match, f"{fragment!r} not in {errors}")
+        if path is not None:
+            self.assertIn(path, [e.path for e in match], errors)
+        if code is not None:
+            self.assertIn(code, [e.code for e in match], errors)
 
     def test_not_a_dict(self):
         self.assertTrue(C.validate_config([]))
@@ -272,8 +278,10 @@ class ValidateTest(unittest.TestCase):
     def test_zone_ids(self):
         evil = "::ffff:127.0.0.1%\x1b]0;PWNED\x07\x1b[41mX\x1b[0m\nFAKE LINE: Recommendation: use EvilDNS"
         errors = C.validate_config(cfg(resolvers=[{"name": "A", "servers": [evil]}]))
-        self.assertTrue(any("control characters" in e for e in errors), errors)
-        self.assertFalse(any("\x1b" in e or "\n" in e for e in errors), errors)  # never echoed raw
+        self.assertTrue(any("control characters" in e.message for e in errors), errors)
+        self.assertFalse(
+            any("\x1b" in e.message or "\n" in e.message for e in errors), errors
+        )  # never echoed raw
         for bad in ("::ffff:1.2.3.4%x", "2001:db8::1%en0", "::1%1", "fe80::1%a,b", "fe80::1%" + "e" * 16):
             with self.subTest(bad=bad):
                 self.assertInvalid(cfg(resolvers=[{"name": "A", "servers": [bad]}]), "zone ID")
@@ -319,8 +327,8 @@ class ValidateTest(unittest.TestCase):
         for bad in ("a\x9bb", "a\u202eb", "a\x7fb", "a\u2066b"):
             with self.subTest(bad=bad):
                 errors = C.validate_config(cfg(resolvers=[{"name": bad, "servers": ["1.1.1.1"]}]))
-                self.assertTrue(any("control characters" in e for e in errors), errors)
-                self.assertFalse(any(bad in e for e in errors), errors)  # shown escaped
+                self.assertTrue(any("control characters" in e.message for e in errors), errors)
+                self.assertFalse(any(bad in e.message for e in errors), errors)  # shown escaped
         self.assertEqual(
             C.validate_config(cfg(resolvers=[{"name": "My DNS (home)", "servers": ["1.1.1.1"]}])), []
         )
@@ -331,8 +339,8 @@ class ValidateTest(unittest.TestCase):
                 n = C.normalize_config(cfg(settings={"rounds": bad}))  # never raises
                 self.assertEqual(n["settings"]["rounds"], bad)
                 errors = C.validate_config(n)
-                self.assertTrue(any(e.startswith("settings.rounds") for e in errors), errors)
-                self.assertTrue(all(len(e) < 200 for e in errors))
+                self.assertTrue(any(e.message.startswith("settings.rounds") for e in errors), errors)
+                self.assertTrue(all(len(e.message) < 200 for e in errors))
 
     def test_enabled_must_be_bool(self):
         self.assertInvalid(
@@ -560,6 +568,122 @@ class LoadSaveTest(unittest.TestCase):
         self.assertEqual(e12["servers"], 12)
         self.assertEqual(e12["est_seconds"], e["est_seconds"])
         self.assertEqual(e12["max_qps_total"], 48.0)
+
+
+class StructuredErrorsTest(unittest.TestCase):
+    def test_each_error_says_where_and_what(self):
+        bad = cfg(
+            resolvers=[
+                {"name": "", "servers": ["nope", "224.0.0.1"], "enabled": "yes"},
+                {"name": "A,B", "servers": ["192.0.2.1", "::ffff:192.0.2.1"]},
+                "junk",
+            ],
+            domains=["ok.com", "-bad.com"],
+        )
+        bad["settings"]["rounds"] = 0
+        bad["settings"]["record_type"] = "MX"
+        errors = C.validate_config(bad)
+        self.assertEqual(
+            [(e.path, e.code) for e in errors],
+            [
+                ("resolvers[0].name", "required"),
+                ("resolvers[0].servers[0]", "invalid"),
+                ("resolvers[0].servers[1]", "unusable_address"),
+                ("resolvers[0].enabled", "type"),
+                ("resolvers[1].name", "invalid"),
+                ("resolvers[1].servers[1]", "duplicate"),  # ::ffff:192.0.2.1 is 192.0.2.1
+                ("resolvers[2]", "type"),
+                ("domains[1]", "invalid"),
+                ("settings.rounds", "out_of_range"),
+                ("settings.record_type", "invalid_choice"),
+            ],
+        )
+        for e in errors:
+            self.assertIn(e.code, C.ERROR_CODES)
+            self.assertEqual(str(e), e.message)
+            self.assertEqual(e.to_dict(), {"path": e.path, "code": e.code, "message": e.message})
+        # Messages are the CLI's sentences, unchanged: resolvers are counted from 1 there.
+        self.assertEqual(errors[0].message, "Resolver #1: name is required")
+
+    def test_whole_sections_and_the_whole_run(self):
+        self.assertEqual([(e.path, e.code) for e in C.validate_config([])], [("", "type")])
+        errors = C.validate_config({"resolvers": [], "domains": 5, "settings": "x"})
+        self.assertEqual(
+            [(e.path, e.code) for e in errors],
+            [("resolvers", "required"), ("domains", "type"), ("settings", "type")],
+        )
+        eleven = [{"name": f"R{i}", "servers": [f"192.0.2.{i}"]} for i in range(11)]
+        huge = cfg(resolvers=eleven, domains=[f"d{i}.com" for i in range(500)])
+        huge["settings"]["rounds"] = 10  # 11 x 500 x 10 = 55,000 queries
+        self.assertEqual([(e.path, e.code) for e in C.validate_config(huge)], [("", "too_many_queries")])
+        many_bad = cfg(domains=[f"-{i}.com" for i in range(25)])
+        errors = C.validate_config(many_bad)
+        self.assertEqual([e.path for e in errors[:2]], ["domains[0]", "domains[1]"])
+        self.assertEqual(len(errors), C.MAX_DOMAIN_ERRORS + 1)
+        self.assertEqual((errors[-1].path, errors[-1].code), ("domains", "more_errors"))
+
+    def test_config_error_names_the_file_for_the_cli_only(self):
+        error = C.ValidationError("settings.rounds", "out_of_range", "settings.rounds: too big")
+        exc = C.ConfigError([error], "/x/config.json")
+        self.assertEqual(exc.errors, [error])
+        self.assertEqual(exc.messages, ["/x/config.json: settings.rounds: too big"])
+        self.assertEqual(str(exc), "/x/config.json: settings.rounds: too big")
+        self.assertEqual(C.ConfigError("plain").errors, [C.ValidationError("", "invalid", "plain")])
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "config.json"
+            path.write_text("{ nope")
+            with self.assertRaises(C.ConfigError) as cm:
+                C.load_config(path)
+        (e,) = cm.exception.errors
+        self.assertEqual((e.path, e.code), ("", "invalid_json"))
+        self.assertNotIn(tmp, e.message)
+        self.assertTrue(cm.exception.messages[0].startswith(f"{path}: not valid JSON: "))
+
+
+class SchemaAndEstimateTest(unittest.TestCase):
+    def test_setting_schema_matches_the_rules(self):
+        schema = {s["key"]: s for s in C.setting_schema()}
+        self.assertEqual(list(schema), list(C.DEFAULT_SETTINGS))
+        for key, (lo, hi) in C.SETTING_BOUNDS.items():
+            self.assertEqual((schema[key]["type"], schema[key]["min"], schema[key]["max"]), ("int", lo, hi))
+            self.assertEqual(schema[key]["default"], C.DEFAULT_SETTINGS[key])
+        self.assertEqual(schema["record_type"]["choices"], list(C.RECORD_TYPES))
+        self.assertEqual(schema["shuffle"], {"key": "shuffle", "type": "bool", "default": True})
+        self.assertEqual(schema["timeout_ms"]["unit"], "ms")
+        self.assertEqual(schema["rounds"]["unit"], "")
+
+    def test_estimate_of_a_draft_never_raises(self):
+        # Settings shows an estimate while the user types: junk counts as the default.
+        draft = {
+            "resolvers": [
+                {"name": "A", "servers": "192.0.2.1, 192.0.2.2"},
+                "junk",
+                {"name": "B", "enabled": False},
+            ],
+            "domains": "a.com b.com\nc.com",
+            "settings": {"rounds": "", "per_server_interval_ms": "10", "timeout_ms": None},
+        }
+        e = C.estimate(draft)
+        self.assertEqual((e["resolvers"], e["servers"], e["domains"], e["rounds"]), (1, 2, 3, 1))
+        self.assertEqual(e["queries"], 6)
+        self.assertEqual(e["max_qps_per_server"], 20.0)  # 10 ms is below the runner's 50 ms floor
+        for junk in (None, [], "x", {"resolvers": 5, "domains": {}, "settings": []}):
+            with self.subTest(junk=junk):
+                self.assertEqual(C.estimate(junk)["queries"], 0)
+
+    def test_estimate_rounds_override_and_worst_case(self):
+        c = cfg()
+        c["settings"].update(tries=2, timeout_ms=1000, per_server_interval_ms=250)
+        e = C.estimate(c, rounds=3)
+        self.assertEqual((e["rounds"], e["queries_per_server"]), (3, 180))
+        self.assertEqual(e["est_seconds"], round(180 * 0.25 * 1.05, 1))
+        self.assertEqual(e["worst_seconds"], 180 * 2 * 1.0)  # every attempt times out after 1 s
+
+    def test_duplicate_domains(self):
+        self.assertEqual(C.duplicate_domains({"domains": "a.com A.com. b.com\n\n a.com"}), 2)
+        self.assertEqual(C.duplicate_domains({"domains": ["a.com", "", "b.com"]}), 0)
+        self.assertEqual(C.duplicate_domains({"domains": 5}), 0)
+        self.assertEqual(C.duplicate_domains("x"), 0)
 
 
 class SystemResolverTest(unittest.TestCase):

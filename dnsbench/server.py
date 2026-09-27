@@ -26,7 +26,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlsplit
 
-from . import __version__, paths, runner, storage, sysdns
+from . import __version__, paths, recommend, runner, stats, storage, sysdns
 from . import config as config_mod
 
 MAX_BODY = 1024 * 1024  # 1 MB request body cap
@@ -66,12 +66,89 @@ _PORT_RE = re.compile(r"[0-9]{1,5}")  # ASCII digits only: str.isdigit() also ac
 
 
 class HTTPError(Exception):
-    def __init__(self, status: int, message: str, details=None, headers=None):
+    """An error response: ``{"error": message, "details": [{path, code, message}, ...]}``.
+
+    ``details`` are ValidationErrors, the same shape the config validation uses, so the UI can put
+    each one next to the field (``path``) it is about. They never hold absolute file paths or Python
+    exception text.
+    """
+
+    def __init__(
+        self,
+        status: int,
+        message: str,
+        details: list[config_mod.ValidationError] | None = None,
+        headers: dict[str, str] | None = None,
+    ):
         super().__init__(message)
         self.status = status
         self.message = message
         self.details = details
         self.headers = headers or {}
+
+
+def _problem(code: str, message: str, path: str = "") -> config_mod.ValidationError:
+    """A detail for an error that isn't about the config (a request body, a run id, the runs folder)."""
+    return config_mod.ValidationError(path, code, message)
+
+
+def _rounds_param(body: dict) -> int | None:
+    """The optional ``rounds`` override in a request body, checked against the same bounds as the config."""
+    rounds = body.get("rounds")
+    if rounds is None:
+        return None
+    lo, hi = config_mod.SETTING_BOUNDS["rounds"]
+    if isinstance(rounds, float) and rounds.is_integer():
+        rounds = int(rounds)
+    if isinstance(rounds, bool) or not isinstance(rounds, int) or not lo <= rounds <= hi:
+        raise HTTPError(
+            400,
+            f"rounds must be a whole number from {lo} to {hi}",
+            [_problem("out_of_range", f"rounds must be a whole number from {lo} to {hi}", "rounds")],
+        )
+    return rounds
+
+
+def api_schema() -> dict:
+    """What the web UI needs to know about the rules, so it never keeps a copy of them (GET /api/schema)."""
+    return {
+        "version": __version__,
+        "defaults": config_mod.default_config(),
+        "settings": config_mod.setting_schema(),
+        "limits": {
+            "resolvers": config_mod.MAX_RESOLVERS,
+            "servers_per_resolver": config_mod.MAX_SERVERS_PER_RESOLVER,
+            "name_length": config_mod.MAX_NAME_LEN,
+            "domains": config_mod.MAX_DOMAINS,
+            "hostname_length": config_mod.MAX_HOSTNAME_LEN,
+            "queries_per_run": config_mod.MAX_QUERIES_PER_RUN,
+            "min_interval_ms": config_mod.MIN_INTERVAL_MS,
+            "request_bytes": MAX_BODY,
+        },
+        "presets": config_mod.PRESETS,
+        "error_codes": config_mod.ERROR_CODES,
+        "scoring": {
+            "weights": {"median": recommend.W_MEDIAN, "p95": recommend.W_P95, "mean": recommend.W_MEAN},
+            "failure_weight": recommend.FAILURE_WEIGHT,
+            "retry_weight": recommend.RETRY_WEIGHT,
+            "tie_abs_ms": recommend.TIE_ABS_MS,
+            "tie_rel": recommend.TIE_REL,
+            "server_tie_abs_ms": recommend.SERVER_TIE_ABS_MS,
+            "server_tie_rel": recommend.SERVER_TIE_REL,
+            "failure_warn_rate": recommend.FAILURE_WARN_RATE,
+            "low_sample": recommend.LOW_SAMPLE,
+        },
+        "slow": {"list_max": stats.SLOW_LIST_MAX, "per_resolver_max": stats.SLOW_PER_RESOLVER_MAX},
+    }
+
+
+def _config_response(cfg: dict) -> dict:
+    """What the config endpoints return: the config, its problems ([] when valid) and a run's cost."""
+    return {
+        "config": cfg,
+        "errors": [e.to_dict() for e in config_mod.validate_config(cfg)],
+        "estimate": config_mod.estimate(cfg),
+    }
 
 
 def _now_iso() -> str:
@@ -160,7 +237,12 @@ class DNSBenchServer(ThreadingHTTPServer):
             # Before any DNS traffic, like the CLI: a run that can't be saved isn't worth measuring.
             problem = storage.check_writable(self.runs_dir)
             if problem:
-                raise HTTPError(500, "Cannot save runs", [problem])
+                why = problem.removeprefix(f"cannot write to {self.runs_dir}: ")  # the UI shows the path
+                raise HTTPError(
+                    500,
+                    "Cannot save runs",
+                    [_problem("runs_dir_unwritable", f"cannot write to the runs folder: {why}")],
+                )
             est = config_mod.estimate(cfg)
             total = sum(len(j["items"]) for j in runner.build_jobs(cfg))
             job.running = True
@@ -299,7 +381,9 @@ _ROUTES = [
     (re.compile(r"^/api/config$"), {"GET": "get_config", "PUT": "put_config"}),
     (re.compile(r"^/api/config/reset$"), {"POST": "reset_config"}),
     (re.compile(r"^/api/config/system-resolver$"), {"POST": "system_resolver"}),
-    (re.compile(r"^/api/defaults$"), {"GET": "defaults"}),
+    (re.compile(r"^/api/config/validate$"), {"POST": "validate_config"}),
+    (re.compile(r"^/api/estimate$"), {"POST": "estimate"}),
+    (re.compile(r"^/api/schema$"), {"GET": "schema"}),
     (re.compile(r"^/api/info$"), {"GET": "info"}),
     (re.compile(r"^/api/runs$"), {"GET": "runs"}),
     (re.compile(r"^/api/runs/(?P<id>[^/]+)$"), {"GET": "run"}),
@@ -407,10 +491,16 @@ class Handler(BaseHTTPRequestHandler):
         with contextlib.suppress(OSError):
             self._error(code, message or phrase)
 
-    def _error(self, status: int, message: str, details=None, headers=None):
+    def _error(
+        self,
+        status: int,
+        message: str,
+        details: list[config_mod.ValidationError] | None = None,
+        headers: dict[str, str] | None = None,
+    ):
         obj: dict[str, object] = {"error": message}
         if details is not None:
-            obj["details"] = list(details)
+            obj["details"] = [d.to_dict() for d in details]
         self._json(status, obj, headers)
 
     def _request_host(self) -> str | None:
@@ -470,10 +560,12 @@ class Handler(BaseHTTPRequestHandler):
         # The client went away, or stalled for longer than `timeout`: there is no one to answer.
         except (BrokenPipeError, ConnectionResetError, TimeoutError):
             self.close_connection = True
-        except Exception as exc:  # pragma: no cover - defensive
+        except (
+            Exception
+        ) as exc:  # pragma: no cover - defensive; the exception goes to the log, not the client
             self.server.log_line(f"internal error on {method} {self.path}: {exc!r}")
             with contextlib.suppress(OSError):
-                self._error(500, "Internal server error", [f"{type(exc).__name__}: {exc}"])
+                self._error(500, "Internal server error")
 
     def _read_json(self, required: bool = True):
         ctype = (self.headers.get("Content-Type") or "").split(";")[0].strip().lower()
@@ -507,7 +599,7 @@ class Handler(BaseHTTPRequestHandler):
             return config_mod.loads_json(raw.decode("utf-8"))
         except ValueError as exc:
             # bad UTF-8, bad JSON, a >4300-digit integer, or nesting past config_mod.MAX_JSON_DEPTH
-            raise HTTPError(400, "Malformed JSON", [str(exc)[:200]]) from None
+            raise HTTPError(400, "Malformed JSON", [_problem("malformed_json", str(exc)[:200])]) from None
 
     # -- static --------------------------------------------------------------
     def _file(self, path: Path, content_type: str | None = None):
@@ -553,12 +645,12 @@ class Handler(BaseHTTPRequestHandler):
                 )
             except config_mod.ConfigError as exc:
                 raise HTTPError(500, "Cannot read config", exc.errors) from None
-        self._json(200, cfg)
+        self._json(200, _config_response(cfg))
 
     def h_put_config(self):
         body = self._read_json(required=True)
         if not isinstance(body, dict):
-            raise HTTPError(400, "Invalid config", ["Config must be a JSON object"])
+            raise HTTPError(400, "Invalid config", config_mod.validate_config(body))
         with self.server.config_lock:
             try:
                 saved = config_mod.save_config(body, self.server.config_path)
@@ -566,7 +658,7 @@ class Handler(BaseHTTPRequestHandler):
                 raise HTTPError(500, "Cannot save config", exc.errors) from None
             except config_mod.ConfigError as exc:
                 raise HTTPError(400, "Invalid config", exc.errors) from None
-        self._json(200, saved)
+        self._json(200, _config_response(saved))
 
     def h_reset_config(self):
         self._read_json(required=False)
@@ -575,7 +667,40 @@ class Handler(BaseHTTPRequestHandler):
                 cfg, _ = config_mod.reset_config(self.server.config_path, self.server.detect_fn)
             except config_mod.ConfigWriteError as exc:
                 raise HTTPError(500, "Cannot save config", exc.errors) from None
-        self._json(200, cfg)
+        self._json(200, _config_response(cfg))
+
+    def h_validate_config(self):
+        """Check a Settings draft without saving it: the normalised config, its problems and its cost.
+
+        The draft may be raw form input: servers and domains as text, numbers as strings.
+        ``duplicate_domains`` counts the entries normalising dropped as repeats.
+        """
+        body = self._read_json(required=True)
+        if not isinstance(body, dict):
+            raise HTTPError(400, "Invalid config", config_mod.validate_config(body))
+        cfg = config_mod.normalize_config(body)
+        self._json(200, {**_config_response(cfg), "duplicate_domains": config_mod.duplicate_domains(body)})
+
+    def h_estimate(self):
+        """The cost of a run: of ``config`` in the body if given, else of the saved config; ``rounds``
+        overrides its rounds, as POST /api/run does."""
+        body = self._read_json(required=False) or {}
+        if not isinstance(body, dict):
+            raise HTTPError(400, "Body must be a JSON object")
+        rounds = _rounds_param(body)
+        cfg = body.get("config")
+        if cfg is None:
+            with self.server.config_lock:
+                try:
+                    cfg = config_mod.load_config(
+                        self.server.config_path, strict=False, detect=self.server.detect_fn
+                    )
+                except config_mod.ConfigError as exc:
+                    raise HTTPError(500, "Cannot read config", exc.errors) from None
+        self._json(200, config_mod.estimate(cfg, rounds))
+
+    def h_schema(self):
+        self._json(200, api_schema())
 
     def h_system_resolver(self):
         """This computer's resolvers as a "System" entry for the Settings draft in the body. Saves nothing:
@@ -593,9 +718,6 @@ class Handler(BaseHTTPRequestHandler):
                 "source": system.detected.source,
             },
         )
-
-    def h_defaults(self):
-        self._json(200, config_mod.default_config())
 
     def h_info(self):
         """Where this server keeps its data, for the Settings page."""
@@ -652,10 +774,16 @@ class Handler(BaseHTTPRequestHandler):
             ids = [p.strip() for p in spec.split(",") if p.strip()]
             bad = [i for i in ids if not storage.valid_run_id(i)]
             if bad:
-                raise HTTPError(400, "Invalid run id", bad)
+                raise HTTPError(
+                    400,
+                    "Invalid run id",
+                    [_problem("invalid_run_id", f"not a run id: {i!r}", "runs") for i in bad],
+                )
             missing = [i for i in ids if not (self.server.runs_dir / f"{i}.json").is_file()]
             if missing:
-                raise HTTPError(404, "Run not found", missing)
+                raise HTTPError(
+                    404, "Run not found", [_problem("not_found", f"no run {i}", "runs") for i in missing]
+                )
         with self.server.config_lock:
             current = config_mod.current_resolver_names(self.server.config_path)
         try:
@@ -671,14 +799,7 @@ class Handler(BaseHTTPRequestHandler):
         body = self._read_json(required=False) or {}
         if not isinstance(body, dict):
             raise HTTPError(400, "Body must be a JSON object")
-        rounds = body.get("rounds")
-        if rounds is not None:
-            lo, hi = config_mod.SETTING_BOUNDS["rounds"]
-            if isinstance(rounds, float) and rounds.is_integer():
-                rounds = int(rounds)
-            if isinstance(rounds, bool) or not isinstance(rounds, int) or not lo <= rounds <= hi:
-                raise HTTPError(400, f"rounds must be a whole number from {lo} to {hi}")
-        total = self.server.start_job(rounds)
+        total = self.server.start_job(_rounds_param(body))
         self._json(202, {"job": "started", "total": total})
 
     def h_cancel_run(self):

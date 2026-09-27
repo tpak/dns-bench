@@ -127,6 +127,7 @@ SETTING_BOUNDS = {
 }
 RECORD_TYPES = ("A", "AAAA")
 MIN_INTERVAL_MS = SETTING_BOUNDS["per_server_interval_ms"][0]
+SETTING_UNITS = {"per_server_interval_ms": "ms", "timeout_ms": "ms", "slow_threshold_ms": "ms"}
 
 MAX_DOMAINS = 500
 MAX_RESOLVERS = 20
@@ -146,17 +147,66 @@ _INT_RE = re.compile(r"-?[0-9]{1,9}")
 _ZONE_RE = re.compile(r"[A-Za-z0-9._-]{1,15}")
 
 
+@dataclass(frozen=True)
+class ValidationError:
+    """One problem with a config. ``str()`` is the sentence the CLI prints.
+
+    ``path`` says where, in the normalised config: ``resolvers[0].servers[1]``, ``domains[3]``,
+    ``settings.rounds``, a whole section (``resolvers``, ``domains``, ``settings``), or ``""`` for the
+    config (or its file) as a whole. List indices count from 0. ``code`` names the kind of problem
+    (one of ``ERROR_CODES``), so a program can react without parsing the message. Messages never
+    contain the config file's path: the CLI adds it, and the web API doesn't need it.
+    """
+
+    path: str
+    code: str
+    message: str
+
+    def __str__(self) -> str:
+        return self.message
+
+    def to_dict(self) -> dict[str, str]:
+        return {"path": self.path, "code": self.code, "message": self.message}
+
+
+ERROR_CODES = {
+    "type": "a value of the wrong JSON type",
+    "required": "something that must be there is missing or empty",
+    "too_many": "a list over its limit",
+    "too_long": "a name over its length limit",
+    "invalid": "a value that can't be used, such as an IP address or hostname that doesn't parse",
+    "unusable_address": "an IP address that can't be a DNS resolver (multicast, broadcast, ...)",
+    "duplicate": "a resolver name or server address used twice",
+    "none_enabled": "no resolver is enabled",
+    "out_of_range": "a number outside its bounds",
+    "invalid_choice": "a value that isn't one of the allowed choices",
+    "too_many_queries": "a run over the queries-per-run limit",
+    "more_errors": "more problems of the kind just listed, not listed one by one",
+    "unreadable": "the config file can't be read",
+    "invalid_json": "the config file isn't valid JSON",
+    "write_failed": "the config file can't be written",
+}
+
+
 class ConfigError(Exception):
     """Raised for unreadable or invalid configuration.
 
-    ``errors`` is always a list of human-readable strings.
+    ``errors`` is a list of ValidationError. ``file`` is the config file they are about, when there is
+    one; ``messages`` are the errors as the CLI prints them, prefixed with it.
     """
 
-    def __init__(self, errors):
-        if isinstance(errors, str):
-            errors = [errors]
-        self.errors = list(errors)
-        super().__init__("; ".join(self.errors) if self.errors else "Invalid config")
+    def __init__(self, errors: str | ValidationError | list, file: str | os.PathLike[str] | None = None):
+        items = [errors] if isinstance(errors, (str, ValidationError)) else list(errors)
+        self.errors: list[ValidationError] = [
+            e if isinstance(e, ValidationError) else ValidationError("", "invalid", str(e)) for e in items
+        ]
+        self.file = Path(file) if file is not None else None
+        super().__init__("; ".join(self.messages) if self.errors else "Invalid config")
+
+    @property
+    def messages(self) -> list[str]:
+        prefix = f"{self.file}: " if self.file is not None else ""
+        return [prefix + e.message for e in self.errors]
 
 
 class ConfigWriteError(ConfigError):
@@ -167,9 +217,41 @@ class ConfigWriteError(ConfigError):
     """
 
 
+# Resolvers the Settings page offers to add with one click (the defaults are already in the list).
+PRESETS = [
+    {"name": "Quad9", "servers": ["9.9.9.9", "149.112.112.112"]},
+    {"name": "AdGuard", "servers": ["94.140.14.14", "94.140.15.15"]},
+    {"name": "Control D", "servers": ["76.76.2.0", "76.76.10.0"]},
+    {"name": "CleanBrowsing", "servers": ["185.228.168.9", "185.228.169.9"]},
+]
+
+
 def default_config() -> dict:
     """Return a fresh deep copy of the default configuration."""
     return copy.deepcopy(DEFAULT_CONFIG)
+
+
+def setting_schema() -> list[dict]:
+    """Each setting's type, default and allowed values, in DEFAULT_SETTINGS order (for GET /api/schema)."""
+    out: list[dict] = []
+    for key, default in DEFAULT_SETTINGS.items():
+        if key in SETTING_BOUNDS:
+            lo, hi = SETTING_BOUNDS[key]
+            out.append(
+                {
+                    "key": key,
+                    "type": "int",
+                    "min": lo,
+                    "max": hi,
+                    "default": default,
+                    "unit": SETTING_UNITS.get(key, ""),
+                }
+            )
+        elif key == "record_type":
+            out.append({"key": key, "type": "choice", "choices": list(RECORD_TYPES), "default": default})
+        else:
+            out.append({"key": key, "type": "bool", "default": default})
+    return out
 
 
 # --------------------------------------------------------------------------- #
@@ -356,6 +438,16 @@ def normalize_config(cfg) -> dict:
     return out
 
 
+def duplicate_domains(cfg: object) -> int:
+    """How many entries of ``cfg``'s domain list normalising drops as repeats (blank ones don't count)."""
+    domains = _as_list(cfg.get("domains")) if isinstance(cfg, dict) else None
+    if not isinstance(domains, list):
+        return 0
+    names = [normalize_domain(d) for d in domains if isinstance(d, str)]
+    names = [d for d in names if d]
+    return len(names) - len(set(names))
+
+
 # --------------------------------------------------------------------------- #
 # Validation
 # --------------------------------------------------------------------------- #
@@ -378,147 +470,242 @@ def _hostname_error(domain) -> str | None:
     return None
 
 
-def validate_config(cfg) -> list[str]:
-    """Validate a config. Returns a list of human-readable errors ([] = valid).
+def _label(i: int, name: object) -> str:
+    """How messages name resolver ``i`` (0-based): "Resolver #1 (Cloudflare)"."""
+    if not isinstance(name, str) or not name:
+        return f"Resolver #{i + 1}"
+    # never echo control characters (terminal escapes) back in messages
+    return f"Resolver #{i + 1} ({name if name.isprintable() else _short_repr(name)})"
+
+
+def _validate_resolvers(resolvers: object) -> list[ValidationError]:
+    if not isinstance(resolvers, list) or not resolvers:
+        return [ValidationError("resolvers", "required", "resolvers: at least one resolver is required")]
+    errors: list[ValidationError] = []
+    if len(resolvers) > MAX_RESOLVERS:
+        errors.append(
+            ValidationError(
+                "resolvers",
+                "too_many",
+                f"resolvers: at most {MAX_RESOLVERS} resolvers allowed (got {len(resolvers)})",
+            )
+        )
+    names_seen: dict[str, int] = {}
+    servers_seen: dict[str, str] = {}
+    any_enabled = False
+    for i, r in enumerate(resolvers):
+        at = f"resolvers[{i}]"
+        if not isinstance(r, dict):
+            errors.append(
+                ValidationError(
+                    at, "type", f"Resolver #{i + 1}: must be an object with name, servers, enabled"
+                )
+            )
+            continue
+        name = r.get("name")
+        label = _label(i, name)
+        if not isinstance(name, str) or not name:
+            errors.append(ValidationError(f"{at}.name", "required", f"{label}: name is required"))
+        else:
+            if len(name) > MAX_NAME_LEN:
+                errors.append(
+                    ValidationError(
+                        f"{at}.name", "too_long", f"{label}: name must be at most {MAX_NAME_LEN} characters"
+                    )
+                )
+            # isprintable() is False for C0/DEL/C1 controls and bidi overrides
+            if "," in name or not name.isprintable():
+                errors.append(
+                    ValidationError(
+                        f"{at}.name",
+                        "invalid",
+                        f"{label}: name must not contain commas or control characters",
+                    )
+                )
+            key = name.casefold()
+            if key in names_seen:
+                errors.append(
+                    ValidationError(
+                        f"{at}.name",
+                        "duplicate",
+                        f"{label}: duplicate name (same as resolver #{names_seen[key] + 1})",
+                    )
+                )
+            else:
+                names_seen[key] = i
+        servers = r.get("servers")
+        if not isinstance(servers, list) or not servers:
+            errors.append(
+                ValidationError(f"{at}.servers", "required", f"{label}: at least one server IP is required")
+            )
+        else:
+            if len(servers) > MAX_SERVERS_PER_RESOLVER:
+                errors.append(
+                    ValidationError(
+                        f"{at}.servers",
+                        "too_many",
+                        f"{label}: at most {MAX_SERVERS_PER_RESOLVER} servers allowed (got {len(servers)})",
+                    )
+                )
+            owner = name if isinstance(name, str) and name and name.isprintable() else f"resolver #{i + 1}"
+            for j, s in enumerate(servers):
+                errors += _server_errors(f"{at}.servers[{j}]", label, s, owner, servers_seen)
+        enabled = r.get("enabled", True)
+        if not isinstance(enabled, bool):
+            errors.append(ValidationError(f"{at}.enabled", "type", f"{label}: enabled must be true or false"))
+        elif enabled:
+            any_enabled = True
+    if not any_enabled:
+        errors.append(
+            ValidationError("resolvers", "none_enabled", "resolvers: at least one resolver must be enabled")
+        )
+    return errors
+
+
+def _server_errors(at: str, label: str, s: object, owner: str, seen: dict[str, str]) -> list[ValidationError]:
+    """Problems with one server address. ``seen`` maps the addresses used so far to their resolver."""
+    if isinstance(s, str) and not s.isprintable():
+        return [
+            ValidationError(at, "invalid", f"{label}: server {_short_repr(s)} contains control characters")
+        ]
+    try:
+        ip = ipaddress.ip_address(s if isinstance(s, str) else "")
+    except ValueError:
+        return [
+            ValidationError(
+                at, "invalid", f"{label}: server {_short_repr(s)} is not a valid IPv4 or IPv6 address"
+            )
+        ]
+    assert isinstance(s, str)  # ip_address("") failed for everything else
+    problem = _server_problem(ip)
+    if problem:
+        shown = s if len(s) <= 64 else s[:61] + "..."
+        text = (
+            f"{label}: server {shown} {problem}"
+            if problem.startswith("is ")
+            else f"{label}: server {shown}: {problem}"
+        )
+        return [ValidationError(at, "unusable_address", text)]
+    key = _host_key(ip)
+    if key in seen:
+        return [ValidationError(at, "duplicate", f"{label}: server {key} is already used by {seen[key]}")]
+    seen[key] = owner
+    return []
+
+
+# Invalid domains listed one by one; the rest are counted in a single message.
+MAX_DOMAIN_ERRORS = 20
+
+
+def _validate_domains(domains: object) -> list[ValidationError]:
+    if not isinstance(domains, list):
+        return [ValidationError("domains", "type", "domains: must be a list of domain names")]
+    errors: list[ValidationError] = []
+    if not domains:
+        errors.append(ValidationError("domains", "required", "domains: at least one domain is required"))
+    elif len(domains) > MAX_DOMAINS:
+        errors.append(
+            ValidationError(
+                "domains", "too_many", f"domains: at most {MAX_DOMAINS} domains allowed (got {len(domains)})"
+            )
+        )
+    bad = 0
+    for i, d in enumerate(domains):
+        problem = _hostname_error(d)
+        if problem:
+            bad += 1
+            if bad <= MAX_DOMAIN_ERRORS:
+                errors.append(
+                    ValidationError(
+                        f"domains[{i}]", "invalid", f"domains: '{d}' is not a valid hostname: {problem}"
+                    )
+                )
+    if bad > MAX_DOMAIN_ERRORS:
+        errors.append(
+            ValidationError(
+                "domains", "more_errors", f"domains: ...and {bad - MAX_DOMAIN_ERRORS} more invalid domains"
+            )
+        )
+    return errors
+
+
+def _validate_settings(settings: object) -> list[ValidationError]:
+    if not isinstance(settings, dict):
+        return [ValidationError("settings", "type", "settings: must be an object")]
+    errors: list[ValidationError] = []
+    for key, (lo, hi) in SETTING_BOUNDS.items():
+        v = settings.get(key)
+        if isinstance(v, bool) or not isinstance(v, int) or not lo <= v <= hi:
+            errors.append(
+                ValidationError(
+                    f"settings.{key}",
+                    "out_of_range",
+                    f"settings.{key}: must be a whole number from {lo} to {hi} (got {_short_repr(v)})",
+                )
+            )
+    rt = settings.get("record_type")
+    if rt not in RECORD_TYPES:
+        errors.append(
+            ValidationError(
+                "settings.record_type",
+                "invalid_choice",
+                f"settings.record_type: must be one of {', '.join(RECORD_TYPES)} (got {_short_repr(rt)})",
+            )
+        )
+    if not isinstance(settings.get("shuffle"), bool):
+        errors.append(
+            ValidationError(
+                "settings.shuffle",
+                "type",
+                f"settings.shuffle: must be true or false (got {_short_repr(settings.get('shuffle'))})",
+            )
+        )
+    return errors
+
+
+def _validate_run_size(cfg: dict) -> list[ValidationError]:
+    """The run as a whole, when the numbers it depends on are usable."""
+    resolvers, domains, settings = cfg.get("resolvers"), cfg.get("domains"), cfg.get("settings")
+    rounds = settings.get("rounds") if isinstance(settings, dict) else None
+    if not (isinstance(resolvers, list) and isinstance(domains, list) and type(rounds) is int and rounds > 0):
+        return []
+    servers = sum(
+        len(r["servers"])
+        for r in resolvers
+        if isinstance(r, dict) and r.get("enabled", True) is True and isinstance(r.get("servers"), list)
+    )
+    queries = servers * len(domains) * rounds
+    if queries <= MAX_QUERIES_PER_RUN:
+        return []
+    return [
+        ValidationError(
+            "",
+            "too_many_queries",
+            f"a run would send {queries:,} queries ({servers} servers x {len(domains)} domains x "
+            f"{rounds} rounds); the limit is {MAX_QUERIES_PER_RUN:,}, so enable fewer servers or "
+            "use fewer domains or rounds",
+        )
+    ]
+
+
+def validate_config(cfg: object) -> list[ValidationError]:
+    """Validate a config. Returns its problems ([] = valid), section by section.
 
     The config is normalised first, so e.g. messy domain lists are judged
-    after stripping/lower-casing/de-duplication.
+    after stripping/lower-casing/de-duplication, and paths point into the
+    normalised config.
     """
-    errors: list[str] = []
     if not isinstance(cfg, dict):
-        return ["Config must be a JSON object with resolvers, domains and settings"]
+        return [
+            ValidationError("", "type", "Config must be a JSON object with resolvers, domains and settings")
+        ]
     cfg = normalize_config(cfg)
-
-    # -- resolvers ---------------------------------------------------------
-    resolvers = cfg.get("resolvers")
-    if not isinstance(resolvers, list) or not resolvers:
-        errors.append("resolvers: at least one resolver is required")
-    else:
-        if len(resolvers) > MAX_RESOLVERS:
-            errors.append(f"resolvers: at most {MAX_RESOLVERS} resolvers allowed (got {len(resolvers)})")
-        names_seen: dict[str, int] = {}
-        servers_seen: dict[str, str] = {}
-        any_enabled = False
-        for i, r in enumerate(resolvers, 1):
-            label = f"Resolver #{i}"
-            if not isinstance(r, dict):
-                errors.append(f"{label}: must be an object with name, servers, enabled")
-                continue
-            name = r.get("name")
-            if not isinstance(name, str) or not name:
-                errors.append(f"{label}: name is required")
-            else:
-                # never echo control characters (terminal escapes) back in messages
-                label = f"Resolver #{i} ({name if name.isprintable() else _short_repr(name)})"
-                if len(name) > MAX_NAME_LEN:
-                    errors.append(f"{label}: name must be at most {MAX_NAME_LEN} characters")
-                # isprintable() is False for C0/DEL/C1 controls and bidi overrides
-                if "," in name or not name.isprintable():
-                    errors.append(f"{label}: name must not contain commas or control characters")
-                key = name.casefold()
-                if key in names_seen:
-                    errors.append(f"{label}: duplicate name (same as resolver #{names_seen[key]})")
-                else:
-                    names_seen[key] = i
-            servers = r.get("servers")
-            if not isinstance(servers, list) or not servers:
-                errors.append(f"{label}: at least one server IP is required")
-            else:
-                if len(servers) > MAX_SERVERS_PER_RESOLVER:
-                    errors.append(
-                        f"{label}: at most {MAX_SERVERS_PER_RESOLVER} servers allowed (got {len(servers)})"
-                    )
-                for s in servers:
-                    if isinstance(s, str) and not s.isprintable():
-                        errors.append(f"{label}: server {_short_repr(s)} contains control characters")
-                        continue
-                    try:
-                        ip = ipaddress.ip_address(s if isinstance(s, str) else "")
-                    except ValueError:
-                        errors.append(f"{label}: server {_short_repr(s)} is not a valid IPv4 or IPv6 address")
-                        continue
-                    problem = _server_problem(ip)
-                    if problem:
-                        shown = s if len(s) <= 64 else s[:61] + "..."
-                        errors.append(
-                            f"{label}: server {shown} {problem}"
-                            if problem.startswith("is ")
-                            else f"{label}: server {shown}: {problem}"
-                        )
-                        continue
-                    key = _host_key(ip)
-                    if key in servers_seen:
-                        errors.append(f"{label}: server {key} is already used by {servers_seen[key]}")
-                    else:
-                        servers_seen[key] = (
-                            name
-                            if isinstance(name, str) and name and name.isprintable()
-                            else f"resolver #{i}"
-                        )
-            enabled = r.get("enabled", True)
-            if not isinstance(enabled, bool):
-                errors.append(f"{label}: enabled must be true or false")
-            elif enabled:
-                any_enabled = True
-        if not any_enabled:
-            errors.append("resolvers: at least one resolver must be enabled")
-
-    # -- domains -----------------------------------------------------------
-    domains = cfg.get("domains")
-    if not isinstance(domains, list):
-        errors.append("domains: must be a list of domain names")
-    else:
-        if not domains:
-            errors.append("domains: at least one domain is required")
-        elif len(domains) > MAX_DOMAINS:
-            errors.append(f"domains: at most {MAX_DOMAINS} domains allowed (got {len(domains)})")
-        bad = 0
-        for d in domains:
-            problem = _hostname_error(d)
-            if problem:
-                bad += 1
-                if bad <= 20:
-                    errors.append(f"domains: '{d}' is not a valid hostname: {problem}")
-        if bad > 20:
-            errors.append(f"domains: ...and {bad - 20} more invalid domains")
-
-    # -- settings ----------------------------------------------------------
-    settings = cfg.get("settings")
-    if not isinstance(settings, dict):
-        errors.append("settings: must be an object")
-    else:
-        for key, (lo, hi) in SETTING_BOUNDS.items():
-            v = settings.get(key)
-            if isinstance(v, bool) or not isinstance(v, int) or not lo <= v <= hi:
-                errors.append(
-                    f"settings.{key}: must be a whole number from {lo} to {hi} (got {_short_repr(v)})"
-                )
-        rt = settings.get("record_type")
-        if rt not in RECORD_TYPES:
-            errors.append(
-                f"settings.record_type: must be one of {', '.join(RECORD_TYPES)} (got {_short_repr(rt)})"
-            )
-        if not isinstance(settings.get("shuffle"), bool):
-            errors.append(
-                f"settings.shuffle: must be true or false (got {_short_repr(settings.get('shuffle'))})"
-            )
-
-    # -- the run as a whole, when the numbers it depends on are usable ------
-    rounds = settings.get("rounds") if isinstance(settings, dict) else None
-    if isinstance(resolvers, list) and isinstance(domains, list) and type(rounds) is int and rounds > 0:
-        servers = sum(
-            len(r["servers"])
-            for r in resolvers
-            if isinstance(r, dict) and r.get("enabled", True) is True and isinstance(r.get("servers"), list)
-        )
-        queries = servers * len(domains) * rounds
-        if queries > MAX_QUERIES_PER_RUN:
-            errors.append(
-                f"a run would send {queries:,} queries ({servers} servers x {len(domains)} domains x "
-                f"{rounds} rounds); the limit is {MAX_QUERIES_PER_RUN:,}, so enable fewer servers or "
-                "use fewer domains or rounds"
-            )
-    return errors
+    return (
+        _validate_resolvers(cfg.get("resolvers"))
+        + _validate_domains(cfg.get("domains"))
+        + _validate_settings(cfg.get("settings"))
+        + _validate_run_size(cfg)
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -531,7 +718,10 @@ def _atomic_write_text(path: Path, text: str) -> None:
     try:
         _atomic_write_text_raw(Path(path), text)
     except OSError as exc:
-        raise ConfigWriteError(f"cannot write {path}: {exc.strerror or exc}") from exc
+        why = exc.strerror or type(exc).__name__
+        raise ConfigWriteError(
+            ValidationError("", "write_failed", f"cannot write the file: {why}"), path
+        ) from exc
 
 
 def _atomic_write_text_raw(path: Path, text: str) -> None:
@@ -705,19 +895,20 @@ def load_config(path: str | os.PathLike[str], strict: bool = True, detect: Detec
     try:
         raw = loads_json(path.read_text(encoding="utf-8"))
     except OSError as exc:
-        raise ConfigError(f"Cannot read {path}: {exc}") from exc
+        why = exc.strerror or type(exc).__name__
+        raise ConfigError(ValidationError("", "unreadable", f"cannot read the file: {why}"), path) from exc
     except ValueError as exc:
         # JSONDecodeError, a >4300-digit integer literal, absurdly deep nesting, bad UTF-8
         msg = str(exc)
         msg = msg if len(msg) <= 200 else msg[:197] + "..."
-        raise ConfigError(f"{path} is not valid JSON: {msg}") from exc
+        raise ConfigError(ValidationError("", "invalid_json", f"not valid JSON: {msg}"), path) from exc
     if not isinstance(raw, dict):
-        raise ConfigError(f"{path} must contain a JSON object")
+        raise ConfigError(ValidationError("", "type", "must contain a JSON object"), path)
     cfg = normalize_config(raw)
     if strict:
         errors = validate_config(cfg)
         if errors:
-            raise ConfigError([f"{path}: {e}" for e in errors])
+            raise ConfigError(errors, path)
     return cfg
 
 
@@ -780,19 +971,53 @@ def current_resolver_names(path: str | os.PathLike[str]) -> list[str] | None:
     ]
 
 
-def estimate(cfg: dict) -> dict:
-    """Rough cost of a run: total queries, expected seconds, max load."""
-    s = {**DEFAULT_SETTINGS, **(cfg.get("settings") or {})}
-    servers = sum(len(r.get("servers", [])) for r in enabled_resolvers(cfg))
-    per_server = len(cfg.get("domains", [])) * int(s["rounds"])
-    interval = max(MIN_INTERVAL_MS, int(s["per_server_interval_ms"])) / 1000.0
-    per_server_qps = 1.0 / interval
+# Average and worst-case slack the runner adds to the interval (runner.JITTER is up to 10 %).
+_AVG_JITTER, _MAX_JITTER = 1.05, 1.10
+
+
+def estimate(cfg: object, rounds: int | None = None) -> dict:
+    """Rough cost of a run of ``cfg`` (with ``rounds`` instead of its own, if given). Never raises.
+
+    Works on any config, even an invalid draft: a setting that isn't a usable number counts as its
+    default, so the Settings page can show an estimate while the user is still typing.
+    ``est_seconds`` assumes every query is answered at once; ``worst_seconds`` assumes every attempt
+    times out.
+    """
+    cfg = normalize_config(cfg) if isinstance(cfg, dict) else {}
+    settings = cfg.get("settings")
+    raw = settings if isinstance(settings, dict) else {}
+
+    def setting(key: str) -> int:
+        v = raw.get(key)
+        return v if type(v) is int and v > 0 else DEFAULT_SETTINGS[key]  # type: ignore[return-value] # the int defaults
+
+    resolvers = cfg.get("resolvers")
+    enabled = [
+        r
+        for r in (resolvers if isinstance(resolvers, list) else [])
+        if isinstance(r, dict) and r.get("enabled", True) is not False and isinstance(r.get("servers"), list)
+    ]
+    servers = sum(len(r["servers"]) for r in enabled)
+    domains = cfg.get("domains")
+    n_domains = len(domains) if isinstance(domains, list) else 0
+    n_rounds = rounds if rounds is not None else setting("rounds")
+    per_server = n_domains * n_rounds
+    interval_s = max(MIN_INTERVAL_MS, setting("per_server_interval_ms")) / 1000.0  # the runner's hard floor
+    timeout_s = setting("timeout_ms") / 1000.0
+    per_server_qps = 1.0 / interval_s
     return {
+        "resolvers": len(enabled),
         "servers": servers,
+        "domains": n_domains,
+        "rounds": n_rounds,
         "queries": servers * per_server,
         "queries_per_server": per_server,
-        # every server is measured at the same time; 5 % average jitter on top of the interval
-        "est_seconds": round(per_server * interval * 1.05, 1) if servers else 0.0,
+        # every server is measured at the same time, each at its own pace
+        "est_seconds": round(per_server * interval_s * _AVG_JITTER, 1) if servers else 0.0,
+        # each attempt waits for its slot and then, at worst, for the whole timeout
+        "worst_seconds": round(per_server * setting("tries") * max(interval_s * _MAX_JITTER, timeout_s), 1)
+        if servers
+        else 0.0,
         "max_qps_per_server": round(per_server_qps, 2),
         "max_qps_total": round(per_server_qps * servers, 2),
     }
