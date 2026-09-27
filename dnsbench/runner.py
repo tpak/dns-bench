@@ -1,8 +1,7 @@
 """Rate-limited concurrent benchmark scheduler (the speed + politeness core).
 
-The original script was slow because it was fully sequential with a global
-0.8 s sleep between *every* query. Here we parallelise ACROSS servers while
-strictly rate-limiting PER server:
+Queries run in parallel ACROSS servers, while each server is strictly
+rate-limited:
 
 * one worker thread per server IP, all running at once, so every server is
   measured over the same stretch of time (network conditions drift, so servers

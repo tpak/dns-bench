@@ -1,11 +1,12 @@
 """Latency statistics and aggregations.
 
-Percentiles use the same nearest-rank method as the original awk script:
-``idx = int(p/100 * n + 0.999999)`` clamped to [1, n] over sorted latencies.
+Percentiles use the nearest-rank method: ``idx = int(p/100 * n + 0.999999)``
+clamped to [1, n] over sorted latencies (the awk program in
+archive/dns-test.sh; a test checks that they agree).
 
-Unlike the original, timeouts and errors are EXCLUDED from the latency
-numbers (the old script recorded them as 0 ms, which made a failing resolver
-look *faster*). Failures are reported separately via ``failure_rate``.
+Timeouts and errors are EXCLUDED from the latency numbers: counting them as
+0 ms would make a failing resolver look *faster*. Failures are reported
+separately via ``failure_rate``.
 """
 
 from __future__ import annotations
