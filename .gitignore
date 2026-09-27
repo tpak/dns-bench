@@ -1,6 +1,6 @@
-# Every benchmark run is saved here; keep the folder but not the data.
-runs/*
-!runs/.gitkeep
+# Your data: created on first use (README "Where your data is kept"), never committed.
+/config.json
+/runs/
 
 __pycache__/
 *.py[cod]
