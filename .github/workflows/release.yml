@@ -10,11 +10,6 @@ on:
 
 permissions: {}
 
-# Never two releases of the same ref at once.
-concurrency:
-  group: release-${{ github.ref }}
-  cancel-in-progress: false
-
 jobs:
   ci:
     uses: ./.github/workflows/ci.yml
@@ -24,6 +19,12 @@ jobs:
   release:
     needs: ci
     runs-on: ubuntu-latest
+    # Never two releases of one ref at once. Job-level, and not named after the workflow: inside the
+    # called ci.yml, github.workflow is "release", so a workflow-level "release-<ref>" group here
+    # was the same group as ci.yml's and deadlocked the run before any job started.
+    concurrency:
+      group: publish-${{ github.ref }}
+      cancel-in-progress: false
     timeout-minutes: 10
     permissions:
       contents: write # create the release
