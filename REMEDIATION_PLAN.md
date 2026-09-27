@@ -18,7 +18,7 @@ review findings below are kept as recorded.
 
 **Status (2026-09-27):** Phase 0 is done (PRs #2/#3). Phase 1 is done (PRs #5/#6); see its
 "As built" notes, which differ from the plan in two places. v1.1.0 is the first release through the
-new release workflow. Next is Phase 2.
+new release workflow. Phase 2 is done (PR #8). Next is Phase 3.
 
 ## Verdict: would a distinguished engineer approve? **No, not as-is.**
 The problems are structural, not rot. The Python core is better than typical one-shot output: an
@@ -151,7 +151,7 @@ Housekeeping. It comes first so that every later diff is linted and formatted fr
   Releasing sections. The versioning policy counts a higher minimum Python as a minor bump.
 - Research notes: `.project/research/2026-09-27-ci-actions.md`.
 
-### Phase 2 — Safety net (S)
+### Phase 2 — Safety net (S) — ✅ done (PR #8)
 - `pyproject.toml`: dynamic version from `dnsbench.__version__`, `requires-python>=3.13`,
   `[project.scripts] dns-bench = "dnsbench.cli:main"`, package-data `web/*`, and mypy config
   (`python_version = "3.13"`). Ruff config stays in `ruff.toml` from Phase 0. Document
@@ -168,6 +168,27 @@ Housekeeping. It comes first so that every later diff is linted and formatted fr
 - Sanitized copies of 2 real v1 run files as fixtures (hostname and ISP IPs stripped), to pin the
   Phase 6 `migrate()`.
 - Add `.venv/` to `.gitignore` (`uv sync` creates it once `pyproject.toml` exists; CLAUDE.md §7.2).
+
+**As built (2026-09-27)**, where it differs from the plan above or adds to it:
+- **Build backend: hatchling** (build-time only; the runtime still has no dependencies). uv's own
+  backend, uv_build, rejects a dynamic version, and `dnsbench.__version__` stays the one place a
+  release bumps.
+- **mypy 2.3.1 at default settings found 13 errors**, all fixed without changing behaviour. The fixes are
+  variables reused with a different type, `set.add()` inside comprehensions, a missing annotation, and
+  `stream.reconfigure` on a non-`TextIOWrapper`. `config.validate_config` now reuses the IP it has
+  already parsed (`_host_key`) instead of parsing it again. mypy checks all of `dnsbench/` and `tests/`
+  on every run (`pass_filenames: false`), not just the staged files.
+- **CI's "refuses Python 3.12" check needed `uv run --no-project`**: with `requires-python` in
+  pyproject.toml, uv itself rejects 3.12 before the launcher can print its message. CI also runs the
+  installed `dns-bench` command; a unit test pins the `[project.scripts]` entry and `python -m dnsbench`.
+- **Fixtures**: `tests/fixtures/runs-v1/` holds runs 20260925T090918Z (timeouts) and 20260925T091918Z
+  (2 rounds, ties). A personal domain in their domain lists was replaced too, not just the hostname
+  and ISP IPs. Biome skips `tests/fixtures` so the files stay byte-for-byte as dns-bench writes them.
+  A test checks that today's analysis of their raw results reproduces the stored summary and
+  recommendation exactly. So recomputing on load (Phase 6) is a no-op for them until Phase 8 changes
+  the scoring on purpose.
+- The real-UI smoke tests are `tests/test_web.py`. A JS syntax error is caught by Biome in the lint job:
+  it parses app.js.
 
 ### Phase 3 — Security hardening + correctness bug fixes (S–M)
 server.py:
