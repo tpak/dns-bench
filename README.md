@@ -331,8 +331,21 @@ To release:
 
    ```sh
    git switch main && git pull --ff-only
-   git tag -a vX.Y.Z -m "vX.Y.Z" && git push origin vX.Y.Z
+   git tag -a vX.Y.Z -m "vX.Y.Z"
+   git merge-base --is-ancestor vX.Y.Z origin/main && git push origin vX.Y.Z
    ```
 
-The release workflow re-runs lint and tests, fails unless the tag matches `__version__` and
-`CHANGELOG.md` has notes for it, then publishes the GitHub release with those notes.
+The release workflow re-runs lint and tests. It fails unless the tagged commit is on `main`, the tag
+matches `__version__` and `CHANGELOG.md` has notes for it. Then it publishes the GitHub release with
+those notes.
+
+If the release run fails:
+
+- A flaky check: open the run (Actions > release) and choose **Re-run failed jobs**. It re-runs at
+  the same commit and then publishes.
+- A wrong tag (wrong commit, or a version mismatch): delete the tag, fix `main` through a pull request,
+  then tag again:
+
+  ```sh
+  git push origin :refs/tags/vX.Y.Z && git tag -d vX.Y.Z
+  ```

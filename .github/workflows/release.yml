@@ -36,6 +36,23 @@ jobs:
         with:
           python-version: "3.13"
           enable-cache: false
+      # Only commits merged into main are released. A dry run on another branch skips this, so changes
+      # to this workflow can be tried before they merge; a dry run on main exercises it.
+      - name: Check the commit is on main
+        if: github.ref_type == 'tag' || github.ref_name == 'main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          sha=$(git rev-parse HEAD)
+          # Compare main against this commit: "identical" or "ahead" means main contains it.
+          status=$(gh api "repos/$GITHUB_REPOSITORY/compare/$sha...main" --jq .status)
+          case "$status" in
+            identical | ahead) echo "$sha is on main ($status)" ;;
+            *)
+              echo "::error::$sha is not on main (compare status: $status). Merge the release PR, then tag its merge commit."
+              exit 1
+              ;;
+          esac
       - name: Check the tag matches dnsbench.__version__
         id: version
         env:
