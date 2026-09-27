@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import _thread
 import itertools
 import random
 import threading
@@ -435,27 +434,32 @@ class RunnerBehaviourTest(unittest.TestCase):
         self.assertLess(len(run["results"]), 160)
         self.assertNotIn("error", runner.run_benchmark(make_config(), query_fn=FakeDNS(latency=0.0)))
 
-    def test_second_interrupt_stops_waiting_for_queries_in_flight(self):
+    def test_stop_waiting_returns_without_the_queries_in_flight(self):
         cfg = make_config(resolvers=2, servers_per=2, domains=40, interval_ms=50)
-        stuck = threading.Event()
+        cancel, stop_waiting = threading.Event(), threading.Event()
+        stuck, finished = threading.Event(), threading.Event()
 
         def qfn(server, domain, **kw):
             if server == "10.0.0.1" and not stuck.is_set():
                 stuck.set()
-                time.sleep(1.0)  # a query in flight that takes its whole (long) timeout
+                time.sleep(2.0)  # a query in flight that takes its whole (long) timeout
+                finished.set()
             return QueryResult("ok", ms=2.0, rcode="NOERROR", answers=1)
 
-        # Two Ctrl-Cs in the calling thread: the first cancels, the second arrives while the run
-        # waits for the stuck query.
-        timers = [threading.Timer(0.3, _thread.interrupt_main), threading.Timer(0.5, _thread.interrupt_main)]
-        for timer in timers:
-            timer.start()
+        def two_ctrl_cs():  # what the CLI's signal handler does on the first and second Ctrl-C
+            stuck.wait(5)
+            cancel.set()
+            time.sleep(0.2)
+            stop_waiting.set()
+
+        threading.Thread(target=two_ctrl_cs, daemon=True).start()
         t0 = time.monotonic()
-        run = runner.run_benchmark(cfg, query_fn=qfn)
-        self.assertLess(time.monotonic() - t0, 0.9)  # didn't wait out the 1 s query
+        run = runner.run_benchmark(cfg, query_fn=qfn, cancel_event=cancel, stop_waiting=stop_waiting)
+        self.assertLess(time.monotonic() - t0, 1.5)  # didn't wait out the 2 s query
         self.assertEqual(run["status"], "cancelled")
         n = len(run["results"])
-        time.sleep(0.8)  # the stuck query finishes now: its row must not be added afterwards
+        self.assertTrue(finished.wait(5))
+        time.sleep(0.1)  # the stuck worker's row would be added now: it must be dropped
         self.assertEqual(len(run["results"]), n)
 
     def test_cancel_before_start(self):

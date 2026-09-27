@@ -89,6 +89,7 @@ def run_benchmark(
     query_fn=None,
     progress=None,
     cancel_event=None,
+    stop_waiting=None,
     clock=time.monotonic,
     sleep=time.sleep,
     rng: random.Random | None = None,
@@ -106,13 +107,15 @@ def run_benchmark(
     with ``status == "partial"`` and the crash in ``error``, so the queries
     already measured are still returned and can be saved.
 
-    A KeyboardInterrupt in the calling thread cancels the run like
-    ``cancel_event``. A second one, once cancelled, stops waiting for the
-    queries still in flight (up to one timeout each): the record is returned at
-    once, and rows that finish later are dropped.
+    Setting ``stop_waiting`` as well stops waiting for the queries still in
+    flight (up to one timeout each): the record is returned at once, and rows
+    that finish later are dropped. A KeyboardInterrupt in the calling thread
+    (a Ctrl-C the caller doesn't handle) sets ``cancel_event``, and a second one
+    sets ``stop_waiting``.
     """
     query_fn = query_fn or resolver.query
     cancel_event = cancel_event or threading.Event()
+    stop_waiting = stop_waiting or threading.Event()
     rng = rng or random.Random()
     settings = effective_settings(config)
     interval_s = settings["per_server_interval_ms"] / 1000.0
@@ -214,14 +217,15 @@ def run_benchmark(
         thread.start()
     interrupted = False
     pending = threads
-    while pending:
+    while pending and not stop_waiting.is_set():
         try:
-            pending[0].join(timeout=0.2)
+            pending[0].join(timeout=0.1)
         except KeyboardInterrupt:
-            if cancel_event.is_set():  # a second interrupt: stop waiting for the queries in flight
-                break
-            interrupted = True
-            cancel_event.set()
+            if cancel_event.is_set():
+                stop_waiting.set()
+            else:
+                interrupted = True
+                cancel_event.set()
         pending = [thread for thread in pending if thread.is_alive()]
     with lock:
         state["closed"] = True  # a worker still in flight drops its row instead of adding it

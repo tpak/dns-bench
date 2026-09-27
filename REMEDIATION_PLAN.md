@@ -241,7 +241,9 @@ cli.py:
   once; rows that finish later are dropped. Signals during the save are ignored. Workers are daemon
   threads, not a `ThreadPoolExecutor`: Python joins executor threads at exit, which held the process
   open for a full timeout after the save. The independent review caught this, and a subprocess test
-  now pins the exit time.
+  now pins the exit time. The second signal sets a `stop_waiting` event for the runner. It doesn't
+  raise KeyboardInterrupt from the handler, which could land outside the runner's `try`; CI caught
+  that race.
 - **Interleaving** changes timing only for configs with more than 8 servers. That covers 8 of the 9
   saved runs in `runs/`: each had 10 servers, so 2 of them were measured in a later window. New runs
   of that config measure every server together. A live run with all 10 servers measured every server

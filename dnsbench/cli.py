@@ -169,16 +169,19 @@ def cmd_run(args) -> int:
 
     progress = Progress(est["queries"], s["slow_threshold_ms"], quiet=args.quiet)
     cancel = threading.Event()
+    stop_waiting = threading.Event()
     signals = {"count": 0, "measuring": True}
 
     def on_signal(signum, frame):
         # Ctrl-C (SIGINT) and `kill` (SIGTERM) alike. The first stops the run once the queries in flight
         # are answered or time out; a second stops waiting for them. Neither may interrupt the save.
+        # Events, not exceptions: an exception raised here could land anywhere in the main thread.
         signals["count"] += 1
         if not signals["measuring"]:
             return
         if signals["count"] > 1:
-            raise KeyboardInterrupt  # run_benchmark returns what it has, without waiting
+            stop_waiting.set()  # run_benchmark returns what it has, without waiting
+            return
         cancel.set()
         if not args.quiet:
             sys.stderr.write("\r\x1b[K" if progress.tty else "\n")
@@ -191,7 +194,7 @@ def cmd_run(args) -> int:
     previous = {sig: signal.signal(sig, on_signal) for sig in (signal.SIGINT, signal.SIGTERM)}
     try:
         try:
-            run = runner.run_benchmark(cfg, progress=progress, cancel_event=cancel)
+            run = runner.run_benchmark(cfg, progress=progress, cancel_event=cancel, stop_waiting=stop_waiting)
         finally:
             signals["measuring"] = False
             progress.finish()
