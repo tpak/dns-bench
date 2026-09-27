@@ -88,6 +88,16 @@ class NormalizeTest(unittest.TestCase):
         n = C.normalize_config(cfg(domains="a.com\nb.com, c.com  d.com"))
         self.assertEqual(n["domains"], ["a.com", "b.com", "c.com", "d.com"])
 
+    def test_removed_settings_are_dropped(self):
+        # max_parallel_servers existed until every server started being measured at once; configs
+        # that still have it load and save without it.
+        c = cfg()
+        c["settings"]["max_parallel_servers"] = 8
+        n = C.normalize_config(c)
+        self.assertNotIn("max_parallel_servers", n["settings"])
+        self.assertEqual(C.validate_config(c), [])
+        self.assertNotIn("max_parallel_servers", C.SETTING_BOUNDS)
+
     def test_idna(self):
         n = C.normalize_config(cfg(domains=["bücher.de"]))
         self.assertEqual(n["domains"], ["xn--bcher-kva.de"])
@@ -519,6 +529,16 @@ class LoadSaveTest(unittest.TestCase):
         self.assertEqual(e["max_qps_per_server"], 4.0)
         self.assertEqual(e["max_qps_total"], 32.0)
         self.assertTrue(14 <= e["est_seconds"] <= 20, e)
+        # More servers: all measured at once, so no extra time (the old estimate added a batch per 8)
+        many = C.default_config()
+        many["resolvers"] = [
+            {"name": f"R{i}", "servers": [f"192.0.2.{2 * i + 1}", f"192.0.2.{2 * i + 2}"], "enabled": True}
+            for i in range(6)
+        ]
+        e12 = C.estimate(many)
+        self.assertEqual(e12["servers"], 12)
+        self.assertEqual(e12["est_seconds"], e["est_seconds"])
+        self.assertEqual(e12["max_qps_total"], 48.0)
 
 
 if __name__ == "__main__":

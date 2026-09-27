@@ -41,8 +41,10 @@ worker per server IP, and each worker:
 * has a hard 50 ms floor on that interval (at most 20 q/s per server), whatever the
   config says.
 
-All the servers run at the same time, so the wall time is about
-`domains × rounds × interval` (60 × 0.25 s ≈ 15 s) instead of the sum of all the servers.
+All the servers run at the same time, however many there are, so the wall time is about
+`domains × rounds × interval` (60 × 0.25 s ≈ 15 s) instead of the sum of all the servers. It
+also means every server is measured over the same stretch of time, so network conditions
+that change during a run affect them all alike.
 The total load across every server is at most `servers × 1000/interval` queries/s
 (8 × 4 = 32 q/s by default), spread over the four enabled providers. A unit test
 (`tests/test_runner.py`) uses real threads to check both rules: never more than one query
@@ -157,7 +159,6 @@ Everything is checked before it is saved. Invalid input is rejected with readabl
     "timeout_ms": 1000,
     "tries": 1,
     "rounds": 1,
-    "max_parallel_servers": 8,
     "slow_threshold_ms": 200,
     "record_type": "A",
     "shuffle": true
@@ -179,7 +180,6 @@ disabled, because the original defined it but left it out of `order`.
 | `timeout_ms` | 1000 | 200–10000 | How long to wait for an answer. |
 | `tries` | 1 | 1–3 | Attempts per query. A retry happens only after a timeout, and is paced by the interval like any other query. Each result row records its `attempts`; a query that needed a retry counts as `retried` and is penalised in the score, and its `ms` is the retry's round trip. |
 | `rounds` | 1 | 1–10 | How many times each domain is queried on each server. More rounds give steadier numbers. |
-| `max_parallel_servers` | 8 | 1–32 | How many servers are benchmarked at the same time. |
 | `slow_threshold_ms` | 200 | 1–10000 | Answers slower than this are listed as `[slow]`. |
 | `record_type` | `A` | `A`, `AAAA` | Query type. |
 | `shuffle` | `true` | bool | Shuffle each server's domain order independently. |

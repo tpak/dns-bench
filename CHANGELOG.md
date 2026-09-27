@@ -15,6 +15,12 @@ release notes.
 
 ### Changed
 
+- Every enabled server is now measured at the same time. With more than 8 servers, the rest used to
+  wait for a second batch, so they were timed at a different time from the others and the results
+  weren't comparable. Results with more than 8 servers can therefore differ from earlier versions.
+  Such runs also finish sooner. The `max_parallel_servers` setting is gone: it is ignored if your
+  `config.json` still has it, and dropped the next time the config is saved. The load on each server
+  is unchanged (one query at a time, at least `per_server_interval_ms` apart).
 - `dns-bench serve` refuses a `--host` that other machines can reach (such as `0.0.0.0` or a LAN
   address) unless you add `--allow-remote`, because the web UI has no authentication. The README
   shows how to reach the UI from another computer over an SSH tunnel instead.

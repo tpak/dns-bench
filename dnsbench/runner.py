@@ -4,7 +4,9 @@ The original script was slow because it was fully sequential with a global
 0.8 s sleep between *every* query. Here we parallelise ACROSS servers while
 strictly rate-limiting PER server:
 
-* one worker thread per server IP, at most ``max_parallel_servers`` at once;
+* one worker thread per server IP, all running at once, so every server is
+  measured over the same stretch of time (network conditions drift, so servers
+  measured in different time windows aren't comparable);
 * each worker issues its queries sequentially, so there is never more than
   ONE query in flight to a given server;
 * consecutive query start times to the same server are at least
@@ -40,7 +42,6 @@ def effective_settings(config: dict) -> dict:
     s["per_server_interval_ms"] = max(MIN_INTERVAL_MS, int(s["per_server_interval_ms"]))
     s["tries"] = max(1, int(s["tries"]))
     s["rounds"] = max(1, int(s["rounds"]))
-    s["max_parallel_servers"] = max(1, int(s["max_parallel_servers"]))
     return s
 
 
@@ -194,7 +195,9 @@ def run_benchmark(
                     with contextlib.suppress(Exception):  # a UI hiccup must never break the measurement
                         progress({"type": "result", "done": state["done"], "total": total, "result": row})
 
-    max_workers = max(1, min(settings["max_parallel_servers"], len(jobs)))
+    # One thread per server, all at once. The load stays bounded: one query in flight per server, at
+    # most 1000/interval queries/s each, and config.MAX_RESOLVERS x MAX_SERVERS_PER_RESOLVER servers.
+    max_workers = max(1, len(jobs))
     seeds = [rng.getrandbits(64) for _ in jobs]
     interrupted = False
     with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="dnsbench") as pool:

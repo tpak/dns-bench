@@ -43,7 +43,6 @@
     timeout_ms: 1000,
     tries: 1,
     rounds: 1,
-    max_parallel_servers: 8,
     slow_threshold_ms: 200,
     record_type: 'A',
     shuffle: true,
@@ -58,15 +57,6 @@
       max: 5000,
       step: 10,
       help: 'Minimum gap between two queries to the same server. This is the politeness limit: 250 ms means at most 4 queries per second to any one server.',
-    },
-    {
-      key: 'max_parallel_servers',
-      label: 'Servers in parallel',
-      unit: '',
-      min: 1,
-      max: 32,
-      step: 1,
-      help: 'How many servers are benchmarked at the same time. Each one is still rate-limited on its own.',
     },
     {
       key: 'rounds',
@@ -1621,10 +1611,10 @@
     const timeout = num(st.timeout_ms, DEFAULT_SETTINGS.timeout_ms) * num(st.tries, 1);
     const perServer = domains * rounds;
     const total = perServer * servers;
-    const par = Math.max(1, Math.min(servers || 1, num(st.max_parallel_servers, 8)));
-    const waves = servers ? Math.ceil(servers / par) : 0;
-    const seconds = (waves * perServer * interval * 1.05) / 1000;
-    const worst = (waves * perServer * Math.max(interval * 1.05, timeout)) / 1000;
+    // Every server is measured at the same time, each at its own polite pace.
+    const par = servers;
+    const seconds = servers ? (perServer * interval * 1.05) / 1000 : 0;
+    const worst = servers ? (perServer * Math.max(interval * 1.05, timeout)) / 1000 : 0;
     const qpsServer = 1000 / interval;
     return {
       resolvers: enabled.length,

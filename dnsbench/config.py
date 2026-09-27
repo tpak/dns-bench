@@ -101,7 +101,6 @@ DEFAULT_SETTINGS = {
     "timeout_ms": 1000,
     "tries": 1,
     "rounds": 1,
-    "max_parallel_servers": 8,
     "slow_threshold_ms": 200,
     "record_type": "A",
     "shuffle": True,
@@ -120,7 +119,6 @@ SETTING_BOUNDS = {
     "timeout_ms": (200, 10000),
     "tries": (1, 3),
     "rounds": (1, 10),
-    "max_parallel_servers": (1, 32),
     "slow_threshold_ms": (1, 10000),
 }
 RECORD_TYPES = ("A", "AAAA")
@@ -294,7 +292,8 @@ def normalize_config(cfg) -> dict:
       ``enabled`` defaults to true.
     * domains: strip, lowercase, trailing dot removed, blanks dropped,
       de-duplicated preserving order, unicode IDNA-encoded.
-    * settings: missing keys filled from defaults, unknown keys dropped.
+    * settings: missing keys filled from defaults, unknown keys dropped (so a
+      setting that no longer exists, like max_parallel_servers, just goes away).
     Values of the wrong type are passed through so validation can report them.
     """
     if not isinstance(cfg, dict):
@@ -662,15 +661,13 @@ def estimate(cfg: dict) -> dict:
     servers = sum(len(r.get("servers", [])) for r in enabled_resolvers(cfg))
     per_server = len(cfg.get("domains", [])) * int(s["rounds"])
     interval = max(MIN_INTERVAL_MS, int(s["per_server_interval_ms"])) / 1000.0
-    parallel = max(1, min(int(s["max_parallel_servers"]), servers or 1))
-    batches = -(-servers // parallel) if servers else 0  # ceil
     per_server_qps = 1.0 / interval
     return {
         "servers": servers,
         "queries": servers * per_server,
         "queries_per_server": per_server,
-        # 5 % average jitter on top of the interval, batches if servers > parallel
-        "est_seconds": round(per_server * interval * 1.05 * batches, 1),
+        # every server is measured at the same time; 5 % average jitter on top of the interval
+        "est_seconds": round(per_server * interval * 1.05, 1) if servers else 0.0,
         "max_qps_per_server": round(per_server_qps, 2),
-        "max_qps_total": round(per_server_qps * min(servers, parallel), 2),
+        "max_qps_total": round(per_server_qps * servers, 2),
     }
