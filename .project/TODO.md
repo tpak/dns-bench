@@ -2,8 +2,6 @@
 
 ## In Progress
 
-- Phase 7 — frontend, branch `phase-7-frontend` (PR #13)
-
 ## Up Next
 
 - Chris: click through the web UI once in a normal browser, with the keyboard too. Phases 3–7 changed the CSP, Settings, focus handling and the charts' keyboard use; they were checked in headless Firefox (screenshots, plus scripts that click and type), not by a person
@@ -14,6 +12,7 @@
 
 ## Done This Week
 
+- Phase 7 — Frontend (single file): one rAF-batched scheduleRender and read-only view builders; keyboard focus kept after sort, chips, Show all and closing details, and moved to the view on tab changes; charts one tab stop each (roving tabindex); <main> landmark restored; Settings errors linked to fields with a focused summary; Failed queries capped at 200; 15 s fetch timeouts and polling that recovers; light-theme contrast (WCAG AA) and reduced-motion fixes; Biome's noDescendingSpecificity back on (screenshots byte-identical). Review found four small UI issues — fixed. PR #13 (2026-09-28)
 - Phase 6 — Backend layering & typed model: models.py (TypedDicts), RunRepository with migrate() and typed errors, analysis recomputed on load (cached per file, per object), BenchmarkService + JobManager as the one run path for CLI and UI, recommend split into rank/choose/explain with coded notes, strict mypy on ten core modules. All 9 real runs recompute to their stored recommendations. Review found an unhandled error in explicit aggregates and a shutdown race with a starting job — both fixed. PR #12 (2026-09-28)
 - Phase 5 — One source of truth: structured validation errors (path, code, message), GET /api/schema, POST /api/config/validate and /api/estimate; app.js keeps no copy of any rule; ~230 lines of unreachable compat code removed. Review found an overflow 500 on absurd numbers — fixed. PR #11 (2026-09-28)
 - Phase 4 — Data hygiene & defaults: config.json and runs/ untracked and created on first use (loading never writes); the hard-coded ISP resolver replaced by a detected "System" entry (scutil / resolv.conf / systemd-resolved; `config --detect`, Settings > Add system resolvers); `dnsbench/paths.py` with DNSBENCH_HOME; README History section, data location, API table checked by a test. Review found System could mix two networks (VPN) — fixed. PR #10 (2026-09-28)
