@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import contextlib
 import io
 import json
@@ -46,8 +48,9 @@ class FakeQuery:
             self.on_call(n)
         if server == "192.0.2.2" and domain == "c.example":
             return QueryResult("timeout", error="timeout", attempts=1)
-        return QueryResult("ok", ms=40.0 if server == "192.0.2.2" else 3.0, rcode="NOERROR",
-                           answers=1, attempts=1)
+        return QueryResult(
+            "ok", ms=40.0 if server == "192.0.2.2" else 3.0, rcode="NOERROR", answers=1, attempts=1
+        )
 
 
 class CliTest(unittest.TestCase):
@@ -64,8 +67,11 @@ class CliTest(unittest.TestCase):
 
     def cli(self, *args):
         out, err = io.StringIO(), io.StringIO()
-        with mock.patch.object(resolver, "query", self.fake), \
-                contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+        with (
+            mock.patch.object(resolver, "query", self.fake),
+            contextlib.redirect_stdout(out),
+            contextlib.redirect_stderr(err),
+        ):
             code = cli.main([*args, "--config", str(self.cfg), "--runs-dir", str(self.runs)])
         return code, out.getvalue(), err.getvalue()
 
@@ -104,8 +110,20 @@ class CliTest(unittest.TestCase):
         self.assertFalse(self.runs.exists() and any(self.runs.iterdir()))
 
     def test_run_overrides_are_not_saved(self):
-        code, out, err = self.cli("run", "--rounds", "2", "--resolvers", "spare,FAST", "--timeout-ms",
-                                  "500", "--interval-ms", "60", "--json", "--no-save", "--quiet")
+        code, out, err = self.cli(
+            "run",
+            "--rounds",
+            "2",
+            "--resolvers",
+            "spare,FAST",
+            "--timeout-ms",
+            "500",
+            "--interval-ms",
+            "60",
+            "--json",
+            "--no-save",
+            "--quiet",
+        )
         self.assertEqual(code, 0, err)
         run = json.loads(out)
         self.assertEqual({r["resolver"] for r in run["results"]}, {"Fast", "Spare"})
@@ -119,19 +137,21 @@ class CliTest(unittest.TestCase):
         self.assertEqual(code, 2)
         self.assertIn("unknown resolver", err)
         # out-of-range overrides are usage errors that name the flag and the range
-        for flag, value, rng in (("--interval-ms", "10", "50 to 5000"), ("--rounds", "11", "1 to 10"),
-                                 ("--rounds", "0", "1 to 10"), ("--timeout-ms", "20000", "200 to 10000")):
+        for flag, value, rng in (
+            ("--interval-ms", "10", "50 to 5000"),
+            ("--rounds", "11", "1 to 10"),
+            ("--rounds", "0", "1 to 10"),
+            ("--timeout-ms", "20000", "200 to 10000"),
+        ):
             with self.subTest(flag=flag, value=value):
                 err = io.StringIO()
                 with contextlib.redirect_stderr(err), self.assertRaises(SystemExit) as cm:
-                    cli.main(["run", flag, value, "--config", str(self.cfg),
-                              "--runs-dir", str(self.runs)])
+                    cli.main(["run", flag, value, "--config", str(self.cfg), "--runs-dir", str(self.runs)])
                 self.assertEqual(cm.exception.code, 2)
                 self.assertIn(flag, err.getvalue())
                 self.assertIn(rng, err.getvalue())
-        with contextlib.redirect_stderr(io.StringIO()):
-            with self.assertRaises(SystemExit) as cm:
-                cli.main(["run", "--rounds", "zero"])
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as cm:
+            cli.main(["run", "--rounds", "zero"])
         self.assertEqual(cm.exception.code, 2)
         self.assertEqual(self.fake.calls, 0)
 
@@ -139,6 +159,7 @@ class CliTest(unittest.TestCase):
         def interrupt(n):
             if n == 2:
                 os.kill(os.getpid(), signal.SIGINT)
+
         self.fake.on_call = interrupt
         cfg = small_config()
         cfg["domains"] = [f"d{i}.example" for i in range(30)]
@@ -155,7 +176,7 @@ class CliTest(unittest.TestCase):
         self.assertIs(signal.getsignal(signal.SIGINT), before)  # handler restored
 
     def test_report_errors(self):
-        self.assertEqual(self.cli("report")[0], 1)          # no runs yet
+        self.assertEqual(self.cli("report")[0], 1)  # no runs yet
         self.assertEqual(self.cli("report", "all")[0], 1)
         self.assertEqual(self.cli("report", "../etc")[0], 2)
         self.assertEqual(self.cli("report", "20200101T000000Z")[0], 1)
@@ -200,8 +221,11 @@ class CliTest(unittest.TestCase):
         for runs_dir in (blocker, blocker / "sub"):
             with self.subTest(runs_dir=runs_dir):
                 out, err = io.StringIO(), io.StringIO()
-                with mock.patch.object(resolver, "query", self.fake), \
-                        contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                with (
+                    mock.patch.object(resolver, "query", self.fake),
+                    contextlib.redirect_stdout(out),
+                    contextlib.redirect_stderr(err),
+                ):
                     code = cli.main(["run", "--config", str(self.cfg), "--runs-dir", str(runs_dir)])
                 self.assertEqual(code, 1)
                 self.assertIn("cannot write to", err.getvalue())
@@ -211,8 +235,10 @@ class CliTest(unittest.TestCase):
     def test_save_failure_still_prints_report_and_keeps_data(self):
         rescue_dir = Path(self.tmp.name) / "rescue"
         rescue_dir.mkdir()
-        with mock.patch.object(storage, "save_run", side_effect=OSError(28, "No space left on device")), \
-                mock.patch.object(tempfile, "tempdir", str(rescue_dir)):
+        with (
+            mock.patch.object(storage, "save_run", side_effect=OSError(28, "No space left on device")),
+            mock.patch.object(tempfile, "tempdir", str(rescue_dir)),
+        ):
             code, out, err = self.cli("run")
         self.assertEqual(code, 1)
         self.assertIn("Recommendation: Use Fast", out)  # the measurements are not lost
@@ -241,14 +267,19 @@ class CliTest(unittest.TestCase):
         (ro / "cfg.json").write_text(self.cfg.read_text())
         ro.chmod(0o555)
         try:
-            for args in (["config", "--reset", "--config", str(ro / "cfg.json")],
-                         ["config", "--config", str(ro / "missing.json")],
-                         ["run", "--config", str(ro / "missing.json")]):
+            for args in (
+                ["config", "--reset", "--config", str(ro / "cfg.json")],
+                ["config", "--config", str(ro / "missing.json")],
+                ["run", "--config", str(ro / "missing.json")],
+            ):
                 with self.subTest(args=args):
                     out, err = io.StringIO(), io.StringIO()
-                    with mock.patch.object(resolver, "query", self.fake), \
-                            contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-                        code = cli.main(args + ["--runs-dir", str(self.runs)])
+                    with (
+                        mock.patch.object(resolver, "query", self.fake),
+                        contextlib.redirect_stdout(out),
+                        contextlib.redirect_stderr(err),
+                    ):
+                        code = cli.main([*args, "--runs-dir", str(self.runs)])
                     self.assertEqual(code, 1)
                     self.assertIn("cannot write", err.getvalue())
                     self.assertNotIn("Traceback", err.getvalue())
@@ -266,13 +297,15 @@ class WrapperTest(unittest.TestCase):
             link.symlink_to(wrapper)
             for exe in (wrapper, link):
                 with self.subTest(exe=exe):
-                    p = subprocess.run([str(exe), "--version"], cwd=tmp, capture_output=True,
-                                       text=True, timeout=30)
+                    p = subprocess.run(
+                        [str(exe), "--version"], cwd=tmp, capture_output=True, text=True, timeout=30
+                    )
                     self.assertEqual(p.returncode, 0, p.stderr)
                     self.assertIn("dns-bench 1.0.0", p.stdout)
                     self.assertEqual(p.stderr, "")
-            p = subprocess.run([str(link), "config", "--path"], cwd=tmp, capture_output=True,
-                               text=True, timeout=30)
+            p = subprocess.run(
+                [str(link), "config", "--path"], cwd=tmp, capture_output=True, text=True, timeout=30
+            )
             self.assertEqual(p.stdout.strip(), str(ROOT / "config.json"))
 
 

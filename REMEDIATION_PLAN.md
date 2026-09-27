@@ -258,6 +258,8 @@ Done before the layering so the error format changes only once.
   contact" (FE-7).
 - Tab/landmark semantics and a roving tabindex on charts (FE-9/10). Contrast, reduced-motion and
   theme fixes (FE-11/15).
+- Re-enable Biome's `noDescendingSpecificity` (turned off in Phase 0) and fix its 12 warnings by
+  reordering style.css, checking every view visually before and after.
 - Python tests: the real-UI smoke tests from Phase 2, plus an API-contract test for every endpoint
   app.js calls (the endpoint names are grepped from app.js).
 

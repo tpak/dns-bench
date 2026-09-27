@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import contextlib
 import io
 import json
@@ -8,29 +10,65 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from dnsbench import config as C  # noqa: E402
-from dnsbench import report, storage  # noqa: E402
+from dnsbench import config as C
+from dnsbench import report, storage
 
 
 def make_run(run_id="20260925T023456Z", started="2026-09-25T02:34:56Z", fast_ms=5.0):
     cfg = C.default_config()
-    cfg["resolvers"] = [{"name": "Cloudflare", "servers": ["1.1.1.1", "1.0.0.1"], "enabled": True},
-                        {"name": "Google", "servers": ["8.8.8.8"], "enabled": True}]
+    cfg["resolvers"] = [
+        {"name": "Cloudflare", "servers": ["1.1.1.1", "1.0.0.1"], "enabled": True},
+        {"name": "Google", "servers": ["8.8.8.8"], "enabled": True},
+    ]
     cfg["domains"] = ["a.com", "b.com"]
     results = []
     t = 0.0
-    for res, srv, base in (("Cloudflare", "1.1.1.1", fast_ms), ("Cloudflare", "1.0.0.1", fast_ms + 1),
-                           ("Google", "8.8.8.8", 20.0)):
+    for res, srv, base in (
+        ("Cloudflare", "1.1.1.1", fast_ms),
+        ("Cloudflare", "1.0.0.1", fast_ms + 1),
+        ("Google", "8.8.8.8", 20.0),
+    ):
         for d in cfg["domains"]:
-            results.append({"resolver": res, "server": srv, "domain": d, "round": 1, "status": "ok",
-                            "ms": base, "rcode": "NOERROR", "answers": 1, "error": None, "t": t})
+            results.append(
+                {
+                    "resolver": res,
+                    "server": srv,
+                    "domain": d,
+                    "round": 1,
+                    "status": "ok",
+                    "ms": base,
+                    "rcode": "NOERROR",
+                    "answers": 1,
+                    "error": None,
+                    "t": t,
+                }
+            )
             t += 0.25
-    results.append({"resolver": "Google", "server": "8.8.8.8", "domain": "c.com", "round": 1,
-                    "status": "timeout", "ms": None, "rcode": None, "answers": 0, "error": "timeout",
-                    "t": t})
-    return {"id": run_id, "version": "1.0.0", "started_at": started, "finished_at": started,
-            "duration_s": 1.5, "host": "testhost", "status": "complete", "config": cfg,
-            "results": results}
+    results.append(
+        {
+            "resolver": "Google",
+            "server": "8.8.8.8",
+            "domain": "c.com",
+            "round": 1,
+            "status": "timeout",
+            "ms": None,
+            "rcode": None,
+            "answers": 0,
+            "error": "timeout",
+            "t": t,
+        }
+    )
+    return {
+        "id": run_id,
+        "version": "1.0.0",
+        "started_at": started,
+        "finished_at": started,
+        "duration_s": 1.5,
+        "host": "testhost",
+        "status": "complete",
+        "config": cfg,
+        "results": results,
+    }
 
 
 class StorageTest(unittest.TestCase):
@@ -44,9 +82,19 @@ class StorageTest(unittest.TestCase):
     def test_valid_run_id(self):
         for good in ("20260925T023456Z", "20260925T023456Z-2", "20260925T023456Z-15"):
             self.assertTrue(storage.valid_run_id(good), good)
-        for bad in ("", "latest", "../etc/passwd", "20260925T023456Z/../x", "20260925T023456",
-                    "20260925T023456Z-", "20260925T023456Z-a", "2026-09-25", None, 5,
-                    "20260925T023456Z\n"):
+        for bad in (
+            "",
+            "latest",
+            "../etc/passwd",
+            "20260925T023456Z/../x",
+            "20260925T023456",
+            "20260925T023456Z-",
+            "20260925T023456Z-a",
+            "2026-09-25",
+            None,
+            5,
+            "20260925T023456Z\n",
+        ):
             self.assertFalse(storage.valid_run_id(bad), bad)
 
     def test_save_writes_json_and_txt(self):
@@ -87,12 +135,28 @@ class StorageTest(unittest.TestCase):
         storage.save_run(make_run("20260201T000000Z", "2026-02-01T00:00:00Z"), self.dir)
         storage.save_run(make_run("20260301T000000Z", "2026-03-01T00:00:00Z"), self.dir)  # -> -2
         rows = storage.list_runs(self.dir)
-        self.assertEqual([r["id"] for r in rows], ["20260301T000000Z-2", "20260301T000000Z",
-                                                   "20260201T000000Z", "20260101T000000Z"])
+        self.assertEqual(
+            [r["id"] for r in rows],
+            ["20260301T000000Z-2", "20260301T000000Z", "20260201T000000Z", "20260101T000000Z"],
+        )
         r = rows[0]
-        self.assertEqual(set(r), {"id", "started_at", "finished_at", "duration_s", "status", "host",
-                                  "n_queries", "n_domains", "resolvers", "best", "best_median",
-                                  "medians"})
+        self.assertEqual(
+            set(r),
+            {
+                "id",
+                "started_at",
+                "finished_at",
+                "duration_s",
+                "status",
+                "host",
+                "n_queries",
+                "n_domains",
+                "resolvers",
+                "best",
+                "best_median",
+                "medians",
+            },
+        )
         self.assertEqual(r["medians"], {"Cloudflare": 5.5, "Google": 20.0})
         self.assertEqual(r["n_queries"], 7)
         self.assertEqual(r["n_domains"], 3)
@@ -176,13 +240,19 @@ class StorageTest(unittest.TestCase):
         text = report.render_text(run)
         self.assertIn("DNS Bench run 20260925T023456Z", text)
         self.assertIn("Cloudflare: mean=5.5 median=5.5", text)
-        self.assertIn("Google: mean=20.0 median=20.0 p80=20.0 p95=20.0 p98=20.0 min=20.0 max=20.0 n=3 fail=33.3%", text)
+        self.assertIn(
+            "Google: mean=20.0 median=20.0 p80=20.0 p95=20.0 p98=20.0 min=20.0 max=20.0 n=3 fail=33.3%", text
+        )
         self.assertIn("Ranking", text)
         self.assertIn("Recommendation:", text)
         run["status"] = "cancelled"
         self.assertIn("CANCELLED", report.render_text(run))
-        agg = {"run_ids": ["20260925T023456Z"], "summary": run["summary"],
-               "recommendation": run["recommendation"], "config": run["config"]}
+        agg = {
+            "run_ids": ["20260925T023456Z"],
+            "summary": run["summary"],
+            "recommendation": run["recommendation"],
+            "config": run["config"],
+        }
         self.assertIn("all runs combined (1 run)", report.render_text(agg))
 
     def test_report_all_failed(self):
@@ -193,7 +263,6 @@ class StorageTest(unittest.TestCase):
         text = report.render_text(run)
         self.assertIn("mean=- median=-", text)
         self.assertIn("No resolver returned", text)
-
 
     def test_aggregate_note_counts_runs(self):
         storage.save_run(make_run("20260101T000000Z", "2026-01-01T00:00:00Z"), self.dir)
@@ -218,9 +287,21 @@ class StorageTest(unittest.TestCase):
         # runs never measured it, so the combined view must not suggest it.
         old = make_run("20260101T000000Z", "2026-01-01T00:00:00Z")
         old["config"]["resolvers"].append({"name": "Quad9", "servers": ["9.9.9.9"], "enabled": True})
-        old["results"] += [{"resolver": "Quad9", "server": "9.9.9.9", "domain": d, "round": 1,
-                            "status": "ok", "ms": 1.0, "rcode": "NOERROR", "answers": 1,
-                            "error": None, "t": 0.0} for d in ("a.com", "b.com")]
+        old["results"] += [
+            {
+                "resolver": "Quad9",
+                "server": "9.9.9.9",
+                "domain": d,
+                "round": 1,
+                "status": "ok",
+                "ms": 1.0,
+                "rcode": "NOERROR",
+                "answers": 1,
+                "error": None,
+                "t": 0.0,
+            }
+            for d in ("a.com", "b.com")
+        ]
         storage.save_run(old, self.dir)
         for i in (2, 3):
             new = make_run(f"2026020{i}T000000Z", f"2026-02-0{i}T00:00:00Z")
@@ -233,14 +314,23 @@ class StorageTest(unittest.TestCase):
         self.assertEqual(rec["backup"], "Google")
         self.assertNotIn("9.9.9.9", rec["suggested_servers"])
         self.assertNotIn("Quad9", rec["tied_with"])
-        self.assertTrue(any(n.startswith("Quad9 was measured in only 1 of 3 combined runs")
-                            and "not recommended" in n for n in rec["notes"]), rec["notes"])
+        self.assertTrue(
+            any(
+                n.startswith("Quad9 was measured in only 1 of 3 combined runs") and "not recommended" in n
+                for n in rec["notes"]
+            ),
+            rec["notes"],
+        )
         self.assertIn("of the current resolvers", rec["summary"])
         # enabled again in the live config: it can be recommended
         agg = storage.aggregate(self.dir, "all", current=["Cloudflare", "Google", "Quad9"])
         self.assertEqual(agg["recommendation"]["best"], "Quad9")
-        self.assertTrue(any("Quad9 was measured in only 1 of 3" in n and "less comparable" in n
-                            for n in agg["recommendation"]["notes"]))
+        self.assertTrue(
+            any(
+                "Quad9 was measured in only 1 of 3" in n and "less comparable" in n
+                for n in agg["recommendation"]["notes"]
+            )
+        )
         # the newest run measured it: it can be recommended whatever the live config says
         agg = storage.aggregate(self.dir, ["20260101T000000Z"], current=["Cloudflare"])
         self.assertEqual(agg["recommendation"]["best"], "Quad9")
@@ -249,16 +339,31 @@ class StorageTest(unittest.TestCase):
         run = make_run()
         run["config"]["resolvers"] = [
             {"name": "CleanBrowsing", "servers": ["185.228.168.9"], "enabled": True},
-            {"name": "Cloudflare", "servers": ["2606:4700:4700::1111", "1.1.1.1"], "enabled": True}]
+            {"name": "Cloudflare", "servers": ["2606:4700:4700::1111", "1.1.1.1"], "enabled": True},
+        ]
         run["results"] = [
-            {"resolver": res, "server": srv, "domain": "a.com", "round": 1, "status": "ok", "ms": ms,
-             "rcode": "NOERROR", "answers": 1, "error": None, "t": 0.0}
-            for res, srv, ms in (("CleanBrowsing", "185.228.168.9", 9.2),
-                                 ("Cloudflare", "2606:4700:4700::1111", 5.2), ("Cloudflare", "1.1.1.1", 5.7))]
+            {
+                "resolver": res,
+                "server": srv,
+                "domain": "a.com",
+                "round": 1,
+                "status": "ok",
+                "ms": ms,
+                "rcode": "NOERROR",
+                "answers": 1,
+                "error": None,
+                "t": 0.0,
+            }
+            for res, srv, ms in (
+                ("CleanBrowsing", "185.228.168.9", 9.2),
+                ("Cloudflare", "2606:4700:4700::1111", 5.2),
+                ("Cloudflare", "1.1.1.1", 5.7),
+            )
+        ]
         storage.finalize_run(run)
         lines = report.render_text(run).splitlines()
         start = lines.index("Per server (ms):")
-        block = [ln for ln in lines[start + 1:start + 6] if ln.strip()]
+        block = [ln for ln in lines[start + 1 : start + 6] if ln.strip()]
         self.assertTrue(block[0].split() == ["Resolver", "Server", "Median", "p95", "Fail"], block)
         rows = block[2:]
         self.assertEqual(len(rows), 3)

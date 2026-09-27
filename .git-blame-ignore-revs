@@ -1,0 +1,6 @@
+# Commits that only change layout. `git blame` skips them when configured with:
+#   git config blame.ignoreRevsFile .git-blame-ignore-revs
+# GitHub's blame view reads this file automatically.
+
+# style: apply ruff format and Biome formatter
+153463dbb4800fbcec0891fa6fa71f4fe4f1e2f5

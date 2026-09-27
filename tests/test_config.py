@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import json
 import os
 import re
@@ -8,7 +10,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from dnsbench import config as C  # noqa: E402
+from dnsbench import config as C
 
 
 def cfg(**changes):
@@ -96,8 +98,7 @@ class NormalizeTest(unittest.TestCase):
         self.assertEqual(set(n["settings"]), set(C.DEFAULT_SETTINGS))
 
     def test_settings_coercion(self):
-        n = C.normalize_config(cfg(settings={"rounds": 2.0, "timeout_ms": "1500",
-                                             "record_type": "aaaa"}))
+        n = C.normalize_config(cfg(settings={"rounds": 2.0, "timeout_ms": "1500", "record_type": "aaaa"}))
         self.assertEqual(n["settings"]["rounds"], 2)
         self.assertEqual(n["settings"]["timeout_ms"], 1500)
         self.assertEqual(n["settings"]["record_type"], "AAAA")
@@ -134,8 +135,15 @@ class ValidateTest(unittest.TestCase):
         self.assertInvalid(cfg(resolvers=[{"name": "a,b", "servers": ["1.1.1.1"]}]), "commas")
 
     def test_duplicate_names_case_insensitive(self):
-        self.assertInvalid(cfg(resolvers=[{"name": "Google", "servers": ["8.8.8.8"]},
-                                          {"name": "google", "servers": ["8.8.4.4"]}]), "duplicate name")
+        self.assertInvalid(
+            cfg(
+                resolvers=[
+                    {"name": "Google", "servers": ["8.8.8.8"]},
+                    {"name": "google", "servers": ["8.8.4.4"]},
+                ]
+            ),
+            "duplicate name",
+        )
 
     def test_bad_ip(self):
         self.assertInvalid(cfg(resolvers=[{"name": "X", "servers": ["1.2.3"]}]), "not a valid IPv4 or IPv6")
@@ -144,25 +152,46 @@ class ValidateTest(unittest.TestCase):
         self.assertInvalid(cfg(resolvers=[{"name": "X", "servers": ["dns.google"]}]), "not a valid")
 
     def test_ipv6_ok(self):
-        self.assertEqual(C.validate_config(cfg(resolvers=[{"name": "X", "servers": ["2606:4700:4700::1111"]}])), [])
+        self.assertEqual(
+            C.validate_config(cfg(resolvers=[{"name": "X", "servers": ["2606:4700:4700::1111"]}])), []
+        )
 
     def test_server_count(self):
         self.assertInvalid(cfg(resolvers=[{"name": "X", "servers": []}]), "at least one server")
-        self.assertInvalid(cfg(resolvers=[{"name": "X", "servers": ["1.1.1.1", "1.1.1.2", "1.1.1.3",
-                                                                    "1.1.1.4", "1.1.1.5"]}]), "at most 4")
+        self.assertInvalid(
+            cfg(
+                resolvers=[{"name": "X", "servers": ["1.1.1.1", "1.1.1.2", "1.1.1.3", "1.1.1.4", "1.1.1.5"]}]
+            ),
+            "at most 4",
+        )
 
     def test_duplicate_ip_across_resolvers(self):
-        self.assertInvalid(cfg(resolvers=[{"name": "A", "servers": ["1.1.1.1"]},
-                                          {"name": "B", "servers": ["1.1.1.1"]}]), "already used")
+        self.assertInvalid(
+            cfg(resolvers=[{"name": "A", "servers": ["1.1.1.1"]}, {"name": "B", "servers": ["1.1.1.1"]}]),
+            "already used",
+        )
 
     def test_duplicate_ipv6_different_spelling(self):
-        self.assertInvalid(cfg(resolvers=[{"name": "A", "servers": ["2001:db8::1"]},
-                                          {"name": "B", "servers": ["2001:0db8:0:0::1"]}]), "already used")
+        self.assertInvalid(
+            cfg(
+                resolvers=[
+                    {"name": "A", "servers": ["2001:db8::1"]},
+                    {"name": "B", "servers": ["2001:0db8:0:0::1"]},
+                ]
+            ),
+            "already used",
+        )
 
     def test_duplicate_ipv4_mapped(self):
-        self.assertInvalid(cfg(resolvers=[{"name": "A", "servers": ["1.1.1.1"]},
-                                          {"name": "B", "servers": ["::ffff:1.1.1.1"]}]),
-                           "server 1.1.1.1 is already used by A")
+        self.assertInvalid(
+            cfg(
+                resolvers=[
+                    {"name": "A", "servers": ["1.1.1.1"]},
+                    {"name": "B", "servers": ["::ffff:1.1.1.1"]},
+                ]
+            ),
+            "server 1.1.1.1 is already used by A",
+        )
 
     def test_zone_ids(self):
         evil = "::ffff:127.0.0.1%\x1b]0;PWNED\x07\x1b[41mX\x1b[0m\nFAKE LINE: Recommendation: use EvilDNS"
@@ -175,16 +204,38 @@ class ValidateTest(unittest.TestCase):
         for good in ("fe80::1%en0", "fe80::1%eth0.100", "fe80::1%enp0s31f6"):
             with self.subTest(good=good):
                 self.assertEqual(C.validate_config(cfg(resolvers=[{"name": "A", "servers": [good]}])), [])
-        self.assertInvalid(cfg(resolvers=[{"name": "A", "servers": ["fe80::1%en0"]},
-                                          {"name": "B", "servers": ["fe80::1%en1"]}]), "already used")
+        self.assertInvalid(
+            cfg(
+                resolvers=[
+                    {"name": "A", "servers": ["fe80::1%en0"]},
+                    {"name": "B", "servers": ["fe80::1%en1"]},
+                ]
+            ),
+            "already used",
+        )
 
     def test_non_unicast_servers_rejected(self):
-        for bad in ("0.0.0.0", "::", "255.255.255.255", "240.0.0.1", "224.0.0.251", "ff02::1",
-                    "::ffff:224.0.0.1", "239.255.255.250"):
+        for bad in (
+            "0.0.0.0",
+            "::",
+            "255.255.255.255",
+            "240.0.0.1",
+            "224.0.0.251",
+            "ff02::1",
+            "::ffff:224.0.0.1",
+            "239.255.255.250",
+        ):
             with self.subTest(bad=bad):
                 self.assertInvalid(cfg(resolvers=[{"name": "A", "servers": [bad]}]), "not a DNS resolver")
-        for good in ("127.0.0.1", "::1", "fe80::1", "192.168.1.1", "64:ff9b::808:808", "2001:db8::1",
-                     "10.0.0.1"):
+        for good in (
+            "127.0.0.1",
+            "::1",
+            "fe80::1",
+            "192.168.1.1",
+            "64:ff9b::808:808",
+            "2001:db8::1",
+            "10.0.0.1",
+        ):
             with self.subTest(good=good):
                 self.assertEqual(C.validate_config(cfg(resolvers=[{"name": "A", "servers": [good]}])), [])
 
@@ -194,7 +245,9 @@ class ValidateTest(unittest.TestCase):
                 errors = C.validate_config(cfg(resolvers=[{"name": bad, "servers": ["1.1.1.1"]}]))
                 self.assertTrue(any("control characters" in e for e in errors), errors)
                 self.assertFalse(any(bad in e for e in errors), errors)  # shown escaped
-        self.assertEqual(C.validate_config(cfg(resolvers=[{"name": "My DNS (home)", "servers": ["1.1.1.1"]}])), [])
+        self.assertEqual(
+            C.validate_config(cfg(resolvers=[{"name": "My DNS (home)", "servers": ["1.1.1.1"]}])), []
+        )
 
     def test_unconvertible_numeric_strings(self):
         for bad in ("--5", "\u00b2", "9" * 5000, "1e3", "+-1"):
@@ -206,12 +259,16 @@ class ValidateTest(unittest.TestCase):
                 self.assertTrue(all(len(e) < 200 for e in errors))
 
     def test_enabled_must_be_bool(self):
-        self.assertInvalid(cfg(resolvers=[{"name": "A", "servers": ["1.1.1.1"], "enabled": "yes"}]),
-                           "enabled must be true or false")
+        self.assertInvalid(
+            cfg(resolvers=[{"name": "A", "servers": ["1.1.1.1"], "enabled": "yes"}]),
+            "enabled must be true or false",
+        )
 
     def test_one_enabled(self):
-        self.assertInvalid(cfg(resolvers=[{"name": "A", "servers": ["1.1.1.1"], "enabled": False}]),
-                           "at least one resolver must be enabled")
+        self.assertInvalid(
+            cfg(resolvers=[{"name": "A", "servers": ["1.1.1.1"], "enabled": False}]),
+            "at least one resolver must be enabled",
+        )
 
     def test_domains_required(self):
         self.assertInvalid(cfg(domains=[]), "at least one domain")
@@ -222,14 +279,28 @@ class ValidateTest(unittest.TestCase):
         self.assertEqual(C.validate_config(cfg(domains=[f"d{i}.com" for i in range(500)])), [])
 
     def test_bad_hostnames(self):
-        for bad in ["-a.com", "a-.com", "a..com", "a_b.com", "a b.com", "x" * 64 + ".com", "a\n.com",
-                    ".".join(["a" * 60] * 5)]:
+        for bad in [
+            "-a.com",
+            "a-.com",
+            "a..com",
+            "a_b.com",
+            "a b.com",
+            "x" * 64 + ".com",
+            "a\n.com",
+            ".".join(["a" * 60] * 5),
+        ]:
             with self.subTest(bad=bad):
                 self.assertInvalid(cfg(domains=[bad]), "not a valid hostname")
 
     def test_good_hostnames(self):
-        for good in ["a.com", "xn--bcher-kva.de", "a-b.co.uk", "localhost", "1.2.3.4.in-addr.arpa",
-                     "x" * 63 + ".com"]:
+        for good in [
+            "a.com",
+            "xn--bcher-kva.de",
+            "a-b.co.uk",
+            "localhost",
+            "1.2.3.4.in-addr.arpa",
+            "x" * 63 + ".com",
+        ]:
             with self.subTest(good=good):
                 self.assertEqual(C.validate_config(cfg(domains=[good])), [])
 

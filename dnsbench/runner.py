@@ -19,20 +19,20 @@ the sum over all servers.
 
 from __future__ import annotations
 
+import contextlib
 import copy
 import random
 import socket
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, wait
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
-from . import __version__
-from . import resolver
+from . import __version__, resolver
 from .config import DEFAULT_SETTINGS, MIN_INTERVAL_MS, normalize_server, server_key
 
-JITTER = 0.10          # up to +10 % on top of the interval, never negative
-_WAIT_SLICE_S = 0.05   # cancel responsiveness while waiting for the next slot
+JITTER = 0.10  # up to +10 % on top of the interval, never negative
+_WAIT_SLICE_S = 0.05  # cancel responsiveness while waiting for the next slot
 
 
 def effective_settings(config: dict) -> dict:
@@ -84,8 +84,15 @@ def _utc_iso(dt: datetime) -> str:
     return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def run_benchmark(config: dict, query_fn=None, progress=None, cancel_event=None,
-                  clock=time.monotonic, sleep=time.sleep, rng: random.Random | None = None) -> dict:
+def run_benchmark(
+    config: dict,
+    query_fn=None,
+    progress=None,
+    cancel_event=None,
+    clock=time.monotonic,
+    sleep=time.sleep,
+    rng: random.Random | None = None,
+) -> dict:
     """Run the benchmark described by ``config`` and return the run record.
 
     ``query_fn(server, domain, record_type=..., timeout_s=..., tries=1)`` must
@@ -113,7 +120,7 @@ def run_benchmark(config: dict, query_fn=None, progress=None, cancel_event=None,
     lock = threading.Lock()
     state = {"done": 0}
 
-    started_wall = datetime.now(timezone.utc)
+    started_wall = datetime.now(UTC)
     t0 = clock()
 
     def wait_until(deadline: float) -> bool:
@@ -143,8 +150,7 @@ def run_benchmark(config: dict, query_fn=None, progress=None, cancel_event=None,
                 next_start = start + interval_s * (1.0 + wrng.uniform(0.0, JITTER))
                 attempts += 1
                 try:
-                    res = query_fn(server, domain, record_type=record_type,
-                                   timeout_s=timeout_s, tries=1)
+                    res = query_fn(server, domain, record_type=record_type, timeout_s=timeout_s, tries=1)
                 except Exception as exc:  # a broken query_fn must not kill the run
                     res = resolver.QueryResult("error", error=f"{type(exc).__name__}: {exc}")
                 status = _field(res, "status", "error")
@@ -172,17 +178,14 @@ def run_benchmark(config: dict, query_fn=None, progress=None, cancel_event=None,
                 results.append(row)
                 state["done"] += 1
                 if progress is not None:
-                    try:
-                        progress({"type": "result", "done": state["done"], "total": total,
-                                  "result": row})
-                    except Exception:
-                        pass  # a UI hiccup must never break the measurement
+                    with contextlib.suppress(Exception):  # a UI hiccup must never break the measurement
+                        progress({"type": "result", "done": state["done"], "total": total, "result": row})
 
     max_workers = max(1, min(settings["max_parallel_servers"], len(jobs)))
     seeds = [rng.getrandbits(64) for _ in jobs]
     interrupted = False
     with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="dnsbench") as pool:
-        futures = [pool.submit(worker, job, seed) for job, seed in zip(jobs, seeds)]
+        futures = [pool.submit(worker, job, seed) for job, seed in zip(jobs, seeds, strict=True)]
         pending = set(futures)
         while pending:
             try:
@@ -195,7 +198,7 @@ def run_benchmark(config: dict, query_fn=None, progress=None, cancel_event=None,
         if exc is not None:
             raise exc
 
-    finished_wall = datetime.now(timezone.utc)
+    finished_wall = datetime.now(UTC)
     duration = clock() - t0
     cancelled = (cancel_event.is_set() or interrupted) and len(results) < total
     results.sort(key=lambda r: r["t"])

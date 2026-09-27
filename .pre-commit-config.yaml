@@ -1,0 +1,18 @@
+# Git hooks: lint and format staged files before each commit.
+# Setup (once per clone):  uv tool install pre-commit && pre-commit install
+# Run on everything:        pre-commit run --all-files
+# Update hook versions:     pre-commit autoupdate
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.16.9
+    hooks:
+      - id: ruff-check
+        args: [--fix]
+      - id: ruff-format
+
+  # Biome for JS, CSS and JSON. pre-commit installs its own Node for this hook;
+  # nothing Node-related is added to the repo.
+  - repo: https://github.com/biomejs/pre-commit
+    rev: v2.5.14
+    hooks:
+      - id: biome-check

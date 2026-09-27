@@ -1,3 +1,6 @@
+from __future__ import annotations
+
+import itertools
 import random
 import sys
 import threading
@@ -8,8 +11,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from dnsbench import runner  # noqa: E402
-from dnsbench.resolver import QueryResult  # noqa: E402
+from dnsbench import runner
+from dnsbench.resolver import QueryResult
 
 # Physical timestamps are taken inside the fake query_fn, a few microseconds
 # after the scheduler's own start timestamp; allow that much slack for them.
@@ -17,15 +20,37 @@ from dnsbench.resolver import QueryResult  # noqa: E402
 PHYS_TOL_S = 0.002
 
 
-def make_config(resolvers=2, servers_per=2, domains=6, interval_ms=50, rounds=1, shuffle=True,
-                parallel=8, tries=1, timeout_ms=200):
+def make_config(
+    resolvers=2,
+    servers_per=2,
+    domains=6,
+    interval_ms=50,
+    rounds=1,
+    shuffle=True,
+    parallel=8,
+    tries=1,
+    timeout_ms=200,
+):
     return {
-        "resolvers": [{"name": f"R{i}", "servers": [f"10.0.{i}.{j}" for j in range(1, servers_per + 1)],
-                       "enabled": True} for i in range(resolvers)],
+        "resolvers": [
+            {
+                "name": f"R{i}",
+                "servers": [f"10.0.{i}.{j}" for j in range(1, servers_per + 1)],
+                "enabled": True,
+            }
+            for i in range(resolvers)
+        ],
         "domains": [f"d{k}.example" for k in range(domains)],
-        "settings": {"per_server_interval_ms": interval_ms, "timeout_ms": timeout_ms, "tries": tries,
-                     "rounds": rounds, "max_parallel_servers": parallel, "slow_threshold_ms": 200,
-                     "record_type": "A", "shuffle": shuffle},
+        "settings": {
+            "per_server_interval_ms": interval_ms,
+            "timeout_ms": timeout_ms,
+            "tries": tries,
+            "rounds": rounds,
+            "max_parallel_servers": parallel,
+            "slow_threshold_ms": 200,
+            "record_type": "A",
+            "shuffle": shuffle,
+        },
     }
 
 
@@ -93,15 +118,17 @@ class FakeDNS:
 class RateLimitTest(unittest.TestCase):
     def check_spacing(self, fake, interval_s):
         for server, evs in fake.by_server().items():
-            for prev, cur in zip(evs, evs[1:]):
+            for prev, cur in itertools.pairwise(evs):
                 # never more than one in flight to the same server
                 self.assertGreaterEqual(cur[3], prev[4], f"overlap on {server}")
                 # scheduler start-to-start spacing: exact, no tolerance
-                self.assertGreaterEqual(cur[2] - prev[2], interval_s,
-                                        f"scheduled starts too close on {server}")
+                self.assertGreaterEqual(
+                    cur[2] - prev[2], interval_s, f"scheduled starts too close on {server}"
+                )
                 # physical spacing seen by the 'server'
-                self.assertGreaterEqual(cur[3] - prev[3], interval_s - PHYS_TOL_S,
-                                        f"queries too close on {server}")
+                self.assertGreaterEqual(
+                    cur[3] - prev[3], interval_s - PHYS_TOL_S, f"queries too close on {server}"
+                )
                 # and not needlessly spaced either: jitter is at most +10 %, or
                 # the previous query itself took longer than the interval
                 prev_took = prev[4] - prev[2]
@@ -145,7 +172,7 @@ class RateLimitTest(unittest.TestCase):
             by_srv[r["server"]].append(r["t"])
         for ts in by_srv.values():
             ts.sort()
-            for a, b in zip(ts, ts[1:]):
+            for a, b in itertools.pairwise(ts):
                 self.assertGreaterEqual(b - a, interval_s - 0.0011)
 
     def test_slow_queries_and_timeouts_do_not_shift_to_bursts(self):
@@ -154,16 +181,18 @@ class RateLimitTest(unittest.TestCase):
         cfg = make_config(resolvers=1, servers_per=2, domains=5, interval_ms=50)
         clock = RecordingClock()
         slow = ("d1.example", "d3.example")
-        fake = FakeDNS(clock=clock,
-                       latency_fn=lambda d: 0.08 if d in slow else 0.0,
-                       outcome=lambda s, d, n: "timeout" if d in slow else "ok")
+        fake = FakeDNS(
+            clock=clock,
+            latency_fn=lambda d: 0.08 if d in slow else 0.0,
+            outcome=lambda s, d, n: "timeout" if d in slow else "ok",
+        )
         run = runner.run_benchmark(cfg, query_fn=fake, clock=clock)
         self.check_spacing(fake, 0.05)
         statuses = Counter(r["status"] for r in run["results"])
         self.assertEqual(statuses, {"ok": 6, "timeout": 4})
         # after an 80 ms timeout the next query goes out promptly (no extra wait)
         for evs in fake.by_server().values():
-            for prev, cur in zip(evs, evs[1:]):
+            for prev, cur in itertools.pairwise(evs):
                 if prev[1] in slow:
                     self.assertLess(cur[2] - prev[4], 0.03)
 
@@ -171,8 +200,13 @@ class RateLimitTest(unittest.TestCase):
         cfg = make_config(resolvers=1, servers_per=1, domains=3, interval_ms=50, tries=3, shuffle=False)
         clock = RecordingClock()
         # d0 always times out (instantly), d1 times out once then answers
-        fake = FakeDNS(clock=clock, latency=0.0,
-                       outcome=lambda s, d, n: "timeout" if d == "d0.example" or (d == "d1.example" and n == 0) else "ok")
+        fake = FakeDNS(
+            clock=clock,
+            latency=0.0,
+            outcome=lambda s, d, n: (
+                "timeout" if d == "d0.example" or (d == "d1.example" and n == 0) else "ok"
+            ),
+        )
         run = runner.run_benchmark(cfg, query_fn=fake, clock=clock)
         self.assertEqual(fake.calls[("10.0.0.1", "d0.example")], 3)
         self.assertEqual(fake.calls[("10.0.0.1", "d1.example")], 2)
@@ -222,6 +256,7 @@ class RateLimitTest(unittest.TestCase):
                 if remaining[server] == 0:
                     active_servers.discard(server)
             return QueryResult("ok", ms=2.0, rcode="NOERROR", answers=1)
+
         t0 = time.monotonic()
         run = runner.run_benchmark(cfg, query_fn=qfn)
         wall = time.monotonic() - t0
@@ -234,7 +269,7 @@ class RateLimitTest(unittest.TestCase):
         fake = FakeDNS(latency=0.002)
         runner.run_benchmark(cfg, query_fn=fake)
         spans = sorted((evs[0][3], evs[-1][4]) for evs in fake.by_server().values())
-        for (a1, b1), (a2, b2) in zip(spans, spans[1:]):
+        for (_a1, b1), (a2, _b2) in itertools.pairwise(spans):
             self.assertGreaterEqual(a2, b1)
 
 
@@ -250,8 +285,22 @@ class RunnerBehaviourTest(unittest.TestCase):
         self.assertIsInstance(run["duration_s"], float)
         self.assertTrue(run["host"])
         r = run["results"][0]
-        self.assertEqual(set(r), {"resolver", "server", "domain", "round", "status", "ms", "rcode",
-                                  "answers", "error", "t", "attempts"})
+        self.assertEqual(
+            set(r),
+            {
+                "resolver",
+                "server",
+                "domain",
+                "round",
+                "status",
+                "ms",
+                "rcode",
+                "answers",
+                "error",
+                "t",
+                "attempts",
+            },
+        )
         self.assertEqual(r["attempts"], 1)
         self.assertEqual(r["ms"], 0.123)  # rounded to 3 dp
         self.assertEqual(r["resolver"], "R0")
@@ -297,8 +346,17 @@ class RunnerBehaviourTest(unittest.TestCase):
     def test_no_shuffle_keeps_order(self):
         cfg = make_config(resolvers=1, servers_per=1, domains=3, rounds=2, shuffle=False)
         jobs = runner.build_jobs(cfg)
-        self.assertEqual(jobs[0]["items"], [("d0.example", 1), ("d1.example", 1), ("d2.example", 1),
-                                            ("d0.example", 2), ("d1.example", 2), ("d2.example", 2)])
+        self.assertEqual(
+            jobs[0]["items"],
+            [
+                ("d0.example", 1),
+                ("d1.example", 1),
+                ("d2.example", 1),
+                ("d0.example", 2),
+                ("d1.example", 2),
+                ("d2.example", 2),
+            ],
+        )
 
     def test_progress_events(self):
         cfg = make_config(resolvers=2, servers_per=1, domains=3)
@@ -313,6 +371,7 @@ class RunnerBehaviourTest(unittest.TestCase):
 
         def bad(event):
             raise ValueError("ui broke")
+
         run = runner.run_benchmark(cfg, query_fn=FakeDNS(latency=0.0), progress=bad)
         self.assertEqual(len(run["results"]), 2)
 
@@ -331,8 +390,9 @@ class RunnerBehaviourTest(unittest.TestCase):
 
     def test_dict_results_accepted(self):
         cfg = make_config(resolvers=1, servers_per=1, domains=1)
-        run = runner.run_benchmark(cfg, query_fn=lambda s, d, **kw: {"status": "ok", "ms": 1.5,
-                                                                     "rcode": "NOERROR", "answers": 2})
+        run = runner.run_benchmark(
+            cfg, query_fn=lambda s, d, **kw: {"status": "ok", "ms": 1.5, "rcode": "NOERROR", "answers": 2}
+        )
         self.assertEqual(run["results"][0]["ms"], 1.5)
         self.assertEqual(run["results"][0]["answers"], 2)
 
@@ -343,9 +403,9 @@ class RunnerBehaviourTest(unittest.TestCase):
         def progress(e):
             if e["done"] >= 6:
                 cancel.set()
+
         t0 = time.monotonic()
-        run = runner.run_benchmark(cfg, query_fn=FakeDNS(latency=0.0), progress=progress,
-                                   cancel_event=cancel)
+        run = runner.run_benchmark(cfg, query_fn=FakeDNS(latency=0.0), progress=progress, cancel_event=cancel)
         took = time.monotonic() - t0
         self.assertEqual(run["status"], "cancelled")
         self.assertGreaterEqual(len(run["results"]), 6)
@@ -366,13 +426,14 @@ class RunnerBehaviourTest(unittest.TestCase):
         def progress(e):
             if e["done"] == e["total"]:
                 cancel.set()
-        run = runner.run_benchmark(cfg, query_fn=FakeDNS(latency=0.0), progress=progress,
-                                   cancel_event=cancel)
+
+        run = runner.run_benchmark(cfg, query_fn=FakeDNS(latency=0.0), progress=progress, cancel_event=cancel)
         self.assertEqual(run["status"], "complete")
 
     def test_default_expected_wall_time(self):
         """Default settings: 60 domains x 250 ms per server => ~15-17 s, not 6.5 min."""
         from dnsbench.config import default_config, estimate
+
         e = estimate(default_config())
         self.assertLess(e["est_seconds"], 20)
         self.assertEqual(e["max_qps_per_server"], 4.0)
