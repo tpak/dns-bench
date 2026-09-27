@@ -8,6 +8,7 @@ Biome, run by pre-commit and in CI, parses app.js, so a syntax error fails lint 
 from __future__ import annotations
 
 import http.client
+import json
 import re
 import tempfile
 import threading
@@ -15,6 +16,7 @@ import unittest
 from html.parser import HTMLParser
 from pathlib import Path
 
+from dnsbench import config as C
 from dnsbench import paths
 from dnsbench import server as SV
 
@@ -171,6 +173,55 @@ class RealWebUITest(unittest.TestCase):
         for ok in ("// innerHTML is never used", "if (a.innerHTML === b) {}", "el.textContent = s"):
             with self.subTest(ok=ok):
                 self.assertIsNone(HTML_SINKS.search(ok))
+
+
+class NoRuleCopiesTest(unittest.TestCase):
+    """The rules live in Python and reach the UI through GET /api/schema and the validate/estimate
+    endpoints (REMEDIATION_PLAN.md Phase 5). Copies in app.js drifted from them before."""
+
+    js: str
+    html: str
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.js = (paths.WEB_DIR / "app.js").read_text(encoding="utf-8")
+        cls.html = (paths.WEB_DIR / "index.html").read_text(encoding="utf-8")
+
+    def test_no_copied_rules(self):
+        for name in (
+            "DEFAULT_SETTINGS",
+            "MIN_INTERVAL_MS",
+            "MAX_DOMAINS",
+            "PRESETS",
+            "validateDraft",
+            "classifyServerError",
+            "looksLikeIp",
+            "validHostname",
+            "parseDomains",
+            "function estimate(",
+            "/api/defaults",
+        ):
+            with self.subTest(name=name):
+                self.assertNotIn(name, self.js)
+
+    def test_no_setting_bounds_or_defaults(self):
+        web = self.js + self.html
+        for key, (lo, hi) in C.SETTING_BOUNDS.items():
+            for pattern in (rf"\bmin:\s*{lo}\b", rf"\bmax:\s*{hi}\b", rf'\bmin="{lo}"', rf'\bmax="{hi}"'):
+                with self.subTest(key=key, pattern=pattern):
+                    self.assertIsNone(re.search(pattern, web))
+        for key, value in C.DEFAULT_SETTINGS.items():
+            literal = f"['\"]{value}['\"]" if isinstance(value, str) else json.dumps(value)
+            with self.subTest(default=key):
+                self.assertIsNone(re.search(rf"\b{key}:\s*{literal}", web))
+        self.assertIsNone(re.search(r"maxlength:\s*'\d+'", self.js))  # the name limit
+        self.assertNotIn(f"{C.MAX_QUERIES_PER_RUN}", web.replace("_", ""))
+
+    def test_no_preset_addresses(self):
+        for preset in C.PRESETS:
+            for ip in preset["servers"]:
+                with self.subTest(ip=ip):
+                    self.assertNotIn(ip, self.js)
 
 
 if __name__ == "__main__":
