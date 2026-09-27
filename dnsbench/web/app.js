@@ -23,6 +23,9 @@
   const DATA_TABS = new Set(['overview', 'resolver', 'domain']);
   const PALETTE_SIZE = 8;
   const POLL_MS = 500;
+  const POLL_BACKOFF_MAX_MS = 10000; // slowest retry while the server doesn't answer
+  const POLL_WARN_AFTER = 3; // failed polls in a row before saying so
+  const API_TIMEOUT_MS = 15000; // a request the server hasn't answered by then is given up
   const TREND_MAX_RUNS = 30;
   const DOMAIN_CHART_LIMIT = 60;
   const SLOW_TABLE_MAX = 200; // rows shown in a resolver's "Slow queries" table
@@ -226,6 +229,9 @@
 
   // ================================================================ utilities
   const isNum = (v) => typeof v === 'number' && Number.isFinite(v);
+  /** 'smooth' scrolling unless the user asked the system for less motion. */
+  const scrollBehavior = () =>
+    window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth';
   const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
   const r2 = (v) => Math.round(v * 100) / 100;
 
@@ -418,18 +424,34 @@
   }
 
   async function api(path, opts = {}) {
-    const init = { method: opts.method || 'GET', headers: { Accept: 'application/json' }, cache: 'no-store' };
+    // A server that accepts the connection but never answers would otherwise hang the page (FE-7).
+    const abort = new AbortController();
+    const timer = setTimeout(() => abort.abort(), API_TIMEOUT_MS);
+    const init = {
+      method: opts.method || 'GET',
+      headers: { Accept: 'application/json' },
+      cache: 'no-store',
+      signal: abort.signal,
+    };
     if (init.method !== 'GET') {
       init.headers['Content-Type'] = 'application/json';
       init.body = JSON.stringify(opts.body === undefined ? {} : opts.body);
     }
     let res;
+    let text;
     try {
       res = await fetch(path, init);
-    } catch (_) {
-      throw new ApiError('Cannot reach the DNS Bench server. Is it still running?', 0);
+      text = await res.text();
+    } catch (err) {
+      throw new ApiError(
+        err?.name === 'AbortError'
+          ? `The DNS Bench server did not answer within ${API_TIMEOUT_MS / 1000} s.`
+          : 'Cannot reach the DNS Bench server. Is it still running?',
+        0,
+      );
+    } finally {
+      clearTimeout(timer);
     }
-    const text = await res.text().catch(() => '');
     let data = null;
     if (text) {
       try {
@@ -622,6 +644,34 @@
     el.addEventListener('blur', hideTip);
   }
   /** rows: [value, label, colour?]. Values lead, labels follow. */
+  /**
+   * One tab stop for a group of items, such as a chart's bars (FE-10): Tab reaches the group once,
+   * then the arrow keys, Home and End move between the items. The selected item, else the first,
+   * starts as the tab stop.
+   */
+  function roving(container, items, prevKeys, nextKeys) {
+    if (!items.length) return;
+    const start = Math.max(
+      0,
+      items.findIndex((el) => el.classList.contains('is-selected')),
+    );
+    for (const [i, el] of items.entries()) el.setAttribute('tabindex', i === start ? '0' : '-1');
+    container.addEventListener('keydown', (e) => {
+      const i = items.indexOf(e.target);
+      if (i < 0) return;
+      let j = null;
+      if (prevKeys.includes(e.key)) j = Math.max(0, i - 1);
+      else if (nextKeys.includes(e.key)) j = Math.min(items.length - 1, i + 1);
+      else if (e.key === 'Home') j = 0;
+      else if (e.key === 'End') j = items.length - 1;
+      if (j === null || j === i) return;
+      e.preventDefault();
+      items[i].setAttribute('tabindex', '-1');
+      items[j].setAttribute('tabindex', '0');
+      items[j].focus();
+    });
+  }
+
   function tipContent(title, rows, color) {
     return [
       h(
@@ -919,6 +969,7 @@
       }
       svg.appendChild(g);
     });
+    if (opt.focusable) roving(svg, Array.from(svg.querySelectorAll('.bar-row')), ['ArrowUp'], ['ArrowDown']);
     return svg;
   }
 
@@ -1225,7 +1276,7 @@
     bins.forEach((c, i) => {
       const x = L + i * slot + 1;
       const w = Math.max(1, slot - 2);
-      const g = s('g', { class: 'bar-col', tabindex: '0', role: 'img', 'aria-label': '' });
+      const g = s('g', { class: 'bar-col', role: 'img', 'aria-label': '' });
       g.appendChild(s('rect', { class: 'hit', x: r2(L + i * slot), y: T, width: r2(slot), height: plotH }));
       if (c > 0) {
         const y = Y(c);
@@ -1249,6 +1300,7 @@
       );
       svg.appendChild(g);
     });
+    roving(svg, Array.from(svg.querySelectorAll('.bar-col')), ['ArrowLeft'], ['ArrowRight']);
     return svg;
   }
 
@@ -1720,14 +1772,20 @@
     try {
       st = await api('/api/status');
     } catch (e) {
+      // Keep trying, more slowly each time, and pick up where the job is once the server answers
+      // again (FE-7). The run itself goes on, and is saved, whatever happens to this page.
       state.pollFailures += 1;
-      if (state.pollFailures >= 6) {
-        showBanner(`Lost contact with the server while a benchmark was running: ${e.message}`);
-        state.job = { running: false };
-        renderProgress();
-        updateRunControls();
-      } else schedulePoll(1000);
+      if (state.pollFailures === POLL_WARN_AFTER)
+        showBanner(
+          `Lost contact with the server while a benchmark was running (${e.message}) Still trying…`,
+          'info',
+        );
+      schedulePoll(Math.min(POLL_BACKOFF_MAX_MS, 1000 * 2 ** (state.pollFailures - 1)));
       return;
+    }
+    if (state.pollFailures >= POLL_WARN_AFTER) {
+      clearBanners('Lost contact with the server');
+      toast('Back in touch with the server.');
     }
     state.pollFailures = 0;
     const wasRunning = !!state.job.running;
@@ -3293,7 +3351,7 @@
     state.viewUpdate = (arg) => {
       drawDetail();
       if (arg && window.matchMedia('(max-width: 1080px)').matches)
-        detail.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        detail.scrollIntoView({ behavior: scrollBehavior(), block: 'start' });
       return true;
     };
 
@@ -3674,7 +3732,7 @@
       const el = document.querySelector('.error-summary') || document.querySelector('.has-error');
       if (!el) return;
       el.focus({ preventScroll: true });
-      el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      el.scrollIntoView({ behavior: scrollBehavior(), block: 'center' });
     });
   }
   async function revertSettings() {
@@ -4461,8 +4519,8 @@
         `This view could not be drawn: ${err?.message ? err.message : err}`,
       );
     }
-    els.main.setAttribute('aria-labelledby', `tab-${state.route.tab}`);
-    setKids(els.main, view);
+    els.view.setAttribute('aria-labelledby', `tab-${state.route.tab}`);
+    setKids(els.view, view);
     flushCharts();
     restoreFocus(focus);
     applyFocusTarget();
@@ -4546,7 +4604,7 @@
     if (prev.tab !== next.tab) {
       window.scrollTo(0, 0);
       // A new view: take the keyboard to it, unless the arrow keys are moving along the tabs.
-      if (!byKeys && !document.activeElement?.closest?.('#main')) els.main.focus({ preventScroll: true });
+      if (!byKeys && !document.activeElement?.closest?.('#view')) els.view.focus({ preventScroll: true });
       refreshRuns();
     }
   }
@@ -4597,6 +4655,7 @@
 
   function init() {
     els.main = document.getElementById('main');
+    els.view = document.getElementById('view');
     els.tabs = document.getElementById('tabs');
     els.banners = document.getElementById('banners');
     els.progress = document.getElementById('progress');
