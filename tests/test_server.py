@@ -710,6 +710,19 @@ class RunsApiTest(ServerTestBase):
         self.assertEqual(self.jreq("POST", "/api/run")[0], 202)  # a new run can start
         self.wait_idle()
 
+    def test_rounds_override_cannot_exceed_the_query_limit(self):
+        cfg = small_config(domains=500)
+        cfg["resolvers"] = [
+            {"name": f"R{i}", "servers": [f"192.0.2.{4 * i + j}" for j in range(1, 5)], "enabled": True}
+            for i in range(3)
+        ]
+        C.save_config(cfg, self.cfg_path)  # 12 servers x 500 domains = 6,000 queries a round
+        status, data = self.jreq("POST", "/api/run", {"rounds": 10})
+        self.assertEqual(status, 400, data)
+        self.assertEqual(data["error"], "Invalid run settings")
+        self.assertIn("the limit is 50,000", data["details"][0])
+        self.assertEqual(self.fake.calls, 0)
+
     def test_conflict_and_cancel(self):
         C.save_config(small_config(domains=40, interval_ms=100), self.cfg_path)  # ~4 s run
         self.assertEqual(self.jreq("POST", "/api/run/cancel")[0], 409)

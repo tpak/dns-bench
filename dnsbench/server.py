@@ -143,6 +143,9 @@ class DNSBenchServer(ThreadingHTTPServer):
                     raise HTTPError(400, "Invalid config", exc.errors) from None
             if rounds is not None:
                 cfg["settings"]["rounds"] = rounds
+                errors = config_mod.validate_config(cfg)  # more rounds can take a run past its limits
+                if errors:
+                    raise HTTPError(400, "Invalid run settings", errors)
             # Before any DNS traffic, like the CLI: a run that can't be saved isn't worth measuring.
             problem = storage.check_writable(self.runs_dir)
             if problem:

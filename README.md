@@ -170,6 +170,7 @@ disabled, because the original defined it but left it out of `order`.
 
 | Key | Default | Range | Meaning |
 |---|---|---|---|
+| `resolvers` | 5 providers | 1–20 | The resolvers to compare. One run can send at most 50,000 queries (enabled servers × domains × rounds); a bigger config is rejected with a message saying so. |
 | `resolvers[].name` | – | 1–40 chars, unique | Display name. No commas. |
 | `resolvers[].servers` | – | 1–4 IPv4/IPv6 literals | Each IP can appear only once across all resolvers, however it is spelled (`::ffff:1.1.1.1` is `1.1.1.1`). Multicast, broadcast, reserved and unspecified addresses are rejected, and an IPv6 zone ID (`%en0`) is only allowed on a link-local `fe80::` address. |
 | `resolvers[].enabled` | `true` | bool | At least one resolver must be enabled. |

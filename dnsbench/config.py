@@ -127,8 +127,13 @@ RECORD_TYPES = ("A", "AAAA")
 MIN_INTERVAL_MS = SETTING_BOUNDS["per_server_interval_ms"][0]
 
 MAX_DOMAINS = 500
+MAX_RESOLVERS = 20
 MAX_SERVERS_PER_RESOLVER = 4
 MAX_NAME_LEN = 40
+MAX_HOSTNAME_LEN = 253  # a DNS name in text form, without the trailing dot (RFC 1035)
+# Servers x domains x rounds in one run (the defaults send 480). It bounds a run's duration, its file
+# size (a few hundred bytes per query) and what the web UI has to draw.
+MAX_QUERIES_PER_RUN = 50_000
 
 _LABEL_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
 _SPLIT_RE = re.compile(r"[\s,;]+")
@@ -173,7 +178,9 @@ def default_config() -> dict:
 def normalize_domain(value) -> str:
     """strip, lowercase, drop trailing dot, IDNA-encode unicode names."""
     d = str(value).strip().lower().rstrip(".")
-    if d and not d.isascii():
+    # Encoding takes time in proportion to the input, which can be a whole request body. A name longer
+    # than MAX_HOSTNAME_LEN characters stays too long once encoded, so it is left for validation to reject.
+    if d and not d.isascii() and len(d) <= MAX_HOSTNAME_LEN:
         with contextlib.suppress(UnicodeError):  # left as-is; validation reports it
             d = d.encode("idna").decode("ascii")
     return d
@@ -356,8 +363,8 @@ def _hostname_error(domain) -> str | None:
         return "must be a string"
     if not domain:
         return "is empty"
-    if len(domain) > 253:
-        return "is longer than 253 characters"
+    if len(domain) > MAX_HOSTNAME_LEN:
+        return f"is longer than {MAX_HOSTNAME_LEN} characters"
     for label in domain.split("."):
         if not label:
             return "has an empty label (two dots in a row?)"
@@ -384,6 +391,8 @@ def validate_config(cfg) -> list[str]:
     if not isinstance(resolvers, list) or not resolvers:
         errors.append("resolvers: at least one resolver is required")
     else:
+        if len(resolvers) > MAX_RESOLVERS:
+            errors.append(f"resolvers: at most {MAX_RESOLVERS} resolvers allowed (got {len(resolvers)})")
         names_seen: dict[str, int] = {}
         servers_seen: dict[str, str] = {}
         any_enabled = False
@@ -489,6 +498,22 @@ def validate_config(cfg) -> list[str]:
         if not isinstance(settings.get("shuffle"), bool):
             errors.append(
                 f"settings.shuffle: must be true or false (got {_short_repr(settings.get('shuffle'))})"
+            )
+
+    # -- the run as a whole, when the numbers it depends on are usable ------
+    rounds = settings.get("rounds") if isinstance(settings, dict) else None
+    if isinstance(resolvers, list) and isinstance(domains, list) and type(rounds) is int and rounds > 0:
+        servers = sum(
+            len(r["servers"])
+            for r in resolvers
+            if isinstance(r, dict) and r.get("enabled", True) is True and isinstance(r.get("servers"), list)
+        )
+        queries = servers * len(domains) * rounds
+        if queries > MAX_QUERIES_PER_RUN:
+            errors.append(
+                f"a run would send {queries:,} queries ({servers} servers x {len(domains)} domains x "
+                f"{rounds} rounds); the limit is {MAX_QUERIES_PER_RUN:,}, so enable fewer servers or "
+                "use fewer domains or rounds"
             )
     return errors
 

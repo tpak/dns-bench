@@ -215,6 +215,19 @@ class CliTest(unittest.TestCase):
         self.assertEqual(parser.parse_args(["serve", "--port", "0"]).port, 0)
         self.assertEqual(parser.parse_args(["serve"]).port, 8053)
 
+    def test_rounds_override_cannot_exceed_the_query_limit(self):
+        cfg = small_config()
+        cfg["domains"] = [f"d{i}.example" for i in range(500)]
+        cfg["resolvers"] = [
+            {"name": f"R{i}", "servers": [f"192.0.2.{4 * i + j}" for j in range(1, 5)], "enabled": True}
+            for i in range(3)
+        ]
+        C.save_config(cfg, self.cfg)
+        code, _, err = self.cli("run", "--rounds", "10")
+        self.assertEqual(code, cli.EXIT_USAGE)
+        self.assertIn("a run would send 60,000 queries", err)
+        self.assertEqual(self.fake.calls, 0)
+
     def test_serve_refuses_a_reachable_host_without_allow_remote(self):
         from dnsbench import server
 

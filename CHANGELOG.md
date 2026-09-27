@@ -18,6 +18,9 @@ release notes.
 - `dns-bench serve` refuses a `--host` that other machines can reach (such as `0.0.0.0` or a LAN
   address) unless you add `--allow-remote`, because the web UI has no authentication. The README
   shows how to reach the UI from another computer over an SSH tunnel instead.
+- A config can list at most 20 resolvers, and one run can send at most 50,000 queries (enabled
+  servers × domains × rounds; the defaults send 480). A config or `--rounds` value that goes over
+  either limit is rejected with a message saying which limit and by how much.
 
 ### Fixed
 
