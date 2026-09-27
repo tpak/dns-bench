@@ -1,0 +1,28 @@
+# Ruff: Python linter and formatter. Run by pre-commit (.pre-commit-config.yaml) and CI.
+target-version = "py313"
+line-length = 110
+# The launcher has no .py extension, so it has to be included by name.
+extend-include = ["dns-bench"]
+
+[lint]
+# An explicit list, not ruff's defaults, so a ruff upgrade can't silently change what's checked.
+select = [
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "F",    # pyflakes
+    "I",    # isort
+    "B",    # flake8-bugbear
+    "UP",   # pyupgrade
+    "SIM",  # flake8-simplify
+    "A",    # flake8-builtins
+    "RUF",  # ruff-specific
+]
+
+[lint.isort]
+required-imports = ["from __future__ import annotations"]
+
+[lint.per-file-ignores]
+# The launcher must stay parseable by old interpreters so its version check can run and print a
+# clear error: keep %-formatting, no __future__ import, and the version check itself (UP036 sees
+# it as dead code because it is always false on the 3.13 target).
+"dns-bench" = ["UP031", "UP036", "I002"]
