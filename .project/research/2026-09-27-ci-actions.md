@@ -88,6 +88,23 @@ exits 1 with "dns-bench needs Python 3.13 or newer (found 3.12)".
 - The new test passes at +150 ms oversleep and fails for each of three broken schedulers: 50 %
   jitter, the next slot measured from the query's end, and a full-slice sleep.
 
+### Concurrency groups in a reusable workflow (found by the first release dry run)
+
+- Inside a called workflow, `github.workflow` is the **caller's** name. ci.yml's group
+  `${{ github.workflow }}-${{ github.ref }}` therefore became `release-refs/heads/main` when
+  release.yml called it. That was identical to release.yml's workflow-level group
+  `release-${{ github.ref }}`.
+- The run failed before any job started. The only job shown was `release: skipped`, with no
+  annotation in the REST or GraphQL check APIs.
+- Fix: no workflow-level group in the caller. The publishing job holds a job-level
+  `publish-${{ github.ref }}` group instead.
+- A dry run (`gh workflow run release.yml --ref <branch>`) on the fix branch then passed:
+  - all six CI jobs and the gate passed;
+  - the version check and notes extraction succeeded;
+  - "Create the GitHub release" was skipped.
+- Lesson: group names in a workflow that is also called must not be derivable from any caller's
+  own group names.
+
 ## Decision / recommendation
 
 - Pin the actions above by SHA, updated by monthly grouped Dependabot PRs with a 7-day cooldown.
