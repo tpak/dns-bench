@@ -106,7 +106,7 @@
     dsToken: 0,
     colors: new Map(),
     route: { tab: 'overview', arg: null },
-    focusAfterRender: null, // a selector in the view to focus once it is drawn (an action's own control)
+    focusAfterRender: null, // {sel, tab}: what to focus once that tab's view is drawn (an action's own control)
     tabKeyNav: false, // the arrow keys moved between tabs: focus stays on the tab
     job: { running: false },
     pollTimer: null,
@@ -455,20 +455,20 @@
       init.body = JSON.stringify(opts.body === undefined ? {} : opts.body);
     }
     let res;
-    let text;
     try {
       res = await fetch(path, init);
-      text = await res.text();
     } catch (err) {
+      clearTimeout(timer);
       throw new ApiError(
         err?.name === 'AbortError'
           ? `The DNS Bench server did not answer within ${API_TIMEOUT_MS / 1000} s.`
           : 'Cannot reach the DNS Bench server. Is it still running?',
         0,
       );
-    } finally {
-      clearTimeout(timer);
     }
+    // The server answered: a body that then can't be read is an empty one, not a lost server.
+    const text = await res.text().catch(() => '');
+    clearTimeout(timer);
     let data = null;
     if (text) {
       try {
@@ -752,6 +752,9 @@
   function drawChart(box, w) {
     box._w = w;
     hideTip();
+    // A redraw replaces every bar; a keyboard user inside the chart stays on the same one.
+    const items = () => Array.from(box.querySelectorAll('[tabindex]'));
+    const had = box.contains(document.activeElement) ? items().indexOf(document.activeElement) : -1;
     let node;
     try {
       node = box._render(w);
@@ -760,6 +763,13 @@
       node = h('div', { class: 'chart-placeholder' }, 'This chart could not be drawn.');
     }
     setKids(box, node);
+    if (had < 0) return;
+    const now = items();
+    const el = now[Math.min(had, now.length - 1)];
+    if (!el) return;
+    for (const x of now) if (x !== el && x.getAttribute('tabindex') === '0') x.setAttribute('tabindex', '-1');
+    el.setAttribute('tabindex', '0');
+    el.focus({ preventScroll: true });
   }
   function flushCharts() {
     const list = pendingCharts;
@@ -2514,7 +2524,7 @@
             'aria-current': n === sel ? 'true' : null,
             dataset: { name: n },
             onClick: () => {
-              if (n !== sel) state.focusAfterRender = `.chips .chip[data-name="${CSS.escape(n)}"]`;
+              if (n !== sel) focusAfterRender(`.chips .chip[data-name="${CSS.escape(n)}"]`);
             },
           },
           dot(n),
@@ -2717,7 +2727,7 @@
               dataset: { focus: 'show-all' },
               onClick: () => {
                 state.ui.showAllDomains = !state.ui.showAllDomains;
-                state.focusAfterRender = '[data-focus="show-all"]';
+                focusAfterRender('[data-focus="show-all"]');
                 scheduleRender();
               },
             },
@@ -3260,7 +3270,7 @@
               class: 'btn btn-icon btn-ghost',
               'aria-label': 'Close domain details',
               onClick: () => {
-                state.focusAfterRender = `tr[data-domain="${CSS.escape(d)}"] .link-btn`;
+                focusAfterRender(`tr[data-domain="${CSS.escape(d)}"] .link-btn`);
                 go('domain');
               },
             },
@@ -3613,8 +3623,8 @@
   function errorTarget(e) {
     const path = String(e?.path ?? '');
     const msg = String(e?.message ?? e);
-    let m = /^resolvers\[(\d+)\]/.exec(path);
-    if (m) return { scope: 'resolvers', index: Number(m[1]), msg };
+    let m = /^resolvers\[(\d+)\](?:\.(name|servers))?/.exec(path);
+    if (m) return { scope: 'resolvers', index: Number(m[1]), part: m[2] || 'name', msg };
     if (path === 'resolvers') return { scope: 'resolvers', msg };
     if (path === 'domains' || path.startsWith('domains[')) return { scope: 'domains', msg };
     m = /^settings\.(\w+)$/.exec(path);
@@ -3634,7 +3644,7 @@
   /** A field in the Settings form, for the error summary to take the keyboard to. */
   function errorField(e) {
     if (e.scope === 'resolvers' && Number.isInteger(e.index))
-      return `.res-row[data-row="${e.index}"] input[type="text"]`;
+      return `.res-row[data-row="${e.index}"] input[data-field="${e.part === 'servers' ? 'servers' : 'name'}"]`;
     if (e.scope === 'domains') return '#domains-input';
     if (e.scope === 'settings' && e.key) return `#set-${CSS.escape(e.key)}`;
     return null;
@@ -3878,6 +3888,7 @@
         'aria-label': `Resolver ${i + 1} name`,
         autocomplete: 'off',
         spellcheck: 'false',
+        dataset: { field: 'name' },
         ...invalid,
       });
       // The resolver's colour everywhere else; neutral while a new name hasn't been saved.
@@ -3901,6 +3912,7 @@
         autocomplete: 'off',
         spellcheck: 'false',
         autocapitalize: 'off',
+        dataset: { field: 'servers' },
         ...invalid,
       });
       servIn.addEventListener('input', () => {
@@ -4566,15 +4578,19 @@
     applyFocusTarget();
   }
 
-  /** Focus what the last action asked for (state.focusAfterRender), now that the view is drawn. */
+  /** Ask for `sel` to be focused once the current tab's view is next drawn. */
+  function focusAfterRender(sel) {
+    state.focusAfterRender = { sel, tab: state.route.tab };
+  }
+  /** Focus what the last action asked for, now that the view is drawn, if it is still that tab. */
   function applyFocusTarget() {
-    const sel = state.focusAfterRender;
+    const target = state.focusAfterRender;
     state.focusAfterRender = null;
-    if (!sel) return;
+    if (!target || target.tab !== state.route.tab) return;
     try {
-      els.main.querySelector(sel)?.focus();
+      els.main.querySelector(target.sel)?.focus();
     } catch (err) {
-      console.warn('focus target not found:', sel, err); // a stale selector: leave focus where it is
+      console.warn('focus target not found:', target.sel, err); // a stale selector: leave focus where it is
     }
   }
 
