@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import io
 import json
 import os
 import signal
@@ -509,8 +510,9 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv=None) -> int:
     for stream in (sys.stdout, sys.stderr):
-        with contextlib.suppress(AttributeError, ValueError):
-            stream.reconfigure(errors="replace")
+        if isinstance(stream, io.TextIOWrapper):  # not e.g. a StringIO swapped in by a test
+            with contextlib.suppress(ValueError):  # a closed stream: nothing to reconfigure
+                stream.reconfigure(errors="replace")
     parser = build_parser()
     args = parser.parse_args(argv)
     if not getattr(args, "func", None):

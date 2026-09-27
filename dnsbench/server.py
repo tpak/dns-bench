@@ -81,7 +81,7 @@ def _csv_safe(value):
 
 
 class JobState:
-    def __init__(self):
+    def __init__(self) -> None:
         self.lock = threading.Lock()
         self.running = False
         self.done = 0
@@ -343,7 +343,7 @@ class Handler(BaseHTTPRequestHandler):
         self._send(status, body, "application/json; charset=utf-8", headers)
 
     def _error(self, status: int, message: str, details=None, headers=None):
-        obj = {"error": message}
+        obj: dict[str, object] = {"error": message}
         if details is not None:
             obj["details"] = list(details)
         self._json(status, obj, headers)
@@ -593,7 +593,7 @@ def make_server(
 
 
 def server_url(server: DNSBenchServer) -> str:
-    host, port = server.server_address[:2]
+    host, port = str(server.server_address[0]), server.server_address[1]  # always str for AF_INET/6
     if host in ("0.0.0.0", ""):
         host = "127.0.0.1"
     elif host == "::":

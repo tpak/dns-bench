@@ -15,6 +15,7 @@ import os
 import re
 import tempfile
 from pathlib import Path
+from typing import Any
 
 PACKAGE_DIR = Path(__file__).resolve().parent
 PROJECT_DIR = PACKAGE_DIR.parent
@@ -211,6 +212,11 @@ def server_key(value) -> str | None:
         ip = ipaddress.ip_address(s)
     except ValueError:
         return None
+    return _host_key(ip)
+
+
+def _host_key(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> str:
+    """``server_key`` for an already-parsed address."""
     if ip.version == 6:
         if ip.ipv4_mapped is not None:
             return str(ip.ipv4_mapped)
@@ -286,7 +292,7 @@ def normalize_config(cfg) -> dict:
     """
     if not isinstance(cfg, dict):
         return cfg
-    out = {}
+    out: dict[str, Any] = {}
 
     resolvers = cfg.get("resolvers")
     if isinstance(resolvers, list):
@@ -428,7 +434,7 @@ def validate_config(cfg) -> list[str]:
                             else f"{label}: server {shown}: {problem}"
                         )
                         continue
-                    key = server_key(s)
+                    key = _host_key(ip)
                     if key in servers_seen:
                         errors.append(f"{label}: server {key} is already used by {servers_seen[key]}")
                     else:

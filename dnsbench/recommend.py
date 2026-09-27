@@ -167,7 +167,7 @@ def recommend(
     by_srv = summary.get("by_server") or {}
     order = summary.get("resolvers") or list(by_res.keys())
 
-    ranking = []
+    ranking: list[dict] = []
     no_answers = []
     for name in order:
         st = by_res.get(name)
@@ -397,16 +397,16 @@ def recommend(
             f"{best['resolver']} is within noise of {names} (score within "
             f"{tie_margin:.1f} ms) — any of them is a good choice."
         )
-    for e, role in ((best, "go first"), (backup, "be the secondary")):
-        if e is None or not e["_tied_servers"] or not e["fastest_server"]:
+    for pick, role in ((best, "go first"), (backup, "be the secondary")):
+        if pick is None or not pick["_tied_servers"] or not pick["fastest_server"]:
             continue
-        if e is backup and e["fastest_server"] != secondary_ip:
+        if pick is backup and pick["fastest_server"] != secondary_ip:
             continue
-        ips = [e["fastest_server"]] + e["_tied_servers"]
-        medians = " vs ".join(f"{e['_srv'][ip]['median']:.1f}" for ip in ips)
+        ips = [pick["fastest_server"]] + pick["_tied_servers"]
+        medians = " vs ".join(f"{pick['_srv'][ip]['median']:.1f}" for ip in ips)
         either = "either" if len(ips) == 2 else "any of them"
         notes.append(
-            f"{e['resolver']}'s servers {_join(ips)} were within noise of each other "
+            f"{pick['resolver']}'s servers {_join(ips)} were within noise of each other "
             f"(median {medians} ms) — {either} can {role}."
         )
     if aliases:
