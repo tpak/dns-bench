@@ -14,3 +14,4 @@ Including the mis-translation of "dice them" as Dyson.
 From here, I'll take it apart a little bit and see if it can be improved. But there was no CLAUDE.MD or anything else in the repo. It chose Python3 and plain JavaScript / HTML all on its own, which I thought was interesting.
 
 The thing that I'm enjoying about using AI for development tasks is that it unlocks things like this. I would have never bothered to go through all of the effort on my own to make something that looks like this and has all this functionality but with a sinlge prompt I get some very interesting results. In other projects I have had some success building some very clever things with decent quality, not slop.
+
