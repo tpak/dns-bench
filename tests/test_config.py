@@ -20,6 +20,30 @@ def cfg(**changes):
     return c
 
 
+class LoadsJsonTest(unittest.TestCase):
+    def test_accepts_nesting_up_to_the_limit(self):
+        depth = C.MAX_JSON_DEPTH
+        value = C.loads_json("[" * depth + "]" * depth)
+        for _ in range(depth - 1):
+            (value,) = value
+        self.assertEqual(value, [])
+
+    def test_rejects_nesting_past_the_limit_on_every_python(self):
+        for depth in (C.MAX_JSON_DEPTH + 1, 100000):
+            for text in ("[" * depth + "]" * depth, '{"a": ' + "[" * (depth - 1) + "]" * (depth - 1) + "}"):
+                with self.subTest(depth=depth, text=text[:6]), self.assertRaises(ValueError) as cm:
+                    C.loads_json(text)
+                self.assertEqual(str(cm.exception), f"nested more than {C.MAX_JSON_DEPTH} levels deep")
+
+    def test_every_parse_failure_is_a_value_error(self):
+        for text in ("{ nope", "9" * 5000, ""):
+            with self.subTest(text=text[:10]), self.assertRaises(ValueError):
+                C.loads_json(text)
+
+    def test_a_real_config_is_well_inside_the_limit(self):
+        self.assertEqual(C.loads_json(C.dumps_config(C.default_config())), C.default_config())
+
+
 class DefaultsTest(unittest.TestCase):
     def test_defaults_are_valid(self):
         self.assertEqual(C.validate_config(C.default_config()), [])
@@ -359,6 +383,20 @@ class LoadSaveTest(unittest.TestCase):
                 with self.assertRaises(C.ConfigError) as cm:
                     C.load_config(self.path)
                 self.assertIn("not valid JSON", str(cm.exception))
+
+    def test_deep_nesting_inside_the_object_is_not_valid_json(self):
+        # Python 3.14's parser accepts 100,000-deep nesting that 3.13's rejects; validation then
+        # overflowed the stack formatting the value. A modest depth pins the limit on every version.
+        self.path.parent.mkdir(parents=True)
+        for depth in (C.MAX_JSON_DEPTH, 100000):
+            nested = "[" * depth + "]" * depth
+            for text in ('{"settings": {"rounds": ' + nested + "}}", '{"domains": ' + nested + "}"):
+                with self.subTest(depth=depth, text=text[:14]):
+                    self.path.write_text(text)
+                    for strict in (True, False):
+                        with self.assertRaises(C.ConfigError) as cm:
+                            C.load_config(self.path, strict=strict)
+                        self.assertIn(f"nested more than {C.MAX_JSON_DEPTH} levels", str(cm.exception))
 
     def test_bad_numeric_string_in_file(self):
         self.path.parent.mkdir(parents=True)
