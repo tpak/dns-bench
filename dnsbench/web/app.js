@@ -305,7 +305,7 @@
     return dir * (a - b);
   }
   function hashFor(tab, arg) {
-    return '#' + tab + (arg ? '/' + encodeURIComponent(arg) : '');
+    return `#${tab}${arg ? `/${encodeURIComponent(arg)}` : ''}`;
   }
   function go(tab, arg) {
     location.hash = hashFor(tab, arg);
@@ -321,7 +321,7 @@
     return fmtNum(v, Math.abs(v) >= 100 ? 0 : 1);
   }
   function fmtMsU(v) {
-    return isNum(v) ? fmtMs(v) + ' ms' : '—';
+    return isNum(v) ? `${fmtMs(v)} ms` : '—';
   }
   function fmtInt(v) {
     return isNum(v) ? Math.round(v).toLocaleString() : '—';
@@ -331,7 +331,7 @@
     if (rate === 0) return '0%';
     const p = rate * 100;
     if (p < 0.1) return '<0.1%';
-    return fmtNum(p, p >= 10 ? 0 : 1) + '%';
+    return `${fmtNum(p, p >= 10 ? 0 : 1)}%`;
   }
   function fmtQps(q) {
     if (!isNum(q)) return '—';
@@ -341,8 +341,8 @@
   function fmtDuration(sec) {
     if (!isNum(sec)) return '—';
     if (sec < 1) return '<1 s';
-    if (sec < 10) return sec.toFixed(1) + ' s';
-    if (sec < 59.5) return Math.round(sec) + ' s';
+    if (sec < 10) return `${sec.toFixed(1)} s`;
+    if (sec < 59.5) return `${Math.round(sec)} s`;
     const total = Math.round(sec);
     const m = Math.floor(total / 60);
     const r = total % 60;
@@ -367,7 +367,7 @@
     return str.charAt(0).toUpperCase() + str.slice(1);
   }
   function plural(n, one, many) {
-    return `${fmtInt(n)} ${n === 1 ? one : many || one + 's'}`;
+    return `${fmtInt(n)} ${n === 1 ? one : many || `${one}s`}`;
   }
   function decimalsOf(step) {
     const str = String(+Number(step).toPrecision(6));
@@ -378,7 +378,7 @@
     return v.toLocaleString(undefined, { maximumFractionDigits: decimalsOf(step) });
   }
   function fmtPctTick(v, step) {
-    return (v * 100).toLocaleString(undefined, { maximumFractionDigits: decimalsOf(step * 100) }) + '%';
+    return `${(v * 100).toLocaleString(undefined, { maximumFractionDigits: decimalsOf(step * 100) })}%`;
   }
 
   // ---------------------------------------------------------------- scales
@@ -426,10 +426,10 @@
     let hi = str.length;
     while (lo < hi) {
       const mid = (lo + hi + 1) >> 1;
-      if (textWidth(str.slice(0, mid) + '…', font) <= maxW) lo = mid;
+      if (textWidth(`${str.slice(0, mid)}…`, font) <= maxW) lo = mid;
       else hi = mid - 1;
     }
-    return str.slice(0, lo) + '…';
+    return `${str.slice(0, lo)}…`;
   }
 
   // ================================================================ API
@@ -479,7 +479,7 @@
       cache.set(id, hit);
       return hit;
     }
-    const run = await api('/api/runs/' + encodeURIComponent(id));
+    const run = await api(`/api/runs/${encodeURIComponent(id)}`);
     cache.set(id, run);
     // Full records can be megabytes each: keep only a few, never the one on screen.
     const keep = state.dataset && state.dataset.kind === 'run' ? state.dataset.id : null;
@@ -589,7 +589,7 @@
   }
   function dot(name, cls) {
     return h('span', {
-      class: 'dot' + (cls ? ' ' + cls : ''),
+      class: `dot${cls ? ` ${cls}` : ''}`,
       style: { background: colorOf(name) },
       'aria-hidden': 'true',
     });
@@ -709,7 +709,7 @@
 
   /** A container whose SVG is (re)drawn at its real pixel width. */
   function chartBox(renderFn, cls) {
-    const box = h('div', { class: 'chart' + (cls ? ' ' + cls : '') });
+    const box = h('div', { class: `chart${cls ? ` ${cls}` : ''}` });
     box._render = renderFn;
     pendingCharts.push(box);
     return box;
@@ -843,7 +843,7 @@
       const last = i === scale.ticks.length - 1;
       tickLabels.push({
         x,
-        text: tf(t, scale.step) + (last && opt.unit ? ' ' + opt.unit : ''),
+        text: tf(t, scale.step) + (last && opt.unit ? ` ${opt.unit}` : ''),
         anchor: 'middle',
       });
     });
@@ -877,7 +877,7 @@
       const cy = yRow + rowH / 2;
       const y = cy - barH / 2;
       const g = s('g', {
-        class: 'bar-row' + (r.onClick ? ' is-clickable' : '') + (r.selected ? ' is-selected' : ''),
+        class: `bar-row${r.onClick ? ' is-clickable' : ''}${r.selected ? ' is-selected' : ''}`,
         tabindex: opt.focusable ? '0' : null,
         role: opt.focusable ? (r.onClick ? 'button' : 'img') : null,
         'aria-label': opt.focusable ? r.aria || r.label : null,
@@ -897,7 +897,7 @@
           const w = Math.max(2, xv - x0);
           g.appendChild(
             s('path', {
-              class: 'bar' + (r.status ? ' bar-' + r.status : ''),
+              class: `bar${r.status ? ` bar-${r.status}` : ''}`,
               d: hbarPath(x0, y, w, barH),
               style: r.status ? null : { fill: r.color },
             }),
@@ -919,10 +919,10 @@
         t.appendChild(
           s('tspan', { class: 'value-num' }, r.valueText !== undefined ? r.valueText : fmtMs(r.value)),
         );
-        if (r.valueUnit) t.appendChild(s('tspan', { class: 'value-unit' }, ' ' + r.valueUnit));
+        if (r.valueUnit) t.appendChild(s('tspan', { class: 'value-unit' }, ` ${r.valueUnit}`));
         if (r.extra)
           t.appendChild(
-            s('tspan', { class: 'value-extra' + (r.extraClass ? ' ' + r.extraClass : '') }, '  ' + r.extra),
+            s('tspan', { class: `value-extra${r.extraClass ? ` ${r.extraClass}` : ''}` }, `  ${r.extra}`),
           );
         g.appendChild(t);
       } else {
@@ -930,7 +930,7 @@
           s(
             'text',
             {
-              class: 'value-missing' + (r.missingMuted ? ' is-muted' : ''),
+              class: `value-missing${r.missingMuted ? ' is-muted' : ''}`,
               x: x0 + 8,
               y: cy,
               'dominant-baseline': 'central',
@@ -1017,7 +1017,7 @@
         s(
           'text',
           { class: 'tick', x: L - 8, y, 'text-anchor': 'end', 'dominant-baseline': 'central' },
-          fmtTick(t, scale.step) + (i === scale.ticks.length - 1 && opt.unit ? ' ' + opt.unit : ''),
+          fmtTick(t, scale.step) + (i === scale.ticks.length - 1 && opt.unit ? ` ${opt.unit}` : ''),
         ),
       );
     });
@@ -1056,7 +1056,7 @@
       let pen = false;
       sr.values.forEach((v, i) => {
         if (isNum(v)) {
-          d += (pen ? 'L' : 'M') + r2(X(i)) + ',' + r2(Y(v));
+          d += `${(pen ? 'L' : 'M') + r2(X(i))},${r2(Y(v))}`;
           pen = true;
         } else pen = false;
       });
@@ -1085,7 +1085,7 @@
     svg.appendChild(cross);
     // Clear of the y-axis labels (which end at L - 8) so its focus ring never crosses them.
     const overlay = s('rect', {
-      class: 'overlay' + (opt.onPick ? ' is-clickable' : ''),
+      class: `overlay${opt.onPick ? ' is-clickable' : ''}`,
       x: L - 6,
       y: T,
       width: plotW + 12,
@@ -1247,7 +1247,7 @@
       if (i === 10 && overflow) continue; // the tail bin has no upper edge
       let text = edgeText(i);
       if (i === 10) text += ' ms';
-      if (i === 9 && overflow) text = '≥' + text;
+      if (i === 9 && overflow) text = `≥${text}`;
       xLabels.push({ text, x: L + i * slot, anchor: i === 10 ? 'end' : 'middle' });
     }
     if (overflow) xLabels.push({ text: 'ms', x: width - R, anchor: 'end' });
@@ -1321,15 +1321,15 @@
             opts.right ? h('div', { class: 'card-right' }, opts.right) : null,
           )
         : null;
-    return h('section', { class: 'card' + (opts.cls ? ' ' + opts.cls : '') }, head, ...body);
+    return h('section', { class: `card${opts.cls ? ` ${opts.cls}` : ''}` }, head, ...body);
   }
 
   function kpi(label, value, unit, sub, cls) {
     return h(
       'div',
-      { class: 'kpi' + (cls ? ' ' + cls : '') },
+      { class: `kpi${cls ? ` ${cls}` : ''}` },
       h('div', { class: 'kpi-label' }, label),
-      h('div', { class: 'kpi-value' }, value, unit ? h('span', { class: 'kpi-unit' }, ' ' + unit) : null),
+      h('div', { class: 'kpi-value' }, value, unit ? h('span', { class: 'kpi-unit' }, ` ${unit}`) : null),
       sub ? h('div', { class: 'kpi-sub' }, sub) : null,
     );
   }
@@ -1414,7 +1414,7 @@
    * Sort state persists per table id in state.sorts.
    */
   function dataTable(id, columns, rows, opts = {}) {
-    const wrap = h('div', { class: 'table-wrap' + (opts.wrapClass ? ' ' + opts.wrapClass : '') });
+    const wrap = h('div', { class: `table-wrap${opts.wrapClass ? ` ${opts.wrapClass}` : ''}` });
     const draw = () => {
       const sort = state.sorts[id] || opts.defaultSort || null;
       const sorted = rows.slice();
@@ -1435,7 +1435,7 @@
               'th',
               {
                 scope: 'col',
-                class: (c.num ? 'num' : '') + (c.cls ? ' ' + c.cls : ''),
+                class: (c.num ? 'num' : '') + (c.cls ? ` ${c.cls}` : ''),
                 'aria-sort': sortable
                   ? active
                     ? sort.dir > 0
@@ -1449,7 +1449,7 @@
                     'button',
                     {
                       type: 'button',
-                      class: 'th-sort' + (active ? ' is-active' : ''),
+                      class: `th-sort${active ? ' is-active' : ''}`,
                       onClick: () => {
                         state.sorts[id] = { key: c.key, dir: active ? -sort.dir : c.defaultDir || 1 };
                         draw();
@@ -1480,7 +1480,7 @@
                 c.head ? 'th' : 'td',
                 {
                   scope: c.head ? 'row' : null,
-                  class: (c.num ? 'num' : '') + (c.cls ? ' ' + c.cls : ''),
+                  class: (c.num ? 'num' : '') + (c.cls ? ` ${c.cls}` : ''),
                 },
                 c.render
                   ? c.render(r)
@@ -1501,7 +1501,7 @@
         wrap,
         h(
           'table',
-          { class: 'data-table' + (opts.tableClass ? ' ' + opts.tableClass : '') },
+          { class: `data-table${opts.tableClass ? ` ${opts.tableClass}` : ''}` },
           opts.caption ? h('caption', { class: 'sr-only' }, opts.caption) : null,
           thead,
           tbody,
@@ -1926,10 +1926,10 @@
     p.count.textContent = total
       ? `${fmtInt(done)} of ${fmtInt(total)} queries · ${Math.floor(pct)}%`
       : 'Starting…';
-    p.fill.style.width = pct.toFixed(1) + '%';
+    p.fill.style.width = `${pct.toFixed(1)}%`;
     p.track.setAttribute('aria-valuenow', String(Math.floor(pct)));
     p.elapsed.textContent = fmtDuration(j.elapsed_s || 0);
-    p.eta.textContent = isNum(j.eta_s) ? '≈ ' + fmtDuration(j.eta_s) : '—';
+    p.eta.textContent = isNum(j.eta_s) ? `≈ ${fmtDuration(j.eta_s)}` : '—';
     // The server counts every result; `recent` only carries the last 20 rows, so
     // the client-side tally is just a fallback until the first status poll.
     const slowN = isNum(j.slow) ? j.slow : state.live.slow;
@@ -2583,7 +2583,7 @@
         rank
           ? h(
               'span',
-              { class: 'badge' + (sel === rec.best ? ' badge-good' : '') },
+              { class: `badge${sel === rec.best ? ' badge-good' : ''}` },
               sel === rec.best ? 'Best' : `Rank #${rank.rank}`,
             )
           : h('span', { class: 'badge badge-bad' }, 'Unranked'),
@@ -3131,7 +3131,7 @@
         td = h(
           'td',
           {
-            class: 'heat' + (c.failures ? ' heat-partial' : ''),
+            class: `heat${c.failures ? ' heat-partial' : ''}`,
             style: { background: scale ? heatBg(scale.t(c.median)) : null },
           },
           fmtMs(c.median),
@@ -3161,7 +3161,7 @@
               'th',
               { scope: 'col', class: 'num res-col' },
               h('div', { class: 'res-head' }, dot(n), h('span', { class: 'res-head-name', title: n }, n)),
-              h('div', { class: 'res-head-sub' }, 'avg ' + fmtMsU(byRes[n]?.mean)),
+              h('div', { class: 'res-head-sub' }, `avg ${fmtMsU(byRes[n]?.mean)}`),
             ),
           ),
           h(
@@ -3534,7 +3534,7 @@
                 'a',
                 {
                   class: 'btn btn-sm btn-ghost',
-                  href: '/api/runs/' + encodeURIComponent(r.id) + '/csv',
+                  href: `/api/runs/${encodeURIComponent(r.id)}/csv`,
                   download: `dns-bench-${r.id}.csv`,
                   title: 'Download raw results as CSV',
                 },
@@ -3550,7 +3550,7 @@
         caption: 'Saved benchmark runs',
         tableClass: 'history-table',
         rowAttrs: (r) => ({
-          class: 'is-clickable' + (r.id === current ? ' is-current' : ''),
+          class: `is-clickable${r.id === current ? ' is-current' : ''}`,
           onClick: (e) => {
             if (!e.target.closest('a, button')) viewRun(r.id);
           },
@@ -3584,7 +3584,7 @@
     let ascii = d;
     if (/[^\p{ASCII}]/u.test(d)) {
       try {
-        ascii = new URL('http://' + d + '/').hostname;
+        ascii = new URL(`http://${d}/`).hostname;
       } catch (_) {
         return false;
       }
@@ -3981,7 +3981,7 @@
     function resolverRow(r, i) {
       const rowErrs = errs.resolvers[i] || [];
       const row = h('div', {
-        class: 'res-row' + (r.enabled ? '' : ' is-off') + (rowErrs.length ? ' has-error' : ''),
+        class: `res-row${r.enabled ? '' : ' is-off'}${rowErrs.length ? ' has-error' : ''}`,
       });
       const en = h('input', {
         type: 'checkbox',
@@ -4171,7 +4171,7 @@
       },
       h(
         'div',
-        { class: 'field' + (errs.domains.length ? ' has-error' : '') },
+        { class: `field${errs.domains.length ? ' has-error' : ''}` },
         ta,
         info,
         errs.domains.length
@@ -4186,7 +4186,7 @@
 
     // ---- benchmark settings
     const fields = SETTING_FIELDS.map((f) => {
-      const id = 'set-' + f.key;
+      const id = `set-${f.key}`;
       const fe = errs.settings[f.key] || [];
       let input;
       if (f.type === 'select') {
@@ -4218,7 +4218,7 @@
           step: String(f.step || 1),
           inputmode: 'numeric',
           value: String(d.settings[f.key]),
-          'aria-describedby': id + '-help',
+          'aria-describedby': `${id}-help`,
         });
         input.addEventListener('input', () => {
           d.settings[f.key] = input.value;
@@ -4236,15 +4236,15 @@
       if (f.type === 'checkbox') {
         return h(
           'div',
-          { class: 'field field-check' + (fe.length ? ' has-error' : '') },
+          { class: `field field-check${fe.length ? ' has-error' : ''}` },
           h('label', { class: 'check-label', for: id }, input, h('span', null, f.label)),
-          h('div', { class: 'help', id: id + '-help' }, f.help),
+          h('div', { class: 'help', id: `${id}-help` }, f.help),
           errNode,
         );
       }
       return h(
         'div',
-        { class: 'field' + (fe.length ? ' has-error' : '') },
+        { class: `field${fe.length ? ' has-error' : ''}` },
         h(
           'label',
           { class: 'field-label', for: id },
@@ -4253,12 +4253,12 @@
             ? h(
                 'span',
                 { class: 'field-range' },
-                `${fmtInt(f.min)}–${fmtInt(f.max)}${f.unit ? ' ' + f.unit : ''}`,
+                `${fmtInt(f.min)}–${fmtInt(f.max)}${f.unit ? ` ${f.unit}` : ''}`,
               )
             : null,
         ),
         f.unit ? h('div', { class: 'input-unit' }, input, h('span', { class: 'unit' }, f.unit)) : input,
-        h('div', { class: 'help', id: id + '-help' }, f.help),
+        h('div', { class: 'help', id: `${id}-help` }, f.help),
         errNode,
       );
     });
@@ -4452,7 +4452,7 @@
         h(
           'option',
           { value: r.id },
-          `${fmtDate(r.started_at)} · ${fmtInt(r.n_queries)} queries${r.status && r.status !== 'complete' ? ' · ' + r.status : ''}`,
+          `${fmtDate(r.started_at)} · ${fmtInt(r.n_queries)} queries${r.status && r.status !== 'complete' ? ` · ${r.status}` : ''}`,
         ),
       );
     }
@@ -4501,7 +4501,7 @@
             'a',
             {
               class: 'btn btn-sm btn-ghost dataset-csv',
-              href: '/api/runs/' + encodeURIComponent(ds.id) + '/csv',
+              href: `/api/runs/${encodeURIComponent(ds.id)}/csv`,
               download: `dns-bench-${ds.id}.csv`,
             },
             icon('download', 14),
@@ -4529,7 +4529,7 @@
     const label = el.getAttribute('aria-label');
     let sel = null;
     try {
-      if (el.id) sel = '#' + CSS.escape(el.id);
+      if (el.id) sel = `#${CSS.escape(el.id)}`;
       else if (label) sel = `${el.tagName.toLowerCase()}[aria-label="${CSS.escape(label)}"]`;
     } catch (_) {
       return null;
@@ -4589,7 +4589,7 @@
         `This view could not be drawn: ${err?.message ? err.message : err}`,
       );
     }
-    els.main.setAttribute('aria-labelledby', 'tab-' + state.route.tab);
+    els.main.setAttribute('aria-labelledby', `tab-${state.route.tab}`);
     setKids(els.main, view);
     flushCharts();
     restoreFocus(focus);
