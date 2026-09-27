@@ -1558,7 +1558,7 @@
     const v = parseInt(els.rounds.value, 10);
     if (!Number.isFinite(v)) return cfgRounds;
     const b = settingSchema('rounds');
-    return b ? clamp(v, b.min, b.max) : v;
+    return b ? clamp(v, b.min, b.max) : Math.max(1, v);
   }
   let runEstimateSeq = 0;
   const fetchRunEstimate = debounce(async (rounds) => {

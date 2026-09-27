@@ -612,6 +612,15 @@ class StructuredErrorsTest(unittest.TestCase):
             [(e.path, e.code) for e in errors],
             [("resolvers", "required"), ("domains", "type"), ("settings", "type")],
         )
+        # A value of the wrong type is a "type" problem, not a missing one
+        self.assertEqual(
+            [(e.path, e.code) for e in C.validate_config(cfg(resolvers={}))], [("resolvers", "type")]
+        )
+        errors = C.validate_config(cfg(resolvers=[{"name": "A", "servers": 5}, {"name": "B", "servers": []}]))
+        self.assertEqual(
+            [(e.path, e.code) for e in errors],
+            [("resolvers[0].servers", "type"), ("resolvers[1].servers", "required")],
+        )
         eleven = [{"name": f"R{i}", "servers": [f"192.0.2.{i}"]} for i in range(11)]
         huge = cfg(resolvers=eleven, domains=[f"d{i}.com" for i in range(500)])
         huge["settings"]["rounds"] = 10  # 11 x 500 x 10 = 55,000 queries
@@ -670,6 +679,19 @@ class SchemaAndEstimateTest(unittest.TestCase):
         for junk in (None, [], "x", {"resolvers": 5, "domains": {}, "settings": []}):
             with self.subTest(junk=junk):
                 self.assertEqual(C.estimate(junk)["queries"], 0)
+
+    def test_estimate_clamps_out_of_bounds_values(self):
+        # A hand-edited config can hold any integer; 10**400 overflowed float arithmetic (GET /api/config
+        # answered 500 instead of showing the config and its errors).
+        for key, (_lo, hi) in C.SETTING_BOUNDS.items():
+            with self.subTest(key=key):
+                c = cfg()
+                c["settings"][key] = 10**400
+                e = C.estimate(c)
+                self.assertEqual(e["rounds"], hi if key == "rounds" else 1)
+        c = cfg()
+        c["settings"]["rounds"] = 12  # typing past the limit: the estimate stays at the limit
+        self.assertEqual(C.estimate(c)["rounds"], 10)
 
     def test_estimate_rounds_override_and_worst_case(self):
         c = cfg()

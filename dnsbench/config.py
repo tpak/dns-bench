@@ -479,7 +479,9 @@ def _label(i: int, name: object) -> str:
 
 
 def _validate_resolvers(resolvers: object) -> list[ValidationError]:
-    if not isinstance(resolvers, list) or not resolvers:
+    if not isinstance(resolvers, list):
+        return [ValidationError("resolvers", "type", "resolvers: must be a list of resolvers")]
+    if not resolvers:
         return [ValidationError("resolvers", "required", "resolvers: at least one resolver is required")]
     errors: list[ValidationError] = []
     if len(resolvers) > MAX_RESOLVERS:
@@ -534,7 +536,11 @@ def _validate_resolvers(resolvers: object) -> list[ValidationError]:
             else:
                 names_seen[key] = i
         servers = r.get("servers")
-        if not isinstance(servers, list) or not servers:
+        if not isinstance(servers, list):
+            errors.append(
+                ValidationError(f"{at}.servers", "type", f"{label}: servers must be a list of IP addresses")
+            )
+        elif not servers:
             errors.append(
                 ValidationError(f"{at}.servers", "required", f"{label}: at least one server IP is required")
             )
@@ -667,8 +673,14 @@ def _validate_run_size(cfg: dict) -> list[ValidationError]:
     """The run as a whole, when the numbers it depends on are usable."""
     resolvers, domains, settings = cfg.get("resolvers"), cfg.get("domains"), cfg.get("settings")
     rounds = settings.get("rounds") if isinstance(settings, dict) else None
-    if not (isinstance(resolvers, list) and isinstance(domains, list) and type(rounds) is int and rounds > 0):
-        return []
+    lo, hi = SETTING_BOUNDS["rounds"]
+    if not (
+        isinstance(resolvers, list)
+        and isinstance(domains, list)
+        and type(rounds) is int
+        and lo <= rounds <= hi
+    ):
+        return []  # an unusable rounds value has its own error
     servers = sum(
         len(r["servers"])
         for r in resolvers
@@ -988,8 +1000,11 @@ def estimate(cfg: object, rounds: int | None = None) -> dict:
     raw = settings if isinstance(settings, dict) else {}
 
     def setting(key: str) -> int:
+        # Clamped to the bounds: the estimate follows the typing smoothly, and a hand-edited 10**400
+        # can't overflow the float arithmetic below.
         v = raw.get(key)
-        return v if type(v) is int and v > 0 else DEFAULT_SETTINGS[key]  # type: ignore[return-value] # the int defaults
+        lo, hi = SETTING_BOUNDS[key]
+        return min(max(v, lo), hi) if type(v) is int and v > 0 else DEFAULT_SETTINGS[key]  # type: ignore[return-value] # the int defaults
 
     resolvers = cfg.get("resolvers")
     enabled = [

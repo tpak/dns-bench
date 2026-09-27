@@ -613,6 +613,18 @@ class ConfigApiTest(ServerTestBase):
             self.assertEqual((status, data["error"]), (500, "Cannot save config"))
         self.assertEqual(self.fake.calls, 0)
 
+    def test_an_absurd_number_in_the_config_file_is_shown_not_a_500(self):
+        bad = small_config()
+        bad["settings"]["rounds"] = 10**400
+        self.cfg_path.write_text(json.dumps(bad))
+        status, data = self.jreq("GET", "/api/config")
+        self.assertEqual(status, 200)
+        self.assertEqual(
+            [(d["path"], d["code"]) for d in data["errors"]], [("settings.rounds", "out_of_range")]
+        )
+        self.assertEqual(data["estimate"]["rounds"], 10)  # clamped to the limit
+        self.assertEqual(self.jreq("POST", "/api/estimate", {"config": bad})[0], 200)
+
     def test_invalid_but_parseable_config_is_shown(self):
         bad = small_config()
         bad["settings"]["rounds"] = 99
