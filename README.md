@@ -1,6 +1,6 @@
 # dns-bench
 
-A fast, polite DNS resolver benchmark with a local web UI. It replaces `../dns-test.sh`,
+A fast, polite DNS resolver benchmark with a local web UI. It replaces `../archive/dns-test.sh`,
 which is left unchanged.
 
 It times how quickly each DNS resolver (OpenDNS, Cloudflare, Google, your ISP, …) answers
