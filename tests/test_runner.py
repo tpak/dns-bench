@@ -432,6 +432,26 @@ class RunnerBehaviourTest(unittest.TestCase):
         self.assertLess(len(run["results"]), 160)
         self.assertLess(took, 1.5)  # full run would take ~4 s
 
+    def test_a_crashing_worker_stops_the_run_but_keeps_its_results(self):
+        # A query that fails is a row; a bug in turning its result into a row is a crash. That used to
+        # be re-raised after the run, throwing away every query already measured (COR-4).
+        cfg = make_config(resolvers=2, servers_per=2, domains=40, interval_ms=50)
+        calls = itertools.count(1)
+
+        def qfn(server, domain, **kw):
+            if server == "10.0.1.2" and next(calls) > 8:
+                return {"status": "ok", "ms": "garbage"}  # float() of this raises inside the runner
+            return QueryResult("ok", ms=2.0, rcode="NOERROR", answers=1)
+
+        t0 = time.monotonic()
+        run = runner.run_benchmark(cfg, query_fn=qfn)
+        self.assertLess(time.monotonic() - t0, 1.5)  # the other workers stopped too (a full run takes ~2 s)
+        self.assertEqual(run["status"], "partial")
+        self.assertRegex(run["error"], r"^ValueError: .*garbage.* \(while measuring 10\.0\.1\.2\)$")
+        self.assertGreater(len(run["results"]), 0)
+        self.assertLess(len(run["results"]), 160)
+        self.assertNotIn("error", runner.run_benchmark(make_config(), query_fn=FakeDNS(latency=0.0)))
+
     def test_cancel_before_start(self):
         cancel = threading.Event()
         cancel.set()

@@ -2143,7 +2143,7 @@
     }));
     const xs = runs.map((r) => ({
       label: fmtDate(r.started_at, 'short'),
-      title: fmtDate(r.started_at) + (r.status === 'cancelled' ? ' (cancelled)' : ''),
+      title: fmtDate(r.started_at) + (r.status && r.status !== 'complete' ? ` (${r.status})` : ''),
     }));
     const ds = state.dataset;
     const hi = ds && ds.kind === 'run' ? runs.findIndex((r) => r.id === ds.id) : -1;

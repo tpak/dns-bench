@@ -290,6 +290,12 @@ class StorageTest(unittest.TestCase):
         self.assertIn("Recommendation:", text)
         run["status"] = "cancelled"
         self.assertIn("CANCELLED", report.render_text(run))
+        run["status"], run["error"] = "partial", "ValueError: boom\x1b[2J (while measuring 1.1.1.1)"
+        text = report.render_text(run)
+        self.assertIn("[STOPPED BY AN ERROR — partial results]", text)
+        self.assertIn("Error:     ValueError: boom\\x1b[2J (while measuring 1.1.1.1)", text)  # escaped
+        del run["error"]
+        run["status"] = "complete"
         agg = {
             "run_ids": ["20260925T023456Z"],
             "summary": run["summary"],

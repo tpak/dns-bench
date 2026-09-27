@@ -175,6 +175,22 @@ class CliTest(unittest.TestCase):
         self.assertLess(rows[0]["n_queries"], 60)
         self.assertIs(signal.getsignal(signal.SIGINT), before)  # handler restored
 
+    def test_a_crashed_run_is_saved_and_exits_1(self):
+        real = self.fake
+
+        def broken(server, domain, **kw):
+            if server == "192.0.2.2":
+                return {"status": "ok", "ms": "garbage"}  # float() of this raises inside the runner
+            return real(server, domain, **kw)
+
+        self.fake = broken
+        code, out, err = self.cli("run")
+        self.assertEqual(code, cli.EXIT_ERROR, err)
+        self.assertIn("STOPPED BY AN ERROR", out)
+        self.assertIn("stopped early after an internal error (ValueError", err)
+        self.assertIn("and were saved", err)
+        self.assertEqual([r["status"] for r in storage.list_runs(self.runs)], ["partial"])
+
     def test_report_errors(self):
         self.assertEqual(self.cli("report")[0], 1)  # no runs yet
         self.assertEqual(self.cli("report", "all")[0], 1)

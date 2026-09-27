@@ -28,6 +28,9 @@ release notes.
   runs folder became unwritable). As with `dns-bench run`, the full record is written to the
   system's temp folder instead, and the UI's error message says where. The UI also checks that the
   runs folder is writable before sending any queries.
+- An internal error while a benchmark is running no longer throws away the queries already measured.
+  The run stops, is saved with the status `partial` and the error, and its report says so.
+  `dns-bench run` exits with 1 in that case.
 
 ### Security
 

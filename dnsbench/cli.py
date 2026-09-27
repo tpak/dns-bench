@@ -207,6 +207,13 @@ def cmd_run(args) -> int:
     if run["status"] == "cancelled":
         print(f"Run cancelled after {len(run['results'])} of {est['queries']} queries.", file=sys.stderr)
         return EXIT_INTERRUPTED
+    if run["status"] == "partial":
+        _err(
+            f"the benchmark stopped early after an internal error ({run.get('error')}); "
+            f"the {len(run['results'])} of {est['queries']} queries measured before it are in the report"
+            + ("" if args.no_save or (saved is not None and saved.error) else " and were saved")
+        )
+        return EXIT_ERROR
     if saved is not None and saved.error is not None:
         return EXIT_ERROR
     overall = (run.get("summary") or {}).get("overall") or {}

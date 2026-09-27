@@ -101,6 +101,10 @@ def run_benchmark(
     serialised by the runner so the callback needn't be thread-safe.
     Setting ``cancel_event`` stops workers promptly; the record then has
     ``status == "cancelled"`` and contains the results gathered so far.
+    If a worker crashes (a bug, not a failed query: query_fn's own exceptions
+    are recorded as ``error`` rows), the run stops the same way and comes back
+    with ``status == "partial"`` and the crash in ``error``, so the queries
+    already measured are still returned and can be saved.
     """
     query_fn = query_fn or resolver.query
     cancel_event = cancel_event or threading.Event()
@@ -117,8 +121,8 @@ def run_benchmark(
     jobs = build_jobs(config, rng)
     total = sum(len(j["items"]) for j in jobs)
     results: list[dict] = []
-    lock = threading.Lock()
-    state = {"done": 0}
+    lock = threading.Lock()  # guards results and state
+    state: dict = {"done": 0, "crash": None}
 
     started_wall = datetime.now(UTC)
     t0 = clock()
@@ -134,6 +138,15 @@ def run_benchmark(
             sleep(min(remaining, _WAIT_SLICE_S))
 
     def worker(job: dict, seed: int) -> None:
+        try:
+            measure(job, seed)
+        except Exception as exc:  # a bug in the measuring itself: stop the run, keep what was measured
+            with lock:
+                if state["crash"] is None:
+                    state["crash"] = f"{type(exc).__name__}: {exc} (while measuring {job['server']})"
+            cancel_event.set()
+
+    def measure(job: dict, seed: int) -> None:
         wrng = random.Random(seed)
         name, server = job["resolver"], job["server"]
         next_start: float | None = None  # earliest allowed start of the next query
@@ -202,14 +215,17 @@ def run_benchmark(
     duration = clock() - t0
     cancelled = (cancel_event.is_set() or interrupted) and len(results) < total
     results.sort(key=lambda r: r["t"])
-    return {
+    record = {
         "id": started_wall.strftime("%Y%m%dT%H%M%SZ"),
         "version": __version__,
         "started_at": _utc_iso(started_wall),
         "finished_at": _utc_iso(finished_wall),
         "duration_s": round(duration, 2),
         "host": socket.gethostname(),
-        "status": "cancelled" if cancelled else "complete",
+        "status": "partial" if state["crash"] else "cancelled" if cancelled else "complete",
         "config": snapshot,
         "results": results,
     }
+    if state["crash"]:
+        record["error"] = state["crash"]
+    return record

@@ -193,14 +193,20 @@ class DNSBenchServer(ThreadingHTTPServer):
                 cfg, query_fn=self.query_fn, progress=self._on_progress, cancel_event=cancel_event
             )
             status = run["status"]
+            if status == "partial":
+                error = f"the benchmark stopped early after an internal error ({run.get('error')})"
+                self.log_line(error)
             saved = storage.save_run_safely(run, self.runs_dir)
             if saved.path is not None:
                 run_id = run["id"]
             if saved.error is not None:
-                error = saved.error
+                problem = saved.error
                 if saved.rescued is not None:
-                    error += f"; the full run record was written to {saved.rescued} instead"
-                self.log_line(error)
+                    problem += f"; the full run record was written to {saved.rescued} instead"
+                self.log_line(problem)
+                error = f"{error}; {problem}" if error else problem
+            elif error:
+                error += f"; the {len(run['results'])} queries measured before it were saved"
         except Exception as exc:  # the job's own thread: report the failure, never take the server down
             error = f"{type(exc).__name__}: {exc}"
             self.log_line(f"benchmark failed: {error}")

@@ -723,6 +723,21 @@ class RunsApiTest(ServerTestBase):
         self.assertIn("the limit is 50,000", data["details"][0])
         self.assertEqual(self.fake.calls, 0)
 
+    def test_a_crashed_run_is_saved_and_reported(self):
+        def broken(server, domain, **kw):
+            if server == "192.0.2.2":
+                return {"status": "ok", "ms": "garbage"}
+            return QueryResult("ok", ms=4.0, rcode="NOERROR", answers=1)
+
+        self.srv.query_fn = broken
+        _, st = self.run_job()
+        self.assertEqual(st["last_status"], "partial")
+        self.assertIn("stopped early after an internal error (ValueError", st["error"])
+        self.assertIn("were saved", st["error"])
+        _, run = self.jreq("GET", f"/api/runs/{st['last_run_id']}")
+        self.assertEqual(run["status"], "partial")
+        self.assertIn("192.0.2.2", run["error"])
+
     def test_conflict_and_cancel(self):
         C.save_config(small_config(domains=40, interval_ms=100), self.cfg_path)  # ~4 s run
         self.assertEqual(self.jreq("POST", "/api/run/cancel")[0], 409)
