@@ -1424,6 +1424,9 @@ input[type="checkbox"] {
 .data-table tbody tr:hover > * {
   background: var(--hover);
 }
+.table-more {
+  margin: 8px 12px 4px;
+}
 .table-empty {
   /* biome-ignore lint/complexity/noImportantStyles: overrides the per-column alignment of the table cells it sits in. */
   text-align: center !important;

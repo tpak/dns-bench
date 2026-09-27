@@ -26,6 +26,7 @@
   const TREND_MAX_RUNS = 30;
   const DOMAIN_CHART_LIMIT = 60;
   const SLOW_TABLE_MAX = 200; // rows shown in a resolver's "Slow queries" table
+  const FAILED_TABLE_MAX = 200; // rows drawn in a resolver's "Failed queries" table (a run can have 20,000)
   const RUN_CACHE_MAX = 6; // full run records kept in memory
 
   // How each setting is presented in Settings, in this order. Its type, bounds and default come
@@ -90,6 +91,8 @@
     colors: new Map(),
     route: { tab: 'overview', arg: null },
     viewUpdate: null,
+    focusAfterRender: null, // a selector in the view to focus once it is drawn (an action's own control)
+    tabKeyNav: false, // the arrow keys moved between tabs: focus stays on the tab
     job: { running: false },
     pollTimer: null,
     pollFailures: 0,
@@ -546,6 +549,11 @@
   }
   function colorOf(name) {
     return slotColor(colorIndex(name));
+  }
+  /** A resolver's colour if it already has one; a neutral one for a name typed but not saved yet. */
+  function knownColor(name) {
+    const i = state.colors.get(String(name));
+    return i === undefined ? 'var(--s-other)' : slotColor(i);
   }
   function dot(name, cls) {
     return h('span', {
@@ -1371,17 +1379,21 @@
 
   /**
    * Sortable table. columns: {key, label, num?, head?, sortable?, get(row), render?(row), defaultDir?}
-   * Sort state persists per table id in state.sorts.
+   * Sort state persists per table id in state.sorts. With opts.limit, only the first `limit` rows
+   * (after sorting, so sorting still covers them all) are drawn, and opts.more(shown, total) adds a
+   * line under the table saying so.
    */
   function dataTable(id, columns, rows, opts = {}) {
     const wrap = h('div', { class: `table-wrap${opts.wrapClass ? ` ${opts.wrapClass}` : ''}` });
     const draw = () => {
       const sort = state.sorts[id] || opts.defaultSort || null;
-      const sorted = rows.slice();
+      let sorted = rows.slice();
       if (sort) {
         const col = columns.find((c) => c.key === sort.key);
         if (col) sorted.sort((a, b) => cmpNullLast(col.get(a), col.get(b), sort.dir));
       }
+      const total = sorted.length;
+      if (opts.limit && total > opts.limit) sorted = sorted.slice(0, opts.limit);
       const thead = h(
         'thead',
         null,
@@ -1410,9 +1422,12 @@
                     {
                       type: 'button',
                       class: `th-sort${active ? ' is-active' : ''}`,
+                      dataset: { sortKey: c.key },
                       onClick: () => {
                         state.sorts[id] = { key: c.key, dir: active ? -sort.dir : c.defaultDir || 1 };
                         draw();
+                        // The redraw replaced the button; keep the keyboard where it was.
+                        wrap.querySelector(`.th-sort[data-sort-key="${CSS.escape(c.key)}"]`)?.focus();
                       },
                     },
                     c.label,
@@ -1466,6 +1481,7 @@
           thead,
           tbody,
         ),
+        sorted.length < total && opts.more ? opts.more(sorted.length, total) : null,
       );
     };
     draw();
@@ -2420,6 +2436,10 @@
             class: 'chip',
             href: hashFor('resolver', n),
             'aria-current': n === sel ? 'true' : null,
+            dataset: { name: n },
+            onClick: () => {
+              if (n !== sel) state.focusAfterRender = `.chips .chip[data-name="${CSS.escape(n)}"]`;
+            },
           },
           dot(n),
           h('span', { class: 'chip-name' }, n),
@@ -2618,8 +2638,10 @@
             {
               type: 'button',
               class: 'btn btn-sm',
+              dataset: { focus: 'show-all' },
               onClick: () => {
                 state.ui.showAllDomains = !state.ui.showAllDomains;
+                state.focusAfterRender = '[data-focus="show-all"]';
                 render();
               },
             },
@@ -2811,7 +2833,25 @@
                   },
                 ],
                 failed,
-                { defaultSort: { key: 'domain', dir: 1 } },
+                {
+                  defaultSort: { key: 'domain', dir: 1 },
+                  limit: FAILED_TABLE_MAX,
+                  more: (shown, total) =>
+                    h(
+                      'p',
+                      { class: 'muted small table-more' },
+                      `Showing ${fmtInt(shown)} of ${fmtInt(total)} failed queries, in the order above. `,
+                      h(
+                        'a',
+                        {
+                          href: `/api/runs/${encodeURIComponent(ds.id)}/csv`,
+                          download: `dns-bench-${ds.id}.csv`,
+                        },
+                        'Download every result as CSV',
+                      ),
+                      '.',
+                    ),
+                },
               ),
             )
           : h('p', { class: 'muted' }, 'Every query was answered.'),
@@ -3143,7 +3183,10 @@
               type: 'button',
               class: 'btn btn-icon btn-ghost',
               'aria-label': 'Close domain details',
-              onClick: () => go('domain'),
+              onClick: () => {
+                state.focusAfterRender = `tr[data-domain="${CSS.escape(d)}"] .link-btn`;
+                go('domain');
+              },
             },
             icon('x'),
           ),
@@ -3512,9 +3555,18 @@
     }
     return { scope: 'general', msg };
   }
+  /** A field in the Settings form, for the error summary to take the keyboard to. */
+  function errorField(e) {
+    if (e.scope === 'resolvers' && Number.isInteger(e.index))
+      return `.res-row[data-row="${e.index}"] input[type="text"]`;
+    if (e.scope === 'domains') return '#domains-input';
+    if (e.scope === 'settings' && e.key) return `#set-${CSS.escape(e.key)}`;
+    return null;
+  }
   function groupErrors(list) {
     const g = {
       all: Array.from(new Set(list.map((e) => e.msg))),
+      fields: {}, // message -> selector of the field it is about
       resolvers: {},
       resolversGeneral: [],
       domains: [],
@@ -3522,6 +3574,8 @@
       general: [],
     };
     for (const e of list) {
+      const field = errorField(e);
+      if (field && !g.fields[e.msg]) g.fields[e.msg] = field;
       if (e.scope === 'resolvers') {
         if (Number.isInteger(e.index)) {
           g.resolvers[e.index] ||= [];
@@ -3614,10 +3668,13 @@
       if (state.settingsHooks) state.settingsHooks.refresh();
     }
   }
+  /** After a failed save: move the keyboard (and the screen) to the list of problems. */
   function focusFirstError() {
     requestAnimationFrame(() => {
       const el = document.querySelector('.error-summary') || document.querySelector('.has-error');
-      if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      if (!el) return;
+      el.focus({ preventScroll: true });
+      el.scrollIntoView({ behavior: 'smooth', block: 'center' });
     });
   }
   async function revertSettings() {
@@ -3700,6 +3757,14 @@
       if (!box) return;
       box.classList.remove('has-error');
       for (const m of box.querySelectorAll(':scope > .field-error')) m.remove();
+      for (const input of box.querySelectorAll('[aria-invalid]')) {
+        input.removeAttribute('aria-invalid');
+        const ids = (input.getAttribute('aria-describedby') || '')
+          .split(' ')
+          .filter((x) => !x.endsWith('-err'));
+        if (ids.length) input.setAttribute('aria-describedby', ids.join(' '));
+        else input.removeAttribute('aria-describedby');
+      }
     };
 
     // ---- resolvers
@@ -3715,8 +3780,11 @@
     );
     function resolverRow(r, i) {
       const rowErrs = errs.resolvers[i] || [];
+      const errId = `res-${i}-err`;
+      const invalid = rowErrs.length ? { 'aria-invalid': 'true', 'aria-describedby': errId } : {};
       const row = h('div', {
         class: `res-row${r.enabled ? '' : ' is-off'}${rowErrs.length ? ' has-error' : ''}`,
+        dataset: { row: String(i) },
       });
       const en = h('input', {
         type: 'checkbox',
@@ -3737,9 +3805,17 @@
         'aria-label': `Resolver ${i + 1} name`,
         autocomplete: 'off',
         spellcheck: 'false',
+        ...invalid,
+      });
+      // The resolver's colour everywhere else; neutral while a new name hasn't been saved.
+      const dotEl = h('span', {
+        class: 'dot',
+        style: { background: knownColor(r.name.trim()) },
+        'aria-hidden': 'true',
       });
       nameIn.addEventListener('input', () => {
         r.name = nameIn.value;
+        dotEl.style.background = knownColor(r.name.trim());
         clearErr(nameIn, 'resolver', i);
         onDraftChange();
       });
@@ -3752,6 +3828,7 @@
         autocomplete: 'off',
         spellcheck: 'false',
         autocapitalize: 'off',
+        ...invalid,
       });
       servIn.addEventListener('input', () => {
         r.serversText = servIn.value;
@@ -3775,18 +3852,12 @@
         drawResolvers();
         onDraftChange();
       });
-      row.append(
-        h('label', { class: 'res-on' }, en),
-        h('span', { class: 'dot', style: { background: slotColor(i) }, 'aria-hidden': 'true' }),
-        nameIn,
-        servIn,
-        rm,
-      );
+      row.append(h('label', { class: 'res-on' }, en), dotEl, nameIn, servIn, rm);
       if (rowErrs.length)
         row.appendChild(
           h(
             'div',
-            { class: 'field-error res-error' },
+            { class: 'field-error res-error', id: errId },
             rowErrs.map((m) => h('div', null, m)),
           ),
         );
@@ -3893,8 +3964,10 @@
       spellcheck: 'false',
       autocapitalize: 'off',
       autocomplete: 'off',
+      id: 'domains-input',
       'aria-label': 'Domains, one per line',
-      'aria-describedby': 'domains-info',
+      'aria-describedby': errs.domains.length ? 'domains-info domains-err' : 'domains-info',
+      'aria-invalid': errs.domains.length ? 'true' : null,
     });
     ta.value = d.domainsText;
     const info = h('div', { class: 'domain-info', id: 'domains-info' });
@@ -3962,7 +4035,7 @@
         errs.domains.length
           ? h(
               'div',
-              { class: 'field-error' },
+              { class: 'field-error', id: 'domains-err' },
               errs.domains.map((m) => h('div', null, m)),
             )
           : null,
@@ -4011,10 +4084,12 @@
           onDraftChange();
         });
       }
+      input.setAttribute('aria-describedby', fe.length ? `${id}-help ${id}-err` : `${id}-help`);
+      if (fe.length) input.setAttribute('aria-invalid', 'true');
       const errNode = fe.length
         ? h(
             'div',
-            { class: 'field-error' },
+            { class: 'field-error', id: `${id}-err` },
             fe.map((m) => h('div', null, m)),
           )
         : null;
@@ -4138,7 +4213,7 @@
     summaryEl = state.saveErrors?.all.length
       ? h(
           'div',
-          { class: 'error-summary', role: 'alert' },
+          { class: 'error-summary', role: 'alert', tabindex: '-1' },
           h(
             'div',
             { class: 'error-summary-title' },
@@ -4150,7 +4225,13 @@
           h(
             'ul',
             null,
-            state.saveErrors.all.map((m) => h('li', null, m)),
+            state.saveErrors.all.map((m) => {
+              const field = state.saveErrors.fields?.[m];
+              if (!field) return h('li', null, m);
+              const go = h('button', { type: 'button', class: 'link-btn' }, m);
+              go.addEventListener('click', () => document.querySelector(field)?.focus());
+              return h('li', null, go);
+            }),
           ),
         )
       : null;
@@ -4384,6 +4465,19 @@
     setKids(els.main, view);
     flushCharts();
     restoreFocus(focus);
+    applyFocusTarget();
+  }
+
+  /** Focus what the last action asked for (state.focusAfterRender), now that the view is drawn. */
+  function applyFocusTarget() {
+    const sel = state.focusAfterRender;
+    state.focusAfterRender = null;
+    if (!sel) return;
+    try {
+      els.main.querySelector(sel)?.focus();
+    } catch (err) {
+      console.warn('focus target not found:', sel, err); // a stale selector: leave focus where it is
+    }
   }
 
   function renderView() {
@@ -4441,13 +4535,18 @@
       discardDraft();
     }
     state.route = next;
+    const byKeys = state.tabKeyNav;
+    state.tabKeyNav = false;
     if (prev.tab === next.tab && state.viewUpdate && state.viewUpdate(next.arg)) {
       updateTabs();
+      applyFocusTarget();
       return;
     }
     render();
     if (prev.tab !== next.tab) {
       window.scrollTo(0, 0);
+      // A new view: take the keyboard to it, unless the arrow keys are moving along the tabs.
+      if (!byKeys && !document.activeElement?.closest?.('#main')) els.main.focus({ preventScroll: true });
       refreshRuns();
     }
   }
@@ -4533,6 +4632,7 @@
       else if (e.key === 'Home') j = 0;
       else j = tabs.length - 1;
       tabs[j].focus();
+      state.tabKeyNav = j !== i; // no hash change (and so no route change) when it is the same tab
       location.hash = tabs[j].getAttribute('href');
     });
     window.addEventListener('hashchange', onHashChange);
