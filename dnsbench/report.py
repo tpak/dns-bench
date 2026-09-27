@@ -55,7 +55,8 @@ def _table(headers: list[str], rows: list[list[str]], right: set[int]) -> list[s
 
     def fmt(cells):
         return "  ".join(
-            c.rjust(w) if i in right else c.ljust(w) for i, (c, w) in enumerate(zip(cells, widths))
+            c.rjust(w) if i in right else c.ljust(w)
+            for i, (c, w) in enumerate(zip(cells, widths, strict=True))
         ).rstrip()
 
     out = [fmt(headers), fmt(["-" * w for w in widths])]

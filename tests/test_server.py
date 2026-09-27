@@ -163,7 +163,7 @@ class StaticTest(ServerTestBase):
         self.assertEqual(self.req("GET", "/static/app.js?v=123")[0], 200)
 
     def test_static_missing(self):
-        status, headers, _ = self.req("GET", "/static/nope.js")
+        status, _, _ = self.req("GET", "/static/nope.js")
         self.assertEqual(status, 404)
 
     def test_static_traversal_rejected(self):
@@ -389,7 +389,7 @@ class ConfigApiTest(ServerTestBase):
 class RunsApiTest(ServerTestBase):
     def test_empty_state(self):
         self.assertEqual(self.jreq("GET", "/api/runs"), (200, {"runs": []}))
-        status, data = self.jreq("GET", "/api/aggregate?runs=all")
+        status, _ = self.jreq("GET", "/api/aggregate?runs=all")
         self.assertEqual(status, 404)
         status, st = self.jreq("GET", "/api/status")
         self.assertEqual(status, 200)
@@ -493,7 +493,7 @@ class RunsApiTest(ServerTestBase):
         self.assertEqual(st["done"], 12)
         # override is for this run only
         self.assertEqual(C.load_config(self.cfg_path)["settings"]["rounds"], 1)
-        status, run = self.jreq("GET", f"/api/runs/{st['last_run_id']}")
+        _, run = self.jreq("GET", f"/api/runs/{st['last_run_id']}")
         self.assertEqual(run["config"]["settings"]["rounds"], 2)
 
     def test_run_bad_rounds(self):
@@ -593,9 +593,9 @@ class RunsApiTest(ServerTestBase):
             with self.subTest(path=path):
                 self.assertEqual(self.jreq("GET", path)[0], 404)
         self.run_job()
-        status, data = self.jreq("GET", "/api/aggregate?runs=bogus")
+        status, _ = self.jreq("GET", "/api/aggregate?runs=bogus")
         self.assertEqual(status, 400)
-        status, data = self.jreq("GET", "/api/aggregate?runs=20200101T000000Z")
+        status, _ = self.jreq("GET", "/api/aggregate?runs=20200101T000000Z")
         self.assertEqual(status, 404)
 
     def test_csv_formula_injection_neutralised(self):

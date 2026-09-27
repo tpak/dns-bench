@@ -7,6 +7,7 @@ overwrites it on save, so everything that reaches disk goes through
 
 from __future__ import annotations
 
+import contextlib
 import copy
 import ipaddress
 import json
@@ -172,10 +173,8 @@ def normalize_domain(value) -> str:
     """strip, lowercase, drop trailing dot, IDNA-encode unicode names."""
     d = str(value).strip().lower().rstrip(".")
     if d and not d.isascii():
-        try:
+        with contextlib.suppress(UnicodeError):  # left as-is; validation reports it
             d = d.encode("idna").decode("ascii")
-        except UnicodeError:
-            pass  # left as-is; validation reports it
     return d
 
 
@@ -255,12 +254,15 @@ def _short_repr(value, limit: int = 40) -> str:
 
 def _server_problem(ip) -> str | None:
     """Why a syntactically valid IP can't be a DNS resolver (None if it can)."""
-    if ip.version == 6 and ip.scope_id is not None:
-        if not (ip.is_link_local and _ZONE_RE.fullmatch(ip.scope_id)):
-            return (
-                "zone IDs (%...) are only allowed on link-local fe80::/10 addresses "
-                "and must be an interface name like en0"
-            )
+    if (
+        ip.version == 6
+        and ip.scope_id is not None
+        and not (ip.is_link_local and _ZONE_RE.fullmatch(ip.scope_id))
+    ):
+        return (
+            "zone IDs (%...) are only allowed on link-local fe80::/10 addresses "
+            "and must be an interface name like en0"
+        )
     chk = ip.ipv4_mapped if ip.version == 6 and ip.ipv4_mapped is not None else ip
     if chk.is_multicast:
         return "is a multicast address, not a DNS resolver"
@@ -508,10 +510,8 @@ def _atomic_write_text_raw(path: Path, text: str) -> None:
             os.fsync(fh.fileno())
         os.replace(tmp, path)
     except BaseException:
-        try:
+        with contextlib.suppress(OSError):
             os.unlink(tmp)
-        except OSError:
-            pass
         raise
 
 

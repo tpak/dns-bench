@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import itertools
 import random
 import sys
 import threading
@@ -117,7 +118,7 @@ class FakeDNS:
 class RateLimitTest(unittest.TestCase):
     def check_spacing(self, fake, interval_s):
         for server, evs in fake.by_server().items():
-            for prev, cur in zip(evs, evs[1:]):
+            for prev, cur in itertools.pairwise(evs):
                 # never more than one in flight to the same server
                 self.assertGreaterEqual(cur[3], prev[4], f"overlap on {server}")
                 # scheduler start-to-start spacing: exact, no tolerance
@@ -171,7 +172,7 @@ class RateLimitTest(unittest.TestCase):
             by_srv[r["server"]].append(r["t"])
         for ts in by_srv.values():
             ts.sort()
-            for a, b in zip(ts, ts[1:]):
+            for a, b in itertools.pairwise(ts):
                 self.assertGreaterEqual(b - a, interval_s - 0.0011)
 
     def test_slow_queries_and_timeouts_do_not_shift_to_bursts(self):
@@ -191,7 +192,7 @@ class RateLimitTest(unittest.TestCase):
         self.assertEqual(statuses, {"ok": 6, "timeout": 4})
         # after an 80 ms timeout the next query goes out promptly (no extra wait)
         for evs in fake.by_server().values():
-            for prev, cur in zip(evs, evs[1:]):
+            for prev, cur in itertools.pairwise(evs):
                 if prev[1] in slow:
                     self.assertLess(cur[2] - prev[4], 0.03)
 
@@ -268,7 +269,7 @@ class RateLimitTest(unittest.TestCase):
         fake = FakeDNS(latency=0.002)
         runner.run_benchmark(cfg, query_fn=fake)
         spans = sorted((evs[0][3], evs[-1][4]) for evs in fake.by_server().values())
-        for (a1, b1), (a2, b2) in zip(spans, spans[1:]):
+        for (_a1, b1), (a2, _b2) in itertools.pairwise(spans):
             self.assertGreaterEqual(a2, b1)
 
 

@@ -7,6 +7,7 @@ be ``Content-Type: application/json`` (blocks simple cross-site form posts).
 
 from __future__ import annotations
 
+import contextlib
 import csv
 import io
 import json
@@ -204,7 +205,7 @@ class DNSBenchServer(ThreadingHTTPServer):
         job = self.job
         with job.lock:
             now = time.monotonic()
-            if job.t_start is None:
+            if job.t_start is None:  # noqa: SIM108 - a nested conditional expression would be harder to read
                 elapsed = 0.0
             else:
                 elapsed = (now if job.running else (job.t_end or now)) - job.t_start
@@ -390,10 +391,8 @@ class Handler(BaseHTTPRequestHandler):
             pass
         except Exception as exc:  # pragma: no cover - defensive
             self.server.log_line(f"internal error on {method} {self.path}: {exc!r}")
-            try:
+            with contextlib.suppress(OSError):
                 self._error(500, "Internal server error", [f"{type(exc).__name__}: {exc}"])
-            except OSError:
-                pass
 
     def _read_json(self, required: bool = True):
         ctype = (self.headers.get("Content-Type") or "").split(";")[0].strip().lower()

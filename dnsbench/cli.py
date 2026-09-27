@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import signal
@@ -312,7 +313,8 @@ def cmd_list(args) -> int:
 
     def fmt(cells):
         return "  ".join(
-            c.rjust(w) if i in right else c.ljust(w) for i, (c, w) in enumerate(zip(cells, widths))
+            c.rjust(w) if i in right else c.ljust(w)
+            for i, (c, w) in enumerate(zip(cells, widths, strict=True))
         ).rstrip()
 
     print(fmt(headers))
@@ -507,10 +509,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv=None) -> int:
     for stream in (sys.stdout, sys.stderr):
-        try:
+        with contextlib.suppress(AttributeError, ValueError):
             stream.reconfigure(errors="replace")
-        except (AttributeError, ValueError):
-            pass
     parser = build_parser()
     args = parser.parse_args(argv)
     if not getattr(args, "func", None):

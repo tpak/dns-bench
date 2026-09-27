@@ -279,7 +279,7 @@ class CliTest(unittest.TestCase):
                         contextlib.redirect_stdout(out),
                         contextlib.redirect_stderr(err),
                     ):
-                        code = cli.main(args + ["--runs-dir", str(self.runs)])
+                        code = cli.main([*args, "--runs-dir", str(self.runs)])
                     self.assertEqual(code, 1)
                     self.assertIn("cannot write", err.getvalue())
                     self.assertNotIn("Traceback", err.getvalue())

@@ -19,6 +19,7 @@ the sum over all servers.
 
 from __future__ import annotations
 
+import contextlib
 import copy
 import random
 import socket
@@ -177,16 +178,14 @@ def run_benchmark(
                 results.append(row)
                 state["done"] += 1
                 if progress is not None:
-                    try:
+                    with contextlib.suppress(Exception):  # a UI hiccup must never break the measurement
                         progress({"type": "result", "done": state["done"], "total": total, "result": row})
-                    except Exception:
-                        pass  # a UI hiccup must never break the measurement
 
     max_workers = max(1, min(settings["max_parallel_servers"], len(jobs)))
     seeds = [rng.getrandbits(64) for _ in jobs]
     interrupted = False
     with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="dnsbench") as pool:
-        futures = [pool.submit(worker, job, seed) for job, seed in zip(jobs, seeds)]
+        futures = [pool.submit(worker, job, seed) for job, seed in zip(jobs, seeds, strict=True)]
         pending = set(futures)
         while pending:
             try:

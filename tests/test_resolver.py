@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import os
 import socket
 import struct
@@ -54,10 +55,8 @@ class MockDNS:
             for delay, reply in self.behaviour(data, n):
                 if delay:
                     time.sleep(delay)
-                try:
+                with contextlib.suppress(OSError):
                     self.sock.sendto(reply, addr)
-                except OSError:
-                    pass
 
     def close(self):
         self._stop.set()
