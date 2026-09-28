@@ -20,8 +20,9 @@ review findings below are kept as recorded.
 "As built" notes, which differ from the plan in two places. v1.1.0 is the first release through the
 new release workflow. Phase 2 is done (PR #8). Phase 3 is done (PR #9). Phase 4 is done (PR #10).
 Phase 5 is done (PR #11). Phase 6 is done (PR #12). Phase 7 is done (PR #13). v1.2.0 released
-Phases 2–7 (PR #14, 2026-09-29). Phase 8 changes results, so it ships on its own PR; see its
-"As built" notes.
+Phases 2–7 (PR #14, 2026-09-29). Phase 8 is done (PR #15); it changes results, so it ships on
+its own, and its "As built" notes list where it differs from the plan. Every phase of this plan is
+done.
 
 ## Verdict: would a distinguished engineer approve? **No, not as-is.**
 The problems are structural, not rot. The Python core is better than typical one-shot output: an
@@ -507,26 +508,36 @@ Done before the layering so the error format changes only once.
 - **Ties.**
   - Medians: overlap of the exact 95 % order-statistic intervals (as planned), with a 2 ms floor
     (0.5 ms between siblings).
-  - Tails: a two-sample quantile test at the pooled p95 (`stats.tails_differ`), because a p95
-    interval has no upper bound below 72 samples.
+  - Tails: Fisher's exact test at the pooled p95 (`stats.tails_differ`), because a p95 interval
+    has no upper bound below 72 samples.
   - `TIE_REL` and `SERVER_TIE_REL` are gone.
-  - Each ranking entry lists its `ties`. `backup_tied_with` and a `backup_tie` note cover the
-    backup. The text report marks `=`.
-- **Cache.** "First" is the first *answer* per (run, resolver, domain) by start time. For
-  per-server figures it is per (run, server, domain), so a sibling never ends up with no first
-  answers. Only p80/p95/p98 use first answers; `first_median` / `repeat_median` and a note show
-  the split.
+  - Each ranking entry lists its `ties`. Ties aren't transitive, so `tied_with` and
+    `backup_tied_with` are the run of resolvers right after the best (or the backup) that are
+    within noise of it, up to the first that isn't. A `backup_tie` note covers the backup, and
+    the text report marks `=` against the resolver above.
+- **Cache: goes further than the plan.** The plan had only the tail figures use first answers.
+  The review of PR #15 showed that repeats also pulled down the median of multi-server providers
+  and made the median interval falsely narrow (correlated samples). And a user's own cache means
+  a resolver sees each name about once per TTL. So *every* latency figure uses the first *answer*
+  per (run, resolver, domain), by start time; for per-server figures it is per (run, server,
+  domain). Repeats count for the rates and show as `repeat_median`, with a note. More rounds
+  therefore no longer sharpen latency; the README and the Settings help say so.
+- **Comparison group.** In "All runs combined", only resolvers that can be recommended decide
+  whether another's rates count. The ranking's rates and counts are the scored ones, with servers
+  that never answered left out.
 - **Local errors.** A failed query with no rcode whose error doesn't start with `recv:` is local.
   It is left out of the rates entirely (`local_errors`, and a note). ICMP errors are charged.
 - **Answer quality.** Domains a resolver answered without records while another returned
   records: summary `unanswered`, plus a note. Not charged.
 - **Serve-mode timing.** Measured: no distortion (median 0.41 vs 0.45 ms, p95 1.36 vs 1.74 ms,
   loopback, 2,400 answers per mode), so no `SO_TIMESTAMP`.
-- `ANALYSIS_VERSION` 2. The v1-fixtures test now pins what must *not* change (counts, mean,
-  median, min, max, stdev; best = Cloudflare) and the cache effect (Quad9's p95 19.4 → 165.1 ms).
-- **On the 13 saved runs:** best unchanged in all of them; suggested servers changed in 9 (config
-  order for siblings within noise, and backups following the first-answer p95). "All runs
-  combined" has no tie for best.
+- `ANALYSIS_VERSION` 2. The v1-fixtures test now pins what must *not* change: every count,
+  per-server latency in the 1-round run, and best = Cloudflare. It also pins the cache effect:
+  Quad9's median 6.0 → 6.54 ms and p95 19.4 → 165.1 ms, from 61 first answers.
+- **On the 13 saved runs:** the best resolver is unchanged in all of them. The suggested servers
+  changed in most, from config order for siblings within noise and from backups following the
+  first-answer figures. "All runs combined" has no tie for best. The research note has the
+  numbers.
 
 ## Critical files
 dnsbench/{server,cli,config,storage,runner,recommend,stats,report,resolver}.py; new

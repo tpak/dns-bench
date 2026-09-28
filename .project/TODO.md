@@ -2,14 +2,17 @@
 
 ## In Progress
 
-- Phase 8 — measurement validity (branch `phase-8-measurement-validity`): significance-gated failure/retry penalties, interval-based ties (backup too), first-answer tail stats, local errors, reply validation + connected sockets, unanswered-domain notes, ANALYSIS_VERSION 2; serve timing measured (no SO_TIMESTAMP needed)
 
 ## Up Next
 
+- Chris: decide whether a significant failure rate should count in full (as now) or only its excess over the most reliable resolver's (review of PR #15; `.project/research/2026-09-29-phase-8-measurement-validity.md`)
+- Chris: confirm Phase 8's extension of the plan — every latency figure from first answers, not just the tail (DECISIONS 2026-09-29 [Statistics])
+- Release 1.3.0 when ready: Phase 8 changes results (ask before tagging)
 - Consider Dependabot's `pre-commit` ecosystem for the hook revs (would replace manual `pre-commit autoupdate`; CLAUDE.md §7.2 would change) — `.project/research/2026-09-27-ci-actions.md`
 
 ## Done This Week
 
+- Phase 8 — Measurement validity: replies must echo the question (opcode 0; QDCOUNT=0 only on error rcodes) over connected UDP sockets; local errors not charged; failure/retry rates count only when significantly higher (Newcombe); exact order-statistic CIs and Wilson intervals; ties from intervals + Fisher's test on tails, reported as a run down the ranking (backup too); every latency figure from each domain's first answer (repeats are cache hits); unanswered-domain notes; ANALYSIS_VERSION 2; serve timing measured, no SO_TIMESTAMP needed. Three review agents: 9 fixes. On the 13 saved runs the best resolver never changed. PR #15 (2026-09-29)
 - v1.2.0 released: notes rewritten after a pre-release review (39 findings; `.project/research/2026-09-28-release-1.2.0-review.md`), `serve --allow-remote` on 0.0.0.0 fixed, `python -m dnsbench` version check, live System detection in CI. PR #14, tag v1.2.0, GitHub release published by release.yml (2026-09-29)
 - Tag ruleset "release tags" for `v*`: updates and deletions restricted, admin bypass (2026-09-28)
 - Chris clicked through the web UI in his browser after Phases 3–7: fine (2026-09-28)

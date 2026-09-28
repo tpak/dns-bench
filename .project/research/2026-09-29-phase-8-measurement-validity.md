@@ -85,11 +85,70 @@ made them conditional on a distortion. The script is below.
 - Use Newcombe's interval (from Wilson intervals) for "significantly higher" failure and retry rates.
 - Compare medians by the overlap of their exact 95 % intervals, per the plan, with a 2 ms floor
   (0.5 ms between sibling servers).
-- Compare tails with the pooled-p95 quantile test.
+- Compare tails with the pooled-p95 quantile test (Fisher's exact test, after the review).
+- Use only first answers for every latency figure (after the review; see the addendum).
 - Keep the plan's exact `median_ci` / `p95_ci` in the output for people to read.
 - Don't implement `SO_TIMESTAMP`.
 - Revisit the tests if people find single-run ties unhelpful. One option is to show "All runs
   combined" more prominently.
+
+## Addendum: the review of PR #15
+
+Three time-boxed review agents covered the statistics, the recommendation logic, and the resolver
+plus docs. They confirmed:
+
+- the exact ranks, checked against brute-force `Fraction` sums for n = 1–159, 300 and 500;
+- Wilson and Newcombe against Newcombe (1998): 56/70 vs 48/80 gives 0.0524–0.3339;
+- that the resolver rejects no real reply, and that the docs matched the code.
+
+They found the following, and it changed the design:
+
+- **The median and mean used every answer.** Repeats are cache hits the benchmark causes itself.
+  - They pulled down the median of providers with more servers. With identical cache-miss
+    distributions, the provider whose second server hits the shared cache got a median of 6.8 ms
+    against 33.6 ms.
+  - They made the median interval falsely narrow, because samples of one domain are correlated.
+    Quad9's first-answer median (6.54) lay outside its all-answer interval [5.83, 6.23].
+  - A user's own cache means a resolver sees each name about once per TTL.
+  - **Now every latency figure uses first answers only.** This goes further than the plan. More
+    rounds now sharpen only the failure rates.
+- **The tail test assumed independent binomials, but the pooled threshold fixes the total above
+  it.** With unbalanced sizes it said "different" too often: 13 % at 3 vs 100, 8 % at 10 vs 600,
+  against a nominal 5 %. **Now it is Fisher's exact test** (hypergeometric, via `lgamma`), which
+  gives the same answer at 60 vs 60.
+- **Ties aren't transitive.** The best could be "tied" with #3 and #4 but not #2, and one such
+  tie came only from the 2 ms floor while the note claimed "no significant difference in median".
+  **Now `tied_with` / `backup_tied_with` are a run down the ranking**, stopping at the first
+  resolver not within noise. The notes and the `=` legend say what was tested.
+- The ranking's failure rate and counts included servers that never answered, while the score
+  and `failures_counted` didn't.
+- A stale resolver (older runs only) could make a current one's failures count.
+- The normal approximation let one tail of the p95 interval reach 2.8 % above n = 1000. Exact
+  ranks now go up to n = 10,000, which costs 0.14 s once per size.
+- Smaller fixes: no `*` with a single resolver, the backup's aliases were listed as its ties, the
+  local-errors note was missing when nothing answered, and digit alignment in the report.
+
+**Known limitations, left as they are:**
+
+- **The tail test has a floor.** It can't fire below about 50 first answers per side. At 60 vs
+  60 only a 6-to-0 split of the slowest 5 % counts. That is inherent in estimating a p95 from 60
+  answers.
+- **Values equal to the pooled p95 count as not above it.** A block of slow answers tied exactly
+  at the threshold can hide. This is rare with 0.001 ms resolution.
+- **"First" orders answers by the start of the answering attempt**, which is the retry for a
+  retried query, so a sibling's later query can take "first". This only happens with tries > 1.
+- **The pairwise tail tests have no correction for multiple comparisons.** With 20 resolvers
+  there are 190 pairs, and a false positive only breaks a tie.
+- **A significant failure rate counts in full, not just its excess over the best rate.** The
+  review flagged this as a design choice for Chris.
+
+After these changes, on the 13 saved runs:
+
+- the best resolver is Cloudflare in all 13;
+- the suggested servers changed in 9;
+- 7 single runs report ties with the best, down the ranking;
+- "All runs combined" (Cloudflare, then OpenDNS with ISP and Quad9 within noise of it, then
+  Google) has no tie for best.
 
 ## Sources
 
