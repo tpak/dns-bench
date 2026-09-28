@@ -12,7 +12,10 @@ class ReportTest(unittest.TestCase):
         run = analysis.finalize(make_run())
         text = report.render_text(run)
         self.assertIn("DNS Bench run 20260925T023456Z", text)
-        self.assertIn("Cloudflare: mean=5.5 median=5.5", text)
+        # Phase 8: latency uses each domain's first answer; Cloudflare's second server (6 ms) repeats
+        # the first one's domains, so it no longer moves mean and median (they were 5.5)
+        self.assertIn("Cloudflare: mean=5.0 median=5.0", text)
+        self.assertIn("first_answers=2 repeat_median=6.0", text)
         self.assertIn(
             "Google: mean=20.0 median=20.0 p80=20.0 p95=20.0 p98=20.0 min=20.0 max=20.0 n=3 fail=33.3%", text
         )
@@ -86,6 +89,29 @@ class ReportTest(unittest.TestCase):
         text = report.render_text(analysis.finalize(run))
         self.assertIn("Retried", text)
         self.assertIn("retried=1", text)
+
+    def test_ranking_marks(self):
+        # Two resolvers within noise, the second with failures the score leaves out: "=" and "*", with a
+        # space in the other rows so the digits of the right-aligned columns line up.
+        run = make_run()
+        text = report.render_text(analysis.finalize(run))
+        lines = text.splitlines()
+        start = next(i for i, ln in enumerate(lines) if ln.startswith("Ranking"))
+        rows = lines[start + 3 : start + 5]
+        self.assertTrue(rows[0].split()[0] == "1" and rows[1].split()[0] == "2=", rows)
+        self.assertEqual(rows[0].index("1 "), rows[1].index("2="), rows)  # the digits line up
+        self.assertIn("33.3%*", rows[1])
+        self.assertEqual(rows[0].index("0.0% "), rows[1].index("33.3%*") + 1, rows)
+        self.assertIn("* not significantly higher", text)
+        self.assertIn("= within noise of the resolver above: medians within 2 ms", text)
+
+    def test_no_star_with_a_single_resolver(self):
+        run = make_run()
+        run["results"] = [r for r in run["results"] if r["resolver"] == "Google"]
+        text = report.render_text(analysis.finalize(run))
+        self.assertIn("33.3%", text)
+        self.assertNotIn("33.3%*", text)
+        self.assertNotIn("* not significantly higher", text)
 
 
 if __name__ == "__main__":

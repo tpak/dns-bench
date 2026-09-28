@@ -1,8 +1,17 @@
 """A tiny pure-Python UDP DNS client, just enough to time one query.
 
-No dependency on ``dig``. One fresh UDP socket per attempt (random source
-port), random 16-bit query ID, and only replies that match the ID, have QR=1
-and come from the server we asked are accepted.
+No dependency on ``dig``. One fresh UDP socket per attempt (random source port), connected to the
+server, and a random 16-bit query ID. A reply is accepted only if it comes from the server we asked,
+has our ID, QR=1 and opcode 0 (QUERY), and echoes our question (the name compared without regard to
+case). An error reply (SERVFAIL, REFUSED, FORMERR, ...) may leave the question out: servers often do
+for FORMERR and REFUSED, and ignoring those would turn a fast refusal into a timeout. Anything else is
+a stray, stale or spoofed packet and is ignored.
+
+The socket is connected, so the kernel drops datagrams from other addresses, and an ICMP error (port
+or host unreachable) comes back as an error on receive instead of a silent timeout.
+
+Errors keep a prefix saying where they happened ("socket:", "connect:", "send:", "recv:", ...):
+stats.failure_kind uses it to tell a problem on this computer from one of the resolver's.
 """
 
 from __future__ import annotations
@@ -124,15 +133,35 @@ def addr_matches(src_host: str, server_ip) -> bool:
     return mapped is not None and mapped == target
 
 
+def question_matches(data: bytes, hdr: dict, question: bytes) -> bool:
+    """True if a reply's question section is ours, or absent from an error reply.
+
+    ``question`` is the query's question section (encoded name, type, class). The name is compared
+    without regard to case: a server may echo it in another case (DNS names are case-insensitive).
+    ASCII lowering never touches the label-length bytes (at most 63) or the type and class bytes.
+    """
+    if hdr["qdcount"] == 0:
+        return hdr["rcode_name"] not in OK_RCODES
+    if hdr["qdcount"] != 1:
+        return False
+    echoed = data[12 : 12 + len(question)]
+    return echoed.lower() == question.lower()
+
+
 def _attempt(sockaddr, family, target_ip, port, packet, qid, timeout_s) -> QueryResult:
     try:
         sock = socket.socket(family, socket.SOCK_DGRAM)
     except OSError as exc:
         return QueryResult("error", error=f"socket: {exc}")
+    question = packet[12:]
     with sock:
         try:
+            sock.connect(sockaddr)  # only a route lookup for UDP: kept out of the timing
+        except OSError as exc:  # e.g. no route to an IPv6 address
+            return QueryResult("error", error=f"connect: {exc}")
+        try:
             start = time.perf_counter()
-            sock.sendto(packet, sockaddr)
+            sock.send(packet)
         except OSError as exc:
             return QueryResult("error", error=f"send: {exc}")
         deadline = start + timeout_s
@@ -145,7 +174,7 @@ def _attempt(sockaddr, family, target_ip, port, packet, qid, timeout_s) -> Query
                 data, src = sock.recvfrom(4096)
             except TimeoutError:
                 return QueryResult("timeout", error="timeout")
-            except OSError as exc:  # e.g. ICMP port unreachable
+            except OSError as exc:  # an ICMP error from the network: port or host unreachable
                 return QueryResult("error", error=f"recv: {exc}")
             now = time.perf_counter()
             if src[1] != port or not addr_matches(src[0], target_ip):
@@ -154,8 +183,10 @@ def _attempt(sockaddr, family, target_ip, port, packet, qid, timeout_s) -> Query
                 hdr = parse_response(data)
             except ValueError:
                 continue
-            if hdr["id"] != qid or not hdr["qr"]:
+            if hdr["id"] != qid or not hdr["qr"] or hdr["opcode"] != 0:
                 continue  # stray / spoofed / stale packet
+            if not question_matches(data, hdr, question):
+                continue  # an answer to some other question
             ms = (now - start) * 1000.0
             rcode = hdr["rcode_name"]
             status = "ok" if rcode in OK_RCODES else "error"

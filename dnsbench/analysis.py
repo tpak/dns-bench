@@ -8,7 +8,7 @@ report) stays there as a snapshot of that version's verdict, but is never read b
 ``ANALYSIS_VERSION`` goes up whenever stats.py or recommend.py change what they conclude from the same
 results. It is saved with each run, shown in the web UI, and part of every cache key.
 
-Recomputing takes about 4 ms a run. ``Analysis`` caches each run's summary and recommendation by the
+Recomputing takes about 10 ms a run. ``Analysis`` caches each run's summary and recommendation by the
 file's modification time and size, so listing the runs doesn't recompute unchanged ones. The cache
 belongs to the ``Analysis`` object (one per server, one per CLI command), not to the process.
 """
@@ -24,7 +24,9 @@ from . import stats
 from .models import Aggregate, Coverage, Recommendation, RunRecord, Summary
 from .storage import CorruptRun, NoRuns, RunNotFound, RunRepository, id_sort_key, valid_run_id
 
-ANALYSIS_VERSION = 1
+# 2 (Phase 8): local errors not charged, failure and retry rates counted only when significant,
+# ties from confidence intervals, tail figures from first answers only, retried = answered on a retry.
+ANALYSIS_VERSION = 2
 
 log = logging.getLogger(__name__)
 

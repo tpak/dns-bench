@@ -11,12 +11,14 @@ import unittest
 from dnsbench import resolver as R
 
 
-def make_response(query: bytes, rcode=0, ancount=1, qid=None, qr=True, tc=False) -> bytes:
-    """Build a reply to ``query``: same question, header flags as requested."""
+def make_response(
+    query: bytes, rcode=0, ancount=1, qid=None, qr=True, tc=False, opcode=0, question=None
+) -> bytes:
+    """Build a reply to ``query``: same question (or ``question``: b"" leaves it out), flags as asked."""
     orig_id, flags = struct.unpack_from("!HH", query, 0)
-    flags = (flags & 0x0100) | 0x0080 | (0x8000 if qr else 0) | (0x0200 if tc else 0) | rcode
-    header = struct.pack("!HHHHHH", orig_id if qid is None else qid, flags, 1, ancount, 0, 0)
-    body = query[12:]
+    flags = (flags & 0x0100) | 0x0080 | (0x8000 if qr else 0) | (0x0200 if tc else 0) | rcode | opcode << 11
+    body = query[12:] if question is None else question
+    header = struct.pack("!HHHHHH", orig_id if qid is None else qid, flags, 1 if body else 0, ancount, 0, 0)
     answer = b""
     for _ in range(ancount):  # A record 1.2.3.4 with a compression pointer to the qname
         answer += struct.pack("!HHHIH", 0xC00C, 1, 1, 60, 4) + bytes([1, 2, 3, 4])
@@ -187,6 +189,56 @@ class QueryTest(unittest.TestCase):
         self.assertEqual(r.status, "ok")
         self.assertEqual(r.rcode, "NXDOMAIN")  # proves the decoys were skipped
         self.assertGreaterEqual(r.ms, 19.0)
+
+    def test_reply_must_echo_the_question_and_be_a_query(self):
+        def behaviour(q, n):
+            other = R.build_query(0, "example.org")[12:]
+            aaaa = q[12:-4] + b"\x00\x1c\x00\x01"
+            return [
+                (0, make_response(q, question=other)),  # another name
+                (0, make_response(q, question=aaaa)),  # another type
+                (0, make_response(q, question=b"")),  # no question, but NOERROR
+                (0, make_response(q, opcode=2)),  # a STATUS reply, not a QUERY one
+                (0.02, make_response(q, rcode=3, ancount=0, question=q[12:].upper())),  # ours, upper case
+            ]
+
+        m = self.serve(behaviour)
+        r = R.query("127.0.0.1", "example.com", port=m.port, timeout_s=1)
+        self.assertEqual((r.status, r.rcode), ("ok", "NXDOMAIN"))  # every decoy was skipped
+        self.assertGreaterEqual(r.ms, 19.0)
+
+    def test_error_reply_without_question_is_accepted(self):
+        for rcode, name in ((1, "FORMERR"), (5, "REFUSED")):
+            with self.subTest(rcode=name):
+                m = self.serve(
+                    lambda q, n, rc=rcode: [(0, make_response(q, rcode=rc, ancount=0, question=b""))]
+                )
+                r = R.query("127.0.0.1", "example.com", port=m.port, timeout_s=1)
+                self.assertEqual((r.status, r.rcode), ("error", name))
+                self.assertIsNotNone(r.ms)
+
+    def test_closed_port_is_an_error_not_a_timeout(self):
+        # Connected socket: the ICMP port-unreachable comes back as an error on receive, at once.
+        probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+        probe.close()
+        t0 = time.perf_counter()
+        r = R.query("127.0.0.1", "example.com", port=port, timeout_s=2)
+        self.assertEqual(r.status, "error", r)
+        self.assertTrue(r.error.startswith("recv:"), r.error)
+        self.assertLess(time.perf_counter() - t0, 1.0)
+
+    def test_question_matches(self):
+        q = R.build_query(1, "Example.COM")
+        hdr = R.parse_response(make_response(q))
+        self.assertTrue(R.question_matches(make_response(q), hdr, R.build_query(1, "example.com")[12:]))
+        empty = make_response(q, question=b"", rcode=2)
+        self.assertTrue(R.question_matches(empty, R.parse_response(empty), q[12:]))
+        empty = make_response(q, question=b"")
+        self.assertFalse(R.question_matches(empty, R.parse_response(empty), q[12:]))
+        short = make_response(q, ancount=0)[:-3]  # question cut short
+        self.assertFalse(R.question_matches(short, R.parse_response(short), q[12:]))
 
     def test_retry_only_after_timeout(self):
         m = self.serve(lambda q, n: [] if n == 0 else [(0, make_response(q))])

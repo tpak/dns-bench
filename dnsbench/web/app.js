@@ -56,7 +56,7 @@
     rounds: {
       label: 'Rounds',
       step: 1,
-      help: 'How many times each domain is looked up on each server. More rounds give steadier numbers.',
+      help: "How many times each domain is looked up on each server. Repeats are mostly answered from the resolver's cache, so latency figures use only each domain's first answer; more rounds sharpen the failure rates. For steadier latency, combine runs taken at different times.",
     },
     timeout_ms: {
       label: 'Timeout',
@@ -1384,6 +1384,13 @@
     return kpi(label, isNum(v) ? fmtMs(v) : '—', isNum(v) ? 'ms' : '', sub);
   }
 
+  /** A 95 % interval [lo, hi] as "95% CI lo–hi ms"; an unbounded side is "?". */
+  function ciText(ci) {
+    if (!Array.isArray(ci) || ci.length !== 2) return null;
+    const side = (v) => (isNum(v) ? fmtMs(v) : '?');
+    return `95% CI ${side(ci[0])}–${side(ci[1])} ms`;
+  }
+
   function failBadge(st) {
     if (!st || !isNum(st.failure_rate)) return '—';
     if (st.failure_rate === 0) return h('span', { class: 'muted' }, '0%');
@@ -2230,7 +2237,11 @@
                 tied.map((n) =>
                   h('a', { class: 'chip chip-sm', href: hashFor('resolver', n) }, dot(n), h('span', null, n)),
                 ),
-                h('span', { class: 'muted small' }, 'Scores within noise; either is a good choice.'),
+                h(
+                  'span',
+                  { class: 'muted small' },
+                  'Medians within 2 ms or with overlapping intervals, and no significant difference in slow answers or failures; either is a good choice.',
+                ),
               )
             : null,
         ),
@@ -2401,7 +2412,7 @@
       {
         title: 'Resolver statistics',
         sub:
-          'Milliseconds over successful answers. Score combines median, p95, mean and failures; lower is better. Click a column to sort.' +
+          "Milliseconds over the first successful answer of each domain from each resolver (repeats are mostly cache hits). Score combines median, p95, mean and failures, counting a failure rate only when it is significantly higher than another resolver's; lower is better. = marks a rank within noise of the one above. Click a column to sort." +
           (cov ? ' Runs shows how many of the combined runs measured each resolver.' : ''),
       },
       dataTable(
@@ -2455,7 +2466,17 @@
             label: 'Rank',
             num: true,
             get: (r) => (r.rank ? r.rank.rank : null),
-            render: (r) => (r.rank ? `#${r.rank.rank}` : '—'),
+            render: (r) => {
+              if (!r.rank) return '—';
+              const ties = Array.isArray(r.rank.ties) ? r.rank.ties : [];
+              const above = [...ranks.values()].find((e) => e.rank === r.rank.rank - 1);
+              const tiedAbove = !!above && ties.includes(above.resolver);
+              return h(
+                'span',
+                { title: ties.length ? `Within noise of ${ties.join(', ')}` : null },
+                `#${r.rank.rank}${tiedAbove ? ' =' : ''}`,
+              );
+            },
           },
         ],
         items,
@@ -2572,9 +2593,15 @@
     const kpis = h(
       'div',
       { class: 'kpis kpis-6' },
-      msKpi('Mean', st.mean),
-      msKpi('Median', st.median),
-      msKpi('95th percentile', st.p95),
+      msKpi(
+        'Mean',
+        st.mean,
+        st.repeat_n > 0
+          ? `${plural(st.repeat_n, 'repeat')} left out (mostly cached): median ${fmtMsU(st.repeat_median)}`
+          : null,
+      ),
+      msKpi('Median', st.median, ciText(st.median_ci)),
+      msKpi('95th percentile', st.p95, isNum(st.first_n) ? `of ${plural(st.first_n, 'first answer')}` : null),
       msKpi('98th percentile', st.p98),
       kpi(
         'Failure rate',
@@ -2582,7 +2609,8 @@
         '',
         isNum(st.n)
           ? `${fmtInt(st.timeouts)} timeouts · ${fmtInt(st.errors)} errors` +
-              (st.retried > 0 ? ` · ${fmtInt(st.retried)} retried` : '')
+              (st.retried > 0 ? ` · ${fmtInt(st.retried)} retried` : '') +
+              (st.local_errors > 0 ? ` · ${fmtInt(st.local_errors)} local, not counted` : '')
           : null,
         st.failure_rate > 0.02 ? 'kpi-bad' : '',
       ),
@@ -2969,6 +2997,22 @@
               get: (r) => r.st.errors,
               render: (r) => fmtInt(r.st.errors),
             },
+            ...(serverItems.some((r) => r.st.local_errors > 0)
+              ? [
+                  {
+                    key: 'local',
+                    label: 'Local',
+                    num: true,
+                    get: (r) => r.st.local_errors || 0,
+                    render: (r) =>
+                      h(
+                        'span',
+                        { title: 'Failed on this computer; not counted' },
+                        fmtInt(r.st.local_errors || 0),
+                      ),
+                  },
+                ]
+              : []),
             {
               key: 'fail',
               label: 'Fail %',
