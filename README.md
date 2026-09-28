@@ -62,7 +62,8 @@ The first run creates `config.json` in the checkout, with the default resolvers 
 your computer already uses, listed as **System** (see [Configuration](#configuration-configjson)).
 
 The launcher also works from any directory and through a symlink. For example,
-`ln -s ~/dns-bench/dns-bench ~/bin/dnsb`. From the checkout, `python3 -m dnsbench` works too.
+`ln -s ~/dns-bench/dns-bench ~/bin/dnsb`. From the checkout, `python3 -m dnsbench` works too (with a
+`python3` that is 3.13 or newer).
 
 ### Installing a `dns-bench` command (optional)
 
