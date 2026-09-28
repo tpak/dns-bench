@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from .config import DEFAULT_SETTINGS
-from .recommend import SCORE_FORMULA
+from .recommend import COUNTED_RATES, SCORE_FORMULA
 
 
 def printable(text: str) -> str:
@@ -30,6 +30,14 @@ def _pct(rate: float | None) -> str:
     return "-" if rate is None else f"{rate * 100:.1f}%"
 
 
+def _ci(ci: Any) -> str:
+    """A [lo, hi] interval, the bounds joined by an en dash; an unbounded side is "?"."""
+    if not isinstance(ci, (list, tuple)) or len(ci) != 2:
+        return "-"
+    lo, hi = ci
+    return f"{'?' if lo is None else _f(lo)}–{'?' if hi is None else _f(hi)}"  # noqa: RUF001 - an en dash between the bounds, on purpose
+
+
 def local_time(iso: str | None, fmt: str = "%Y-%m-%d %H:%M:%S %Z") -> str:
     """A run's UTC timestamp (``2026-09-25T02:34:56Z``) in this computer's time zone; "?" if missing."""
     if not iso:
@@ -49,8 +57,12 @@ def stats_line(name: str, st: Mapping[str, Any]) -> str:
         f"min={_f(st.get('min'))} max={_f(st.get('max'))} n={st.get('n', 0)} "
         f"fail={_pct(st.get('failure_rate'))}"
     )
-    if st.get("retried"):  # only with tries > 1: queries whose first attempt timed out
+    if st.get("retried"):  # only with tries > 1: queries that answered on a retry
         line += f" retried={st['retried']}"
+    if st.get("local_errors"):
+        line += f" local_errors={st['local_errors']}"
+    if st.get("repeat_n"):  # first answers of each domain vs repeats (mostly cache hits)
+        line += f" first={_f(st.get('first_median'))} repeat={_f(st.get('repeat_median'))}"
     return line
 
 
@@ -137,28 +149,38 @@ def render_text(bundle: Mapping[str, Any]) -> str:
     if ranking:
         lines.append("")
         lines.append(f"Ranking ({SCORE_FORMULA}; lower is better):")
-        rows = [
-            [
-                str(e["rank"]),
-                e["resolver"],
-                _f(e["score"]),
-                _f(e["median"]),
-                _f(e["p95"]),
-                _f(e["mean"]),
-                _pct(e["failure_rate"]),
-                f"{e['ok']}/{e['n']}",
-                e.get("fastest_server") or "-",
-            ]
-            for e in ranking
-        ]
+        rows = []
+        for i, e in enumerate(ranking):
+            # "=": nothing measured tells it apart from the one above (recommend.within_noise)
+            tied_above = i > 0 and ranking[i - 1]["resolver"] in (e.get("ties") or [])
+            uncounted = bool(e["failure_rate"]) and e.get("failures_counted") is False
+            rows.append(
+                [
+                    f"{e['rank']}{'=' if tied_above else ''}",
+                    e["resolver"],
+                    _f(e["score"]),
+                    _f(e["median"]),
+                    _ci(e.get("median_ci")),
+                    _f(e["p95"]),
+                    _f(e["mean"]),
+                    _pct(e["failure_rate"]) + ("*" if uncounted else ""),
+                    f"{e['ok']}/{e['n']}",
+                    e.get("fastest_server") or "-",
+                ]
+            )
         lines += [
             "  " + ln
             for ln in table(
-                ["#", "Resolver", "Score", "Median", "p95", "Mean", "Fail", "OK/N", "Best server"],
+                ["#", "Resolver", "Score", "Median", "95% CI", "p95", "Mean", "Fail", "OK/N", "Best server"],
                 rows,
-                right={0, 2, 3, 4, 5, 6, 7},
+                right={0, 2, 3, 4, 5, 6, 7, 8},
             )
         ]
+        lines.append(f"  {COUNTED_RATES}")
+        if any(r[7].endswith("*") for r in rows):
+            lines.append("  * not significantly higher than another resolver's, so not in the score.")
+        if any(r[0].endswith("=") for r in rows):
+            lines.append("  = within noise of the resolver above: the difference may be chance.")
 
     slow_count = summary.get("slow_count", len(summary.get("slow") or []))
     slow_ms = summary.get("slow_threshold_ms", settings["slow_threshold_ms"])

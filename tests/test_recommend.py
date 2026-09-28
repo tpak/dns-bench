@@ -90,6 +90,12 @@ class RecommendTest(unittest.TestCase):
                 "ok",
                 "n",
                 "fastest_server",
+                "median_ci",
+                "p95_ci",
+                "failure_ci",
+                "failures_counted",
+                "retries_counted",
+                "ties",
             },
         )
         self.assertEqual(top["fastest_server"], "1.0.0.1")  # lower median wins
@@ -124,23 +130,56 @@ class RecommendTest(unittest.TestCase):
         self.assertEqual(rec["tied_with"], ["B"])  # within max(2 ms, 10 %)
         self.assertTrue(any("within noise" in n for n in notes(rec)))
 
-    def test_tie_relative_margin(self):
-        # best score 100 -> margin 10; 109 is tied, 111 is not
+    def test_ties_come_from_overlapping_intervals(self):
+        # Phase 8 replaced the 10 % score margin with the measurements' own intervals. A and B spread
+        # widely and their medians' intervals overlap, so 5 ms between them is noise; C's values are
+        # tight and clearly higher, so it isn't tied although its median is only 9 ms more.
+        spread = [float(v) for v in range(80, 121)]  # 80..120, median 100
         s = summary(
-            rows_for("A", "1.1.1.1", [100.0] * 40),
-            rows_for("B", "8.8.8.8", [109.0] * 40),
-            rows_for("C", "9.9.9.9", [111.0] * 40),
+            rows_for("A", "1.1.1.1", spread),
+            rows_for("B", "8.8.8.8", [v + 5 for v in spread]),
+            rows_for("C", "9.9.9.9", [109.0] * 41),
         )
         rec = RC.recommend(s, SETTINGS)
+        self.assertEqual(rec["best"], "A")
         self.assertEqual(rec["tied_with"], ["B"])
+        a = rec["ranking"][0]
+        self.assertEqual(a["median_ci"], [93.0, 107.0])  # ranks 14 and 28 of 41
+        self.assertEqual(a["ties"], ["B"])
+        self.assertTrue(any("no significant difference in median" in n for n in notes(rec)), rec["notes"])
+
+    def test_backup_ties_are_reported(self):
+        s = summary(
+            rows_for("Best", "1.1.1.1", [5.0] * 40),
+            rows_for("B", "8.8.8.8", [20.0] * 40),
+            rows_for("C", "9.9.9.9", [20.5] * 40),
+            rows_for("D", "208.67.222.222", [60.0] * 40),
+        )
+        rec = RC.recommend(s, SETTINGS)
+        self.assertEqual((rec["best"], rec["backup"]), ("Best", "B"))
+        self.assertEqual(rec["tied_with"], [])
+        self.assertEqual(rec["backup_tied_with"], ["C"])
+        note = next(n for n in rec["notes"] if n["code"] == "backup_tie")
+        self.assertEqual(note["params"], {"resolver": "B", "tied_with": ["C"]})
+        self.assertIn("either can be the secondary", note["text"])
 
     def test_fastest_server_tiebreak_on_p95(self):
-        # same median (10); p95 = 19th of 20 sorted values -> 50 vs 20
+        # Same median (10); p95 50 vs 20. With 200 answers each the p95 intervals are apart, so the
+        # lower p95 wins.
+        s = summary(
+            rows_for("A", "1.1.1.1", [10] * 180 + [50] * 20), rows_for("A", "1.0.0.1", [10] * 180 + [20] * 20)
+        )
+        rec = RC.recommend(s, SETTINGS)
+        self.assertEqual(rec["ranking"][0]["fastest_server"], "1.0.0.1")
+
+    def test_p95_of_few_answers_is_noise_between_servers(self):
+        # Phase 8: the same shape with 20 answers each is two slow answers against none. The p95
+        # intervals overlap, so the servers are within noise and config order decides.
         s = summary(
             rows_for("A", "1.1.1.1", [10] * 18 + [50, 50]), rows_for("A", "1.0.0.1", [10] * 18 + [20, 20])
         )
         rec = RC.recommend(s, SETTINGS)
-        self.assertEqual(rec["ranking"][0]["fastest_server"], "1.0.0.1")
+        self.assertEqual(rec["ranking"][0]["fastest_server"], "1.1.1.1")
 
     def test_fastest_server_ignores_dead_server(self):
         s = summary(rows_for("A", "1.1.1.1", [], timeouts=10), rows_for("A", "1.0.0.1", [30] * 10))
@@ -187,9 +226,9 @@ class RecommendTest(unittest.TestCase):
         self.assertIn("1.0% failures (1 of 100)", rec["summary"])
 
     def test_timeout_setting_changes_penalty(self):
-        # 1 % failures: penalty 100 ms at 5 s timeout, 4 ms at 200 ms timeout
+        # 10 % failures (significant against none): 1000 ms of penalty at a 5 s timeout, 40 ms at 200 ms
         s = summary(
-            rows_for("Flaky", "1.1.1.1", [3] * 99, timeouts=1), rows_for("Solid", "8.8.8.8", [8] * 100)
+            rows_for("Flaky", "1.1.1.1", [3] * 90, timeouts=10), rows_for("Solid", "8.8.8.8", [60] * 100)
         )
         self.assertEqual(RC.recommend(s, {"timeout_ms": 5000})["best"], "Solid")
         self.assertEqual(RC.recommend(s, {"timeout_ms": 200})["best"], "Flaky")
@@ -263,9 +302,16 @@ class ServerChoiceTest(unittest.TestCase):
         )
 
     def test_tied_server_with_more_failures_not_first(self):
-        s = summary(rows_for("A", "1.1.1.1", [5.7] * 98, timeouts=2), rows_for("A", "1.0.0.1", [5.8] * 100))
+        s = summary(rows_for("A", "1.1.1.1", [5.7] * 90, timeouts=10), rows_for("A", "1.0.0.1", [5.8] * 100))
         rec = RC.recommend(s, SETTINGS)
         self.assertEqual(rec["ranking"][0]["fastest_server"], "1.0.0.1")
+
+    def test_insignificant_failures_do_not_reorder_servers(self):
+        # Phase 8: 2 of 100 failures against none is noise (it was a 1-point threshold), so the servers
+        # are within noise and config order decides.
+        s = summary(rows_for("A", "1.1.1.1", [5.7] * 98, timeouts=2), rows_for("A", "1.0.0.1", [5.8] * 100))
+        rec = RC.recommend(s, SETTINGS)
+        self.assertEqual(rec["ranking"][0]["fastest_server"], "1.1.1.1")
 
 
 class DeadServerTest(unittest.TestCase):
@@ -281,7 +327,9 @@ class DeadServerTest(unittest.TestCase):
         self.assertEqual(rec["suggested_servers"], ["1.1.1.1", "8.8.8.8"])
         cf = rec["ranking"][0]
         self.assertEqual(cf["score"], 4.0)
-        self.assertEqual(cf["failure_rate"], 0.5)  # resolver-level numbers unchanged
+        # Phase 8: "No route to host" is a local error, not the resolver's failure (it was 0.5)
+        self.assertEqual(cf["failure_rate"], 0.0)
+        self.assertTrue(any(n["code"] == "local_errors" for n in rec["notes"]), rec["notes"])
         self.assertTrue(any("2606:4700:4700::1111" in n and "never answered" in n for n in notes(rec)))
         self.assertNotIn("50%", rec["summary"])
         self.assertIn("not counting 2606:4700:4700::1111", rec["summary"])
@@ -301,10 +349,9 @@ class DeadServerTest(unittest.TestCase):
         self.assertTrue(any("1.0.0.1" in n and "never answered" in n for n in notes(rec)))
 
     def test_error_only_failures_note_does_not_claim_timeouts(self):
-        s = summary(
-            rows_for("A", "1.1.1.1", [10] * 90) + error_rows("A", "1.1.1.1", 10),
-            rows_for("B", "8.8.8.8", [500] * 100),
-        )
+        # Error answers, not local errors: since Phase 8 those aren't failures at all
+        servfail = [{**r, "rcode": "SERVFAIL", "error": "SERVFAIL"} for r in error_rows("A", "1.1.1.1", 10)]
+        s = summary(rows_for("A", "1.1.1.1", [10] * 90) + servfail, rows_for("B", "8.8.8.8", [500] * 100))
         rec = RC.recommend(s, SETTINGS)
         note = next(n for n in notes(rec) if n.startswith("A:") and "failed" in n)
         self.assertNotIn("timeout", note)
@@ -495,9 +542,14 @@ class StructureTest(unittest.TestCase):
         )
         rec = RC.recommend(s, SETTINGS)
         codes = [n["code"] for n in rec["notes"]]
+        # "tie": since Phase 8, A's 2 failures in 22 aren't significantly more than B's none, so they
+        # don't count and A and B (10 vs 11 ms) are within noise
         self.assertEqual(
-            codes, ["no_answers", "server_never_answered", "failure_rate", "low_samples", "one_time"]
+            codes, ["no_answers", "server_never_answered", "failure_rate", "low_samples", "tie", "one_time"]
         )
+        failure = rec["notes"][2]
+        self.assertFalse(failure["params"]["counted"])
+        self.assertIn("so the score doesn't count it", failure["text"])
         for n in rec["notes"]:
             self.assertEqual(set(n), {"code", "params", "text"})
             self.assertIsInstance(n["params"], dict)
@@ -523,8 +575,35 @@ class StructureTest(unittest.TestCase):
             "score = 0.5 × median + 0.3 × p95 + 0.2 × mean + failure_rate × timeout_ms × 2 "  # noqa: RUF001 - as in the README
             "+ retry_rate × timeout_ms",  # noqa: RUF001 - as above
         )
-        self.assertTrue(
-            RC.SCORE_FORMULA in (ROOT / "README.md").read_text(encoding="utf-8"), "README's formula"
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        self.assertTrue(RC.SCORE_FORMULA in readme, "README's formula")
+        self.assertTrue(RC.COUNTED_RATES in " ".join(readme.split()), "README's counting rule")
+
+
+class MeasurementNotesTest(unittest.TestCase):
+    def test_local_errors_note_and_uncounted(self):
+        s = summary(rows_for("A", "1.1.1.1", [10] * 40), error_rows("A", "1.1.1.1", 3))
+        rec = RC.recommend(s, SETTINGS)
+        note = next(n for n in rec["notes"] if n["code"] == "local_errors")
+        self.assertEqual(note["params"], {"count": 3, "n": 43})
+        self.assertIn("with no failures", rec["summary"])
+
+    def test_first_answers_note_only_with_repeats(self):
+        once = summary(rows_for("A", "1.1.1.1", [10] * 40))
+        self.assertFalse(any(n["code"] == "first_answers" for n in RC.recommend(once, SETTINGS)["notes"]))
+        twice = summary(rows_for("A", "1.1.1.1", [30] * 40), rows_for("A", "1.0.0.1", [10] * 40))
+        note = next(n for n in RC.recommend(twice, SETTINGS)["notes"] if n["code"] == "first_answers")
+        self.assertEqual(note["params"], {"first_median": 30.0, "repeat_median": 10.0, "repeats": 40})
+
+    def test_unanswered_domains_note(self):
+        blocked = [{**r, "answers": 0, "rcode": "NXDOMAIN"} for r in rows_for("Filter", "9.9.9.9", [10] * 7)]
+        s = summary(rows_for("Open", "1.1.1.1", [10] * 7), blocked)
+        note = next(n for n in RC.recommend(s, SETTINGS)["notes"] if n["code"] == "unanswered")
+        self.assertEqual(note["params"]["resolver"], "Filter")
+        self.assertEqual(len(note["params"]["domains"]), 7)
+        self.assertIn(
+            "7 domains that other resolvers answered (d0.com, d1.com, d2.com, d3.com, d4.com, …)",
+            note["text"],
         )
 
 

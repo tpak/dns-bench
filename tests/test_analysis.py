@@ -261,27 +261,34 @@ class V1RunFixturesTest(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    def test_stored_analysis_matches_a_fresh_one(self):
-        # Today's analysis of the raw results reproduces what 1.0.0 stored, so recomputing on load changes
-        # nothing for these files until the scoring changes on purpose (REMEDIATION_PLAN.md Phase 8),
-        # which must then update this test. Two things differ only in form: notes are {code, params, text}
-        # (1.0.0 stored the text), and the slow-query rows quoted in the summary carry the fields
-        # storage.migrate adds to 1.x rows (attempts, truncated).
-        def migrated(rows):
-            return [{"attempts": 1, "truncated": False, **r} for r in rows]
+    def test_phase_8_reanalysis_keeps_the_measured_numbers(self):
+        # Until Phase 8 this test checked that today's analysis reproduced what 1.0.0 stored. Phase 8
+        # (ANALYSIS_VERSION 2) changed what is concluded from the same results on purpose, so now it
+        # checks what must not change: the counts and the central figures, per resolver and per server.
+        # The tail figures use first answers only now, and the verdict (best: Cloudflare) holds.
+        central = ("n", "ok", "failures", "timeouts", "errors", "mean", "median", "min", "max", "stdev")
+
+        def pick(st):
+            return {k: st[k] for k in central}
 
         for run_id in V1_RUN_IDS:
             with self.subTest(run_id=run_id):
                 stored = json.loads((V1_FIXTURES / f"{run_id}.json").read_text(encoding="utf-8"))
-                summary = stored["summary"]
-                summary["slow"] = migrated(summary["slow"])
-                summary["slow_by_resolver"] = {k: migrated(v) for k, v in summary["slow_by_resolver"].items()}
                 fresh = json.loads(json.dumps(self.runs.load(run_id)))  # tuples -> lists, as on disk
-                self.assertEqual(fresh["summary"], summary)
-                self.assertEqual(
-                    {**fresh["recommendation"], "notes": texts(fresh["recommendation"])},
-                    stored["recommendation"],
-                )
+                self.assertEqual(fresh["analysis_version"], 2)
+                old, new = stored["summary"], fresh["summary"]
+                self.assertEqual((new["resolvers"], new["domains"]), (old["resolvers"], old["domains"]))
+                for name, st in old["by_resolver"].items():
+                    self.assertEqual(pick(new["by_resolver"][name]), pick(st), name)
+                    for server, sst in old["by_server"][name].items():
+                        self.assertEqual(pick(new["by_server"][name][server]), pick(sst), server)
+                self.assertEqual(fresh["recommendation"]["best"], stored["recommendation"]["best"])
+        # The cache effect, pinned: over every answer (rounds 2, and a second server asking the same
+        # names) Quad9's p95 was 19.4 ms; over the first answer of each domain it is 165.1 ms.
+        stored = json.loads((V1_FIXTURES / "20260925T091918Z.json").read_text(encoding="utf-8"))
+        quad9 = self.runs.load("20260925T091918Z")["summary"]["by_resolver"]["Quad9"]
+        self.assertEqual((stored["summary"]["by_resolver"]["Quad9"]["p95"], quad9["p95"]), (19.38, 165.12))
+        self.assertEqual((quad9["first_n"], quad9["repeat_n"]), (61, 183))
 
     def test_list_report_and_aggregate(self):
         rows = self.runs.list_runs()

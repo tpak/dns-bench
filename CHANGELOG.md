@@ -7,6 +7,62 @@ release notes.
 
 ## [Unreleased]
 
+Measurement validity (REMEDIATION_PLAN.md Phase 8). **Results change**: saved runs are analysed
+afresh when loaded (analysis version 2), so a run's recommendation can differ from the one its
+`.txt` report shows. On the 13 runs we checked, the best resolver never changed. The suggested
+servers changed in 9 of them, mostly which of a provider's two servers to put first.
+
+### Changed
+
+- A failure or retry rate counts in the score only when it is significantly higher than another
+  resolver's (a 95 % interval for the difference of two rates). One or two lost packets in a run
+  used to decide the ranking. The ranking says which rates count (`failures_counted`,
+  `retries_counted`), and a failure note says when the score leaves a rate out.
+- Ties come from the measurements' own uncertainty instead of a fixed 10 % margin. Two resolvers
+  are within noise when their median intervals overlap (or the medians differ by at most 2 ms),
+  neither has significantly more slow answers, and neither fails significantly more often. The
+  backup gets the same treatment: other providers within noise of it are listed
+  (`backup_tied_with`) with a note. The text report marks such neighbours with `=`. A short run
+  therefore reports more ties than before, and "All runs combined" separates them.
+- p80, p95 and p98 use only the first answer of each domain from each resolver. Repeats (more
+  rounds, or a provider's second server asking the same name) are mostly answered from the
+  resolver's cache, and made resolvers with more servers look better in the tail. Median, mean,
+  min and max still use every answer. `first_median` and `repeat_median` show the two groups, and
+  a note compares them.
+- A query that fails on this computer (no socket, no route to an IPv6 address) is a *local
+  error*: it no longer counts as the resolver's failure, and a note gives the count.
+- `retried` counts only queries that answered on a retry. A query whose every try timed out is a
+  failure, and used to count as retried too.
+- Sibling servers within noise of each other go by config order, as before, but "within noise"
+  now also depends on intervals: 2 failures in 100 against none no longer decides which server
+  goes first.
+- Replies are checked more strictly: they must repeat the question that was asked (the name in
+  any letter case) and be a standard query response (opcode 0). A reply that leaves out the
+  question is accepted only with an error rcode, as servers often send for FORMERR and REFUSED.
+  Queries use a connected UDP socket, so an ICMP "port unreachable" shows at once as an error
+  instead of a timeout.
+- Text report: a "95% CI" column for the median in the ranking, `first=`/`repeat=` and
+  `local_errors=` on the per-resolver lines when they apply, and the rule for counted rates under
+  the ranking.
+- Web UI: the resolver view shows the median's 95 % interval and how many first answers the p95
+  is over, and the failure rate's breakdown includes local errors. The ranking marks ties with
+  `=`.
+- Web API: `GET /api/schema`'s `scoring` no longer has `tie_rel` and `server_tie_rel`. It now
+  has `formula`, `counted_rates` and `confidence`. The `tie` note's params no longer include
+  `margin_ms`.
+
+### Added
+
+- Confidence intervals: `median_ci` and `p95_ci` (exact, from order statistics) on every
+  latency summary, and `failure_ci` (Wilson) on each ranking entry. A `null` bound means the
+  samples can't bound it; the p95 needs at least 72 answers for an upper bound.
+- A note when a resolver returned no records for domains that other resolvers answered
+  (NXDOMAIN or an empty answer), a sign that it filters or blocks them. The domains are in the
+  summary's `unanswered`.
+- New fields in run summaries: `local_errors`, `first_n`, `repeat_n`, `first_median`,
+  `repeat_median` and the intervals above; `unanswered` and `tails_differ` in the summary; `ties`
+  on each ranking entry.
+
 ## [1.2.0] - 2026-09-29
 
 ### Upgrading

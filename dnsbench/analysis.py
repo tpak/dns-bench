@@ -24,7 +24,9 @@ from . import stats
 from .models import Aggregate, Coverage, Recommendation, RunRecord, Summary
 from .storage import CorruptRun, NoRuns, RunNotFound, RunRepository, id_sort_key, valid_run_id
 
-ANALYSIS_VERSION = 1
+# 2 (Phase 8): local errors not charged, failure and retry rates counted only when significant,
+# ties from confidence intervals, tail figures from first answers only, retried = answered on a retry.
+ANALYSIS_VERSION = 2
 
 log = logging.getLogger(__name__)
 

@@ -39,15 +39,20 @@ class QueryRow(TypedDict):
 
 
 class LatencyStats(TypedDict):
-    """Counts over every query, latency over the ``ok`` ones only (None when there are none)."""
+    """Counts over every query, latency over the ``ok`` ones only (None when there are none).
+
+    See stats.py: local errors are left out of the rates, the tail figures (p80, p95, p98) use only
+    each domain's first answer from the resolver, and the intervals are 95 % ones.
+    """
 
     n: int
     ok: int
-    failures: int
-    failure_rate: float
+    failures: int  # timeouts and errors, not counting local errors
+    failure_rate: float  # failures / (n - local_errors)
     timeouts: int
-    errors: int
-    retried: int
+    errors: int  # error answers (SERVFAIL, REFUSED, ...) and ICMP errors
+    local_errors: int  # failed on this computer: not charged to the resolver
+    retried: int  # answered only on a retry
     retry_rate: float
     mean: float | None
     median: float | None
@@ -57,6 +62,19 @@ class LatencyStats(TypedDict):
     min: float | None
     max: float | None
     stdev: float | None
+    median_ci: list[float | None] | None  # [lo, hi]; a None bound is unbounded
+    p95_ci: list[float | None] | None
+    first_n: int  # answers that were their domain's first from this resolver
+    first_median: float | None
+    repeat_n: int  # the other answers: repeats, usually from the resolver's cache
+    repeat_median: float | None
+
+
+class TailsDiffer(TypedDict):
+    """Pairs whose first answers' tails differ significantly (stats.tails_differ), both ways round."""
+
+    resolvers: dict[str, list[str]]  # resolver -> resolvers
+    servers: dict[str, dict[str, list[str]]]  # resolver -> server -> its sibling servers
 
 
 class Summary(TypedDict):
@@ -71,6 +89,8 @@ class Summary(TypedDict):
     slow_by_resolver: dict[str, list[QueryRow]]
     slow_count_by_resolver: dict[str, int]
     slow_threshold_ms: float
+    unanswered: dict[str, list[str]]  # resolver -> domains it gave no records for, though others did
+    tails_differ: TailsDiffer
 
 
 class RankEntry(TypedDict):
@@ -85,6 +105,12 @@ class RankEntry(TypedDict):
     ok: int
     n: int
     fastest_server: str | None
+    median_ci: list[float | None] | None  # 95 % intervals, as in LatencyStats
+    p95_ci: list[float | None] | None
+    failure_ci: list[float]  # 95 % Wilson interval of the failure rate, servers that never answered left out
+    failures_counted: bool  # the failure rate is in the score: significantly higher than another's
+    retries_counted: bool
+    ties: list[str]  # resolvers within noise of this one (recommend.within_noise)
 
 
 class Note(TypedDict):
@@ -99,7 +125,8 @@ class Note(TypedDict):
 class Recommendation(TypedDict):
     best: str | None
     backup: str | None
-    tied_with: list[str]
+    tied_with: list[str]  # within noise of best
+    backup_tied_with: list[str]  # within noise of the backup, from a provider other than best's
     suggested_servers: list[str]
     ranking: list[RankEntry]
     summary: str
