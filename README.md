@@ -19,7 +19,8 @@ older browsers leave them out.
 If your `python3` is older (macOS ships 3.9, Debian 12 and Raspberry Pi OS bookworm ship
 3.11, Ubuntu 24.04 ships 3.12), run dns-bench with a newer interpreter, for example
 `python3.13 ./dns-bench`, or let [uv](https://docs.astral.sh/uv/) fetch one:
-`uv run --python 3.13 ./dns-bench`.
+`uv run --no-project --python 3.13 ./dns-bench`. (`--no-project` runs the script as it is; without
+it, uv sets up a `.venv/` in the checkout and downloads a build tool the first time.)
 
 ## Fast, and still polite
 
@@ -62,7 +63,8 @@ The first run creates `config.json` in the checkout, with the default resolvers 
 your computer already uses, listed as **System** (see [Configuration](#configuration-configjson)).
 
 The launcher also works from any directory and through a symlink. For example,
-`ln -s ~/dns-bench/dns-bench ~/bin/dnsb`. From the checkout, `python3 -m dnsbench` works too.
+`ln -s ~/dns-bench/dns-bench ~/bin/dnsb`. From the checkout, `python3 -m dnsbench` works too (with a
+`python3` that is 3.13 or newer).
 
 ### Installing a `dns-bench` command (optional)
 
@@ -134,15 +136,18 @@ picking a resolver or closing a domain's details leaves the keyboard where it wa
 save that fails, the list of problems gets the focus, and each problem takes you to its field. The
 page also follows the system's light or dark theme and its reduced-motion setting.
 
-The server listens on 127.0.0.1 only. It rejects requests whose `Host` header isn't
-localhost (protection against DNS rebinding). A state-changing request must be
+By default the server listens on 127.0.0.1 only. It answers only requests addressed to it by a
+loopback name (`localhost`, `127.0.0.1`, `[::1]`), by the address given to `--host`, or, when it
+listens on every interface (`--host 0.0.0.0`), by any IP address; never by another host name
+(protection against DNS rebinding). A state-changing request must be
 `Content-Type: application/json`, and if it comes from a web page, that page must be the UI
 itself (its `Origin` header is checked), so other sites can't change your config or start runs.
 The page runs under a strict Content Security Policy.
 
 There is no authentication, so `serve` refuses a `--host` that other machines can reach, such
-as `0.0.0.0` or a LAN address, unless you add `--allow-remote`. To use the UI from another
-computer, forward the port over SSH instead and keep the default host:
+as `0.0.0.0` or a LAN address, unless you add `--allow-remote`. Other computers then have to use
+an IP address in the URL (for example http://192.168.1.10:8053/), not a host name. The safer way
+to use the UI from another computer is to forward the port over SSH and keep the default host:
 
 ```sh
 ssh -L 8053:127.0.0.1:8053 you@machine-running-dns-bench
@@ -260,9 +265,12 @@ removed or renamed since) is still ranked but never suggested, and a note says s
 
 Your config and your runs live in the checkout: `config.json` and `runs/`, next to the
 `dns-bench` launcher, whatever directory you run it from. Neither is part of the repository
-(both are git-ignored), so `git pull` never touches them.
+(both are git-ignored), so `git pull` never touches them. The one exception is the pull that
+upgrades from 1.1.0 or earlier, which still had `config.json` in the repository: see "Upgrading"
+in the [1.2.0 release notes](CHANGELOG.md).
 
-* `DNSBENCH_HOME=/some/dir` moves both, to `/some/dir/config.json` and `/some/dir/runs/`.
+* `DNSBENCH_HOME=/some/dir` keeps both in `/some/dir/config.json` and `/some/dir/runs/`. Files
+  already in the checkout are not moved for you: `mkdir -p /some/dir && mv config.json runs /some/dir/`.
 * `--config PATH` and `--runs-dir DIR` move one each, and win over `DNSBENCH_HOME`.
 * A non-editable install (not in a checkout) needs `DNSBENCH_HOME`, or both flags.
 

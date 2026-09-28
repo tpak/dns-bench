@@ -6,8 +6,8 @@
   the result, checks that the run can be saved before any DNS traffic, and builds the per-server
   jobs. Jobs are built once, so the total the UI shows is the total the runner measures.
 * ``execute`` measures (runner.run_benchmark).
-* ``persist`` analyses the run, writes it and its report, and rescues it to the temp dir if the runs
-  dir fails, so a finished run is never lost.
+* ``persist`` analyses the run, writes it and its report, and, if the runs dir fails, tries to rescue
+  it to the system temp dir (which can fail too, for example on the same full disk).
 
 ``JobManager`` runs one benchmark at a time in the background for the web server. It holds its lock
 only to read or change the job's state, never across disk IO (ARCH-M5).

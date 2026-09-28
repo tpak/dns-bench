@@ -2,16 +2,17 @@
 
 ## In Progress
 
+- v1.2.0 release: notes rewritten after a pre-release review (39 findings; `.project/research/2026-09-28-release-1.2.0-review.md`); `serve --allow-remote` on 0.0.0.0 fixed; `python -m dnsbench` version check
+
 ## Up Next
 
-- Chris: click through the web UI once in a normal browser, with the keyboard too. Phases 3–7 changed the CSP, Settings, focus handling and the charts' keyboard use; they were checked in headless Firefox (screenshots, plus scripts that click and type), not by a person
-- Chris: decide on a release (1.2.0?) — Unreleased in CHANGELOG.md now holds Phases 2–7; a release needs a version bump PR and a tag (CLAUDE.md §6: ask first)
-- Tag ruleset for `v*` tags (Chris's call): restrict updates and deletions, with the admin role as bypass so a bad tag can still be deleted; never restrict creation, or the release tag push is rejected
 - Consider Dependabot's `pre-commit` ecosystem for the hook revs (would replace manual `pre-commit autoupdate`; CLAUDE.md §7.2 would change) — `.project/research/2026-09-27-ci-actions.md`
 - Phase 8 — measurement validity; changes results, ships separately (not in the current push)
 
 ## Done This Week
 
+- Tag ruleset "release tags" for `v*`: updates and deletions restricted, admin bypass (2026-09-28)
+- Chris clicked through the web UI in his browser after Phases 3–7: fine (2026-09-28)
 - Phase 7 — Frontend (single file): one rAF-batched scheduleRender and read-only view builders; keyboard focus kept after sort, chips, Show all and closing details, and moved to the view on tab changes; charts one tab stop each (roving tabindex); <main> landmark restored; Settings errors linked to fields with a focused summary; Failed queries capped at 200; 15 s fetch timeouts and polling that recovers; light-theme contrast (WCAG AA) and reduced-motion fixes; Biome's noDescendingSpecificity back on (screenshots byte-identical). Review found four small UI issues — fixed. PR #13 (2026-09-28)
 - Phase 6 — Backend layering & typed model: models.py (TypedDicts), RunRepository with migrate() and typed errors, analysis recomputed on load (cached per file, per object), BenchmarkService + JobManager as the one run path for CLI and UI, recommend split into rank/choose/explain with coded notes, strict mypy on ten core modules. All 9 real runs recompute to their stored recommendations. Review found an unhandled error in explicit aggregates and a shutdown race with a starting job — both fixed. PR #12 (2026-09-28)
 - Phase 5 — One source of truth: structured validation errors (path, code, message), GET /api/schema, POST /api/config/validate and /api/estimate; app.js keeps no copy of any rule; ~230 lines of unreachable compat code removed. Review found an overflow 500 on absurd numbers — fixed. PR #11 (2026-09-28)

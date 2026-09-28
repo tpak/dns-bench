@@ -64,15 +64,23 @@ jobs:
         run: uv run dns-bench --version
       # --no-project: otherwise uv itself refuses 3.12 (pyproject.toml's requires-python) before the
       # launcher gets to run.
-      - name: Launcher refuses Python 3.12 with a clear message
+      - name: Launcher and python -m refuse Python 3.12 with a clear message
         if: matrix.python == '3.13'
         run: |
-          if out=$(uv run --no-project --python 3.12 python ./dns-bench --version 2>&1); then
-            echo "::error::the launcher ran under Python 3.12: $out"
-            exit 1
-          fi
-          echo "$out"
-          grep -q "needs Python 3.13 or newer" <<<"$out"
+          for cmd in "./dns-bench --version" "-m dnsbench --version"; do
+            if out=$(uv run --no-project --python 3.12 python $cmd 2>&1); then
+              echo "::error::'python $cmd' ran under Python 3.12: $out"
+              exit 1
+            fi
+            echo "$out"
+            grep -q "needs Python 3.13 or newer" <<<"$out"
+          done
+      # The one live check of System detection on each OS (the unit tests use recorded outputs): Linux
+      # runners use systemd-resolved, so this also covers following its stub to the upstream servers.
+      - name: System resolver detection (live; sends no DNS queries)
+        run: |
+          uv run ./dns-bench --config "$RUNNER_TEMP/detect.json" --runs-dir "$RUNNER_TEMP/runs" config --detect
+          grep -q '"System"' "$RUNNER_TEMP/detect.json"
 
   # One stable check name for branch protection, however the matrix above changes.
   ci-passed:

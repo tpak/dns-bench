@@ -8,8 +8,8 @@ Every record read from disk goes through ``migrate``, which checks its shape and
 up to the current one (1.x files had no ``schema``), so the rest of the code sees one format. A file
 that can't be used raises ``CorruptRun``, never a bare KeyError or ValueError.
 
-Runs are never deleted or overwritten by the tool. A finished run is never silently lost either:
-``rescue_run`` writes it to the system temp dir when the runs dir can't take it.
+Runs are never deleted or overwritten by the tool. When the runs dir can't take a finished run,
+``rescue_run`` tries the system temp dir, and the caller says where it went or that both failed.
 """
 
 from __future__ import annotations
