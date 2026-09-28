@@ -376,10 +376,33 @@ class IntervalTest(unittest.TestCase):
         self.assertEqual(S.latency_stats([])["median_ci"], None)
 
 
+class TailsDifferTest(unittest.TestCase):
+    def test_a_clean_split_of_the_slowest_answers_differs(self):
+        fast = [10.0] * 60
+        slow = [10.0] * 54 + [200.0] * 6
+        self.assertTrue(S.tails_differ(fast, slow))
+        self.assertTrue(S.tails_differ(slow, fast))
+        self.assertFalse(S.tails_differ(fast, [10.0] * 55 + [200.0] * 5))  # 5 of the 6 slowest: chance
+        self.assertFalse(S.tails_differ([], slow))
+
+    def test_unbalanced_samples_keep_the_error_rate(self):
+        # Both from the same distribution, sizes 10 vs 600: a test that treats the counts above the
+        # pooled p95 as independent binomials said "different" about 8 % of the time; Fisher's test
+        # stays under 2.5 % per side (review of PR #15).
+        import random
+
+        rng = random.Random(8)
+        hits = sum(
+            S.tails_differ([rng.expovariate(1) for _ in range(10)], [rng.expovariate(1) for _ in range(600)])
+            for _ in range(400)
+        )
+        self.assertLess(hits / 400, 0.05)
+
+
 class FirstAnswersTest(unittest.TestCase):
-    def test_tail_uses_first_answers_only(self):
-        # Round 1 misses the cache (slow), rounds 2 and 3 hit it (fast). Without the split the p95 would
-        # be a cache hit's.
+    def test_latency_uses_first_answers_only(self):
+        # Round 1 misses the cache (slow), rounds 2 and 3 hit it (fast). Without the split the figures
+        # would be mostly cache hits'.
         rows = []
         t = 0.0
         for rnd, base in ((1, 100.0), (2, 5.0), (3, 5.0)):
@@ -390,9 +413,11 @@ class FirstAnswersTest(unittest.TestCase):
         st = s["by_resolver"]["R"]
         self.assertEqual((st["first_n"], st["repeat_n"]), (20, 40))
         self.assertEqual(st["p95"], 118.0)  # 19th of the 20 first answers (nearest rank)
-        self.assertEqual(st["median"], 19.5)  # the median still uses every answer
-        self.assertEqual((st["first_median"], st["repeat_median"]), (109.5, 14.5))
+        self.assertEqual((st["median"], st["mean"], st["min"], st["max"]), (109.5, 109.5, 100.0, 119.0))
+        self.assertEqual(st["repeat_median"], 14.5)
+        self.assertEqual(st["median_ci"], [105.0, 114.0])  # ranks 6 and 15 of 20
         self.assertEqual(st["p95_ci"], [116.0, None])
+        self.assertEqual((st["ok"], st["failure_rate"]), (60, 0.0))  # the repeats still count here
 
     def test_first_is_per_resolver_domain_and_run_by_time(self):
         rows = [

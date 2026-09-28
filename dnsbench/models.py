@@ -41,8 +41,8 @@ class QueryRow(TypedDict):
 class LatencyStats(TypedDict):
     """Counts over every query, latency over the ``ok`` ones only (None when there are none).
 
-    See stats.py: local errors are left out of the rates, the tail figures (p80, p95, p98) use only
-    each domain's first answer from the resolver, and the intervals are 95 % ones.
+    See stats.py: local errors are left out of the rates, every latency figure uses only each
+    domain's first answer from the resolver in a run, and the intervals are 95 % ones.
     """
 
     n: int
@@ -64,8 +64,7 @@ class LatencyStats(TypedDict):
     stdev: float | None
     median_ci: list[float | None] | None  # [lo, hi]; a None bound is unbounded
     p95_ci: list[float | None] | None
-    first_n: int  # answers that were their domain's first from this resolver
-    first_median: float | None
+    first_n: int  # answers that were their domain's first from this resolver: the latency samples
     repeat_n: int  # the other answers: repeats, usually from the resolver's cache
     repeat_median: float | None
 

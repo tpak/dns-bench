@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from .config import DEFAULT_SETTINGS
-from .recommend import COUNTED_RATES, SCORE_FORMULA
+from .recommend import COUNTED_RATES, NOISE_TEST, SCORE_FORMULA
 
 
 def printable(text: str) -> str:
@@ -61,8 +61,8 @@ def stats_line(name: str, st: Mapping[str, Any]) -> str:
         line += f" retried={st['retried']}"
     if st.get("local_errors"):
         line += f" local_errors={st['local_errors']}"
-    if st.get("repeat_n"):  # first answers of each domain vs repeats (mostly cache hits)
-        line += f" first={_f(st.get('first_median'))} repeat={_f(st.get('repeat_median'))}"
+    if st.get("repeat_n"):  # latency uses first answers; repeats (mostly cache hits) shown apart
+        line += f" first_answers={st.get('first_n', 0)} repeat_median={_f(st.get('repeat_median'))}"
     return line
 
 
@@ -149,25 +149,33 @@ def render_text(bundle: Mapping[str, Any]) -> str:
     if ranking:
         lines.append("")
         lines.append(f"Ranking ({SCORE_FORMULA}; lower is better):")
-        rows = []
-        for i, e in enumerate(ranking):
-            # "=": nothing measured tells it apart from the one above (recommend.within_noise)
-            tied_above = i > 0 and ranking[i - 1]["resolver"] in (e.get("ties") or [])
-            uncounted = bool(e["failure_rate"]) and e.get("failures_counted") is False
-            rows.append(
-                [
-                    f"{e['rank']}{'=' if tied_above else ''}",
-                    e["resolver"],
-                    _f(e["score"]),
-                    _f(e["median"]),
-                    _ci(e.get("median_ci")),
-                    _f(e["p95"]),
-                    _f(e["mean"]),
-                    _pct(e["failure_rate"]) + ("*" if uncounted else ""),
-                    f"{e['ok']}/{e['n']}",
-                    e.get("fastest_server") or "-",
-                ]
-            )
+        # "=": within noise of the one above (recommend.within_noise). "*": a failure rate the score
+        # leaves out; with a single resolver there is nothing to compare, so nothing to mark.
+        tied = [i > 0 and ranking[i - 1]["resolver"] in (e.get("ties") or []) for i, e in enumerate(ranking)]
+        uncounted = [
+            len(ranking) > 1 and bool(e["failure_rate"]) and e.get("failures_counted") is False
+            for e in ranking
+        ]
+
+        def mark(flags: list[bool], i: int, sign: str) -> str:
+            # a space where another row has a mark, so the digits of right-aligned cells line up
+            return sign if flags[i] else " " if any(flags) else ""
+
+        rows = [
+            [
+                f"{e['rank']}{mark(tied, i, '=')}",
+                e["resolver"],
+                _f(e["score"]),
+                _f(e["median"]),
+                _ci(e.get("median_ci")),
+                _f(e["p95"]),
+                _f(e["mean"]),
+                _pct(e["failure_rate"]) + mark(uncounted, i, "*"),
+                f"{e['ok']}/{e['n']}",
+                e.get("fastest_server") or "-",
+            ]
+            for i, e in enumerate(ranking)
+        ]
         lines += [
             "  " + ln
             for ln in table(
@@ -177,10 +185,10 @@ def render_text(bundle: Mapping[str, Any]) -> str:
             )
         ]
         lines.append(f"  {COUNTED_RATES}")
-        if any(r[7].endswith("*") for r in rows):
+        if any(uncounted):
             lines.append("  * not significantly higher than another resolver's, so not in the score.")
-        if any(r[0].endswith("=") for r in rows):
-            lines.append("  = within noise of the resolver above: the difference may be chance.")
+        if any(tied):
+            lines.append(f"  = within noise of the resolver above: {NOISE_TEST}.")
 
     slow_count = summary.get("slow_count", len(summary.get("slow") or []))
     slow_ms = summary.get("slow_threshold_ms", settings["slow_threshold_ms"])

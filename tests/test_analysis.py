@@ -124,10 +124,13 @@ class ListTest(AnalysisTestBase):
                 "medians",
             },
         )
-        self.assertEqual(r["medians"], {"Cloudflare": 5.5, "Google": 20.0})
+        # Phase 8: latency uses each domain's first answer, so Cloudflare's second server (6 ms, asking
+        # the same domains after the first) no longer moves the median (it was 5.5)
+        self.assertEqual(r["medians"], {"Cloudflare": 5.0, "Google": 20.0})
         self.assertEqual((r["n_queries"], r["n_domains"]), (7, 3))
         self.assertEqual(r["resolvers"], ["Cloudflare", "Google"])
-        self.assertEqual((r["best"], r["best_median"]), ("Cloudflare", 5.5))  # median of 5,5,6,6
+        # first answers only: 5, 5 (it was the median of 5, 5, 6, 6)
+        self.assertEqual((r["best"], r["best_median"]), ("Cloudflare", 5.0))
         self.assertEqual(self.runs.latest_id(), "20260301T000000Z-2")
 
     def test_list_runs_skips_unreadable_files_with_one_warning(self):
@@ -263,13 +266,15 @@ class V1RunFixturesTest(unittest.TestCase):
 
     def test_phase_8_reanalysis_keeps_the_measured_numbers(self):
         # Until Phase 8 this test checked that today's analysis reproduced what 1.0.0 stored. Phase 8
-        # (ANALYSIS_VERSION 2) changed what is concluded from the same results on purpose, so now it
-        # checks what must not change: the counts and the central figures, per resolver and per server.
-        # The tail figures use first answers only now, and the verdict (best: Cloudflare) holds.
-        central = ("n", "ok", "failures", "timeouts", "errors", "mean", "median", "min", "max", "stdev")
+        # (ANALYSIS_VERSION 2) changed what is concluded from the same results on purpose: latency
+        # figures use each domain's first answer only, and ties need evidence. So now it checks what
+        # must not change: every count, per resolver and per server; per-server latency where each
+        # server asked each domain once (the 1-round run); and the verdict (best: Cloudflare).
+        counts = ("n", "ok", "failures", "timeouts", "errors")
+        central = ("mean", "median", "min", "max", "stdev")
 
-        def pick(st):
-            return {k: st[k] for k in central}
+        def pick(st, keys):
+            return {k: st[k] for k in keys}
 
         for run_id in V1_RUN_IDS:
             with self.subTest(run_id=run_id):
@@ -278,17 +283,31 @@ class V1RunFixturesTest(unittest.TestCase):
                 self.assertEqual(fresh["analysis_version"], 2)
                 old, new = stored["summary"], fresh["summary"]
                 self.assertEqual((new["resolvers"], new["domains"]), (old["resolvers"], old["domains"]))
+                one_round = stored["config"]["settings"]["rounds"] == 1
                 for name, st in old["by_resolver"].items():
-                    self.assertEqual(pick(new["by_resolver"][name]), pick(st), name)
+                    self.assertEqual(pick(new["by_resolver"][name], counts), pick(st, counts), name)
                     for server, sst in old["by_server"][name].items():
-                        self.assertEqual(pick(new["by_server"][name][server]), pick(sst), server)
+                        keys = counts + central if one_round else counts
+                        self.assertEqual(pick(new["by_server"][name][server], keys), pick(sst, keys), server)
                 self.assertEqual(fresh["recommendation"]["best"], stored["recommendation"]["best"])
-        # The cache effect, pinned: over every answer (rounds 2, and a second server asking the same
-        # names) Quad9's p95 was 19.4 ms; over the first answer of each domain it is 165.1 ms.
+        # The cache effect, pinned: over every answer (2 rounds, and a second server asking the same
+        # names) Quad9's median was 6.0 ms and its p95 19.4 ms; over the first answer of each domain
+        # they are 6.54 and 165.1 ms, from 61 answers. The 183 repeats had a median of 5.96 ms.
         stored = json.loads((V1_FIXTURES / "20260925T091918Z.json").read_text(encoding="utf-8"))
         quad9 = self.runs.load("20260925T091918Z")["summary"]["by_resolver"]["Quad9"]
-        self.assertEqual((stored["summary"]["by_resolver"]["Quad9"]["p95"], quad9["p95"]), (19.38, 165.12))
-        self.assertEqual((quad9["first_n"], quad9["repeat_n"]), (61, 183))
+        old = stored["summary"]["by_resolver"]["Quad9"]
+        self.assertEqual((old["median"], old["p95"]), (6.0, 19.38))
+        self.assertEqual((quad9["median"], quad9["p95"]), (6.54, 165.12))
+        self.assertEqual((quad9["first_n"], quad9["repeat_n"], quad9["repeat_median"]), (61, 183, 5.96))
+
+    def test_ties_with_the_best_are_a_run_down_the_ranking(self):
+        # Cloudflare is within noise of Quad9 and OpenDNS, but not of the ISP ranked between them, so
+        # none of them is reported as tied with it (ties aren't transitive).
+        rec = self.runs.load("20260925T090918Z")["recommendation"]
+        self.assertEqual([e["resolver"] for e in rec["ranking"]][:2], ["Cloudflare", "ISP"])
+        self.assertEqual(rec["ranking"][0]["ties"], ["Quad9", "OpenDNS"])
+        self.assertEqual(rec["tied_with"], [])
+        self.assertEqual((rec["backup"], rec["backup_tied_with"]), ("ISP", ["Quad9", "OpenDNS", "Google"]))
 
     def test_list_report_and_aggregate(self):
         rows = self.runs.list_runs()

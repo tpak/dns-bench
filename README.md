@@ -84,24 +84,26 @@ Undo the install with `uv tool uninstall dns-bench`.
 Example output:
 
 ```
-Cloudflare: mean=6.1 median=5.8 p80=6.8 p95=8.0 p98=8.6 min=4.4 max=21.5 n=120 fail=0.0% first=5.8 repeat=5.8
-Google: mean=25.2 median=6.8 p80=21.6 p95=170.9 p98=174.8 min=3.9 max=398.4 n=120 fail=0.0% first=7.0 repeat=6.5
-System: mean=5.3 median=5.5 p80=6.6 p95=8.4 p98=11.9 min=2.0 max=19.7 n=60 fail=0.0%
+Cloudflare: mean=8.8 median=5.5 p80=6.3 p95=18.6 p98=19.8 min=4.2 max=145.9 n=120 fail=0.0% first_answers=60 repeat_median=5.7
+Google: mean=43.7 median=7.8 p80=21.9 p95=239.6 p98=270.9 min=4.4 max=272.2 n=120 fail=0.0% first_answers=60 repeat_median=8.7
+System: mean=9.9 median=6.0 p80=7.4 p95=17.9 p98=19.7 min=2.4 max=179.9 n=60 fail=0.0%
 ...
 Ranking (score = 0.5 × median + 0.3 × p95 + 0.2 × mean + failure_rate × timeout_ms × 2 + retry_rate × timeout_ms; lower is better):
    #  Resolver    Score  Median   95% CI    p95  Mean  Fail     OK/N  Best server
   --  ----------  -----  ------  -------  -----  ----  ----  -------  -----------
-   1  System        6.3     5.5  3.6–5.9    8.4   5.3  0.0%    60/60  192.168.1.1
-  2=  Cloudflare    6.5     5.8  5.6–6.0    8.0   6.1  0.0%  120/120  1.1.1.1
-   3  Google       59.7     6.8  6.2–7.6  170.9  25.2  0.0%  120/120  8.8.8.8
+  1   Cloudflare   10.1     5.5  5.3–5.8   18.6   8.8  0.0%  120/120  1.1.1.1
+  2=  System       10.4     6.0  5.7–6.6   17.9   9.9  0.0%    60/60  192.168.1.1
+  3   Google       84.5     7.8  6.5–9.8  239.6  43.7  0.0%  120/120  8.8.8.8
   A failure or retry rate counts only when it is significantly higher than another resolver's.
-  = within noise of the resolver above: the difference may be chance.
+  = within noise of the resolver above: medians within 2 ms or with overlapping 95 % intervals, and no significant difference in slow answers or failures.
 ...
-Recommendation: Use System: put 192.168.1.1 first and 1.1.1.1 (Cloudflare) second. ...
+Recommendation: Use Cloudflare: put 1.1.1.1 first and 192.168.1.1 (System) second. ...
 ```
 
-`=` marks a resolver within noise of the one above it, and `first=`/`repeat=` are the medians of
-each domain's first answer and of the repeats ([How the recommendation works](#how-the-recommendation-works)).
+Latency figures use the first answer of each domain from each resolver (`first_answers=60`);
+`repeat_median` is the median of the repeats, which the resolver mostly answered from its cache.
+`=` marks a resolver within noise of the one above it
+([How the recommendation works](#how-the-recommendation-works)).
 
 While a run is going, `[slow]` and `[fail]` lines are printed to stderr, like the original
 did, along with a live progress line showing done/total, elapsed time and ETA. Press Ctrl-C
@@ -216,7 +218,7 @@ would mix different networks' resolvers under one name. After moving to another 
 | `per_server_interval_ms` | 250 | 50–5000 | Minimum gap between query starts to the same server. This is what keeps the load polite: 1000/interval = max queries/s per server. |
 | `timeout_ms` | 1000 | 200–10000 | How long to wait for an answer. |
 | `tries` | 1 | 1–3 | Attempts per query. A retry happens only after a timeout, and is paced by the interval like any other query. Each result row records its `attempts`; a query that answered only on a retry counts as `retried` and is penalised in the score, and its `ms` is the retry's round trip. |
-| `rounds` | 1 | 1–10 | How many times each domain is queried on each server. More rounds give steadier numbers. |
+| `rounds` | 1 | 1–10 | How many times each domain is queried on each server. Repeats are mostly answered from the resolver's cache, so latency figures use only each domain's first answer ([Cache effects](#how-the-recommendation-works)); more rounds sharpen the failure rates. For steadier latency, combine runs taken at different times. |
 | `slow_threshold_ms` | 200 | 1–10000 | Answers slower than this are listed as `[slow]`. |
 | `record_type` | `A` | `A`, `AAAA` | Query type. |
 | `shuffle` | `true` | bool | Shuffle each server's domain order independently. |
@@ -243,16 +245,20 @@ Percentiles use the same nearest-rank method as the original awk script,
 `idx = ceil(p/100 × n)`, which a test checks against the original awk program. Failures are
 reported separately as `failure_rate`.
 
-**Cache effects.** A resolver answers a name it was just asked from its cache. So **p80, p95 and
-p98 use only the first answer of each domain from each resolver** in a run. Repeats come from more
-rounds, or from a provider's second server asking the same name, and would otherwise fill the tail
-with cache hits, more so for providers with more servers. The median, mean, min and max use every
-answer. `first_median` and `repeat_median` show the two groups apart, and a note compares them.
+**Cache effects.** A resolver answers a name it was just asked from its cache. The benchmark's own
+repeats are exactly that: more rounds, or a provider's second server asking the same name. In real
+use your device caches each answer for its TTL, so a resolver sees each name from you about once
+per TTL. **Every latency figure (mean, median, p80/p95/p98, min, max, stdev) therefore uses only
+the first answer of each domain from each resolver in a run** (`first_n` of them). Otherwise
+repeats would pull the figures down, more so for providers with more servers, and make them look
+more precise than they are. The repeats still count for the failure and retry rates, and
+`repeat_n` and `repeat_median` show them apart, with a note. So more rounds sharpen the failure
+rates, not the latency figures. For steadier latency, combine runs taken at different times ("All
+runs combined").
 
 **Uncertainty.** Every median and p95 comes with an exact 95 % confidence interval from order
-statistics (`median_ci`, `p95_ci`; a `null` bound means the samples can't bound it, as for the p95
-of 60 answers). Failure rates get a 95 % Wilson interval (`failure_ci`). All of these assume the
-queries are independent samples, which repeats of one domain are not quite.
+statistics (`median_ci`, `p95_ci`). A `null` bound means the samples can't bound it: a p95 needs
+72 answers for an upper bound. Failure rates get a 95 % Wilson interval (`failure_ci`).
 
 Each resolver with at least one answer then gets a score, where lower is better:
 
@@ -277,16 +283,28 @@ A failure or retry rate counts only when it is significantly higher than another
   Only a query that answered on a retry counts as `retried`. One whose every try timed out is a
   failure.
 * A server that **never answered** (e.g. an IPv6 address on a network without IPv6) is left
-  out of its resolver's score, because it is never suggested. A note names it.
+  out of its resolver's score, because it is never suggested. A note names it. The ranking's
+  failure rate, retry rate and OK/N leave it out too, so they match the score.
+* In "All runs combined", a resolver that can no longer be recommended (see below) doesn't count
+  as "another resolver" for the rule above: it was measured at other times.
 
-Two resolvers are **within noise** of each other when nothing measured tells them apart. Their
-median intervals overlap, or the medians differ by at most 2 ms. The same holds for their p95. And
-neither fails or needs a retry significantly more often. Each ranking entry lists the resolvers it
-is within noise of (`ties`), and the text report marks such neighbours with `=`.
+Two resolvers are **within noise** of each other when nothing measured tells them apart:
+
+* their median intervals overlap, or the medians differ by at most 2 ms;
+* neither has significantly more slow answers. This uses Fisher's exact test on how many of each
+  one's answers lie above the p95 of both pooled. A p95 interval can't be bounded from one run's
+  60 answers, and even this test needs a clean split: with 60 answers each, only 6 of the 6
+  slowest answers on one side counts;
+* neither fails or needs a retry significantly more often.
+
+Each ranking entry lists the resolvers it is within noise of (`ties`), and the text report marks
+one within noise of the resolver above it with `=`. Ties aren't transitive: a resolver can be
+within noise of the best while one ranked between them is not.
 
 From the ranking:
 
-* **Best** is the lowest score. Any resolver within noise of it is reported as *tied*.
+* **Best** is the lowest score. The resolvers ranked right after it that are within noise of it
+  are reported as *tied*, up to the first that isn't.
 * **Put first** is the best resolver's server with the lowest median, plus the same penalties
   as in the score where they count, so an IP that drops queries never beats a reliable sibling.
   Among servers within noise of that one (with a 0.5 ms floor instead of 2 ms), config order
@@ -294,8 +312,9 @@ From the ranking:
 * **Put second** is the put-first server of the best *different* provider, so an outage at one
   provider doesn't take down both entries. A resolver that shares a server IP with the best
   one (in "All runs combined", e.g. the same resolver renamed) doesn't count as different.
-  Without a different provider, it is the best resolver's next server. Other providers within
-  noise of that backup are listed too (`backup_tied_with`), with a note.
+  Without a different provider, it is the best resolver's next server. The providers ranked
+  right after that backup and within noise of it are listed too (`backup_tied_with`), with a
+  note.
 * **Notes** warn about:
   * failure and retry rates above 2 %, saying whether the score counts them and naming the IP
     when one server of a resolver is to blame;

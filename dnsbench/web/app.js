@@ -56,7 +56,7 @@
     rounds: {
       label: 'Rounds',
       step: 1,
-      help: 'How many times each domain is looked up on each server. More rounds give steadier numbers.',
+      help: "How many times each domain is looked up on each server. Repeats are mostly answered from the resolver's cache, so latency figures use only each domain's first answer; more rounds sharpen the failure rates. For steadier latency, combine runs taken at different times.",
     },
     timeout_ms: {
       label: 'Timeout',
@@ -2240,7 +2240,7 @@
                 h(
                   'span',
                   { class: 'muted small' },
-                  'No significant difference in median, slow answers or failures; either is a good choice.',
+                  'Medians within 2 ms or with overlapping intervals, and no significant difference in slow answers or failures; either is a good choice.',
                 ),
               )
             : null,
@@ -2412,7 +2412,7 @@
       {
         title: 'Resolver statistics',
         sub:
-          "Milliseconds over successful answers; p80 to p98 use only the first answer of each domain (repeats are mostly cache hits). Score combines median, p95, mean and failures, counting a failure rate only when it is significantly higher than another resolver's; lower is better. = marks a rank within noise of the one above. Click a column to sort." +
+          "Milliseconds over the first successful answer of each domain from each resolver (repeats are mostly cache hits). Score combines median, p95, mean and failures, counting a failure rate only when it is significantly higher than another resolver's; lower is better. = marks a rank within noise of the one above. Click a column to sort." +
           (cov ? ' Runs shows how many of the combined runs measured each resolver.' : ''),
       },
       dataTable(
@@ -2597,7 +2597,7 @@
         'Mean',
         st.mean,
         st.repeat_n > 0
-          ? `first answers ${fmtMsU(st.first_median)}, repeats ${fmtMsU(st.repeat_median)} (medians)`
+          ? `${plural(st.repeat_n, 'repeat')} left out (mostly cached): median ${fmtMsU(st.repeat_median)}`
           : null,
       ),
       msKpi('Median', st.median, ciText(st.median_ci)),

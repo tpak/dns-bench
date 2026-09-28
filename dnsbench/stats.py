@@ -11,19 +11,23 @@ separately via ``failure_rate``.
 Failures come in kinds (``failure_kind``). A local error (no socket, no route from this computer, a
 bug) says nothing about the resolver, so it is left out of the failure and retry rates altogether.
 
-Cache effects: a resolver answers a name it was just asked from its cache. Only the first answer of
-each domain from each resolver (per run) can be a cache miss, so the tail figures (p80, p95, p98) use
-those answers alone; repeats (more rounds, or a provider's second server) would otherwise pad the tail
-with cache hits, and more so for a provider with more servers. Median, mean, min and max use every
-answer. ``first_median`` and ``repeat_median`` show the two groups separately.
+Cache effects: a resolver answers a name it was just asked from its cache, and the benchmark's own
+repeats (more rounds, or a provider's second server asking the same name) are exactly that. A user's
+device caches an answer for its TTL, so a resolver sees a user's name about once per TTL: the first
+answer is the realistic sample. Every latency figure (mean, median, percentiles, min, max, stdev and
+the intervals) therefore uses only the first answer of each domain from each resolver in each run.
+Repeats would otherwise pull the figures down, more so for a provider with more servers, and make them
+look more precise than they are (samples of one domain are not independent). ``repeat_n`` and
+``repeat_median`` show the repeats apart; they still count for the failure and retry rates.
 
 Uncertainty: ``median_ci`` and ``p95_ci`` are exact 95 % confidence intervals from order statistics
 (``quantile_ci``), ``wilson`` gives one for a rate, and ``rate_difference_low`` tells whether one rate
 is significantly higher than another (Newcombe's interval for a difference, built from two Wilson
 intervals). A p95 interval needs 72 samples before it has an upper bound, so tails are compared with
-``tails_differ`` instead: a two-sample test of the share of answers above the pair's pooled p95 (Mood's
-median test, at the 95th percentile). All assume independent samples, which repeats of one domain are
-not quite; they are a guide to what is noise, not a guarantee.
+``tails_differ`` instead: Fisher's exact test on how many of each sample's answers lie above the p95 of
+both pooled (a median test at the 95th percentile). That test has a floor too: with 60 answers each,
+only a 6-to-0 split of the slowest 5 % counts. The intervals assume independent samples; they are a
+guide to what is noise, not a guarantee.
 """
 
 from __future__ import annotations
@@ -43,7 +47,9 @@ SLOW_PER_RESOLVER_MAX = 100  # rows kept per resolver in ``slow_by_resolver``
 
 CONFIDENCE_Z = 1.959963984540054  # two-sided 95 %
 _ALPHA_HALF = (1, 40)  # 2.5 % in each tail, as a fraction for exact integer arithmetic
-_EXACT_CI_MAX_N = 1000  # above this, the normal approximation (within a rank of the exact answer)
+# Exact ranks up to this sample size (0.14 s at 10,000, once per size: cached). Above it, the normal
+# approximation: within a rank of the exact answer, but for the skewed p95 one tail can exceed 2.5 %.
+_EXACT_CI_MAX_N = 10_000
 
 FailureKind = Literal["timeout", "answer", "network", "local"]
 
@@ -127,7 +133,8 @@ def quantile_ci_ranks(n: int, num: int, den: int) -> tuple[int, int]:
     The count of samples below the true quantile is Binomial(n, q). ``lo`` is the largest rank with
     P(B < lo) <= 2.5 %, ``hi`` the smallest with P(B >= hi) <= 2.5 %, so P(x_lo <= quantile <= x_hi)
     >= 95 %. lo is 0 when no sample is low enough (unbounded below) and hi is n + 1 when none is high
-    enough (unbounded above). Exact, in integers, up to n = 1000; the normal approximation above.
+    enough (unbounded above). Exact, in integers, up to _EXACT_CI_MAX_N; the normal approximation
+    above (total coverage still about 95 %, but one tail may be a little over 2.5 %).
     """
     if not 0 < num < den:
         raise ValueError(f"quantile must be strictly between 0 and 1, got {num}/{den}")
@@ -185,10 +192,11 @@ def _answered(row: Row) -> bool:
 
 
 def latency_stats(rows: Iterable[Row], first: set[int] | None = None) -> LatencyStats:
-    """Counts over all rows; latency stats over rows with status "ok" only.
+    """Counts over all rows; latency figures over the first answers among them.
 
     ``first`` holds the ``id()`` of the rows that were the first answer of their domain from their
-    resolver (see ``first_answers``); the tail figures use only those. None: every row is a first.
+    resolver (see ``first_answers``). Every latency figure uses only those; the other answers are the
+    repeats (``repeat_n``, ``repeat_median``). None: every answer counts as a first.
 
     Local errors (``failure_kind``) are counted in ``local_errors`` and left out of everything else
     except ``n``: ``failure_rate`` and ``retry_rate`` are over the other ``n - local_errors`` queries.
@@ -202,16 +210,12 @@ def latency_stats(rows: Iterable[Row], first: set[int] | None = None) -> Latency
     local = kinds.count("local")
     counted = n - local
     answered = [r for r in rows if _answered(r)]
-    lat = sorted(float(r["ms"]) for r in answered)
-    ok = len(lat)
+    ok = len(answered)
     timeouts = kinds.count("timeout")
     failures = counted - ok
     retried = sum(1 for r in answered if _attempts(r) > 1)
-    if first is None:
-        first_lat, repeat_lat = lat, []
-    else:
-        first_lat = sorted(float(r["ms"]) for r in answered if id(r) in first)
-        repeat_lat = sorted(float(r["ms"]) for r in answered if id(r) not in first)
+    lat = sorted(float(r["ms"]) for r in answered if first is None or id(r) in first)
+    repeats = sorted(float(r["ms"]) for r in answered if first is not None and id(r) not in first)
     out: LatencyStats = {
         "n": n,
         "ok": ok,
@@ -231,22 +235,21 @@ def latency_stats(rows: Iterable[Row], first: set[int] | None = None) -> Latency
         "max": None,
         "stdev": None,
         "median_ci": quantile_ci(lat, 1, 2),
-        "p95_ci": quantile_ci(first_lat, 19, 20),
-        "first_n": len(first_lat),
-        "first_median": _r(median(first_lat)),
-        "repeat_n": len(repeat_lat),
-        "repeat_median": _r(median(repeat_lat)),
+        "p95_ci": quantile_ci(lat, 19, 20),
+        "first_n": len(lat),
+        "repeat_n": len(repeats),
+        "repeat_median": _r(median(repeats)),
     }
-    if ok:
-        mean = math.fsum(lat) / ok
-        var = math.fsum((x - mean) ** 2 for x in lat) / ok  # population
+    if lat:  # every resolver, server or domain with an answer has a first answer
+        mean = math.fsum(lat) / len(lat)
+        var = math.fsum((x - mean) ** 2 for x in lat) / len(lat)  # population
         out.update(
             {
                 "mean": _r(mean),
                 "median": _r(median(lat)),
-                "p80": _r(nearest_rank(first_lat, 80)),
-                "p95": _r(nearest_rank(first_lat, 95)),
-                "p98": _r(nearest_rank(first_lat, 98)),
+                "p80": _r(nearest_rank(lat, 80)),
+                "p95": _r(nearest_rank(lat, 95)),
+                "p98": _r(nearest_rank(lat, 98)),
                 "min": _r(lat[0]),
                 "max": _r(lat[-1]),
                 "stdev": _r(math.sqrt(var)),
@@ -256,14 +259,31 @@ def latency_stats(rows: Iterable[Row], first: set[int] | None = None) -> Latency
 
 
 def tails_differ(a: Sequence[float], b: Sequence[float]) -> bool:
-    """True if one sample has significantly more answers above the p95 of both pooled than the other."""
+    """True if one sample has significantly more answers above the p95 of both pooled than the other.
+
+    Fisher's exact test, two-sided as two one-sided tests at 2.5 %: given how many answers lie above
+    the pooled p95, how unlikely is a split this uneven? (The count above is fixed by the pooling, so
+    the two sides are not independent binomials, and a test that assumes they are rejects too often
+    when the samples differ in size.) Values equal to the threshold count as not above it.
+    """
     if not a or not b:
         return False
     threshold = nearest_rank(sorted([*a, *b]), 95)
     assert threshold is not None  # both non-empty
     ka = sum(1 for x in a if x > threshold)
     kb = sum(1 for x in b if x > threshold)
-    return rate_difference_low(ka, len(a), kb, len(b)) > 0 or rate_difference_low(kb, len(b), ka, len(a)) > 0
+    na, nb, k = len(a), len(b), ka + kb
+    lo, hi = max(0, k - nb), min(k, na)
+    # log of C(k, x) * C(na + nb - k, na - x) / C(na + nb, na): the chance that x of the k are in a
+    base = _log_comb(na + nb, na)
+    pmf = {x: math.exp(_log_comb(k, x) + _log_comb(na + nb - k, na - x) - base) for x in range(lo, hi + 1)}
+    upper = sum(p for x, p in pmf.items() if x >= ka)  # a this far above its share, or further
+    lower = sum(p for x, p in pmf.items() if x <= ka)
+    return upper <= 0.025 or lower <= 0.025
+
+
+def _log_comb(n: int, k: int) -> float:
+    return math.lgamma(n + 1) - math.lgamma(k + 1) - math.lgamma(n - k + 1)
 
 
 def _tail_pairs(samples: Mapping[str, Sequence[float]]) -> dict[str, list[str]]:

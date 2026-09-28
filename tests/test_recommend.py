@@ -133,12 +133,12 @@ class RecommendTest(unittest.TestCase):
     def test_ties_come_from_overlapping_intervals(self):
         # Phase 8 replaced the 10 % score margin with the measurements' own intervals. A and B spread
         # widely and their medians' intervals overlap, so 5 ms between them is noise; C's values are
-        # tight and clearly higher, so it isn't tied although its median is only 9 ms more.
+        # tight and clearly higher, so it isn't tied although its median is only 15 ms more.
         spread = [float(v) for v in range(80, 121)]  # 80..120, median 100
         s = summary(
             rows_for("A", "1.1.1.1", spread),
             rows_for("B", "8.8.8.8", [v + 5 for v in spread]),
-            rows_for("C", "9.9.9.9", [109.0] * 41),
+            rows_for("C", "9.9.9.9", [115.0] * 41),
         )
         rec = RC.recommend(s, SETTINGS)
         self.assertEqual(rec["best"], "A")
@@ -146,7 +146,7 @@ class RecommendTest(unittest.TestCase):
         a = rec["ranking"][0]
         self.assertEqual(a["median_ci"], [93.0, 107.0])  # ranks 14 and 28 of 41
         self.assertEqual(a["ties"], ["B"])
-        self.assertTrue(any("no significant difference in median" in n for n in notes(rec)), rec["notes"])
+        self.assertTrue(any("medians within 2 ms or with overlapping" in n for n in notes(rec)), rec["notes"])
 
     def test_backup_ties_are_reported(self):
         s = summary(
@@ -605,6 +605,51 @@ class MeasurementNotesTest(unittest.TestCase):
             "7 domains that other resolvers answered (d0.com, d1.com, d2.com, d3.com, d4.com, …)",
             note["text"],
         )
+
+
+class ReviewFixesTest(unittest.TestCase):
+    """Found by the review of PR #15."""
+
+    def test_ranking_rates_are_the_scored_ones(self):
+        # A dead IPv6 server's 50 timeouts are left out of the score, so they must be left out of the
+        # ranking's failure rate and counts too (the table showed 50.0% against a score without it).
+        s = summary(
+            rows_for("A", "1.1.1.1", [10] * 50),
+            rows_for("A", "2606:4700:4700::1111", [], timeouts=50),
+            rows_for("B", "8.8.8.8", [20] * 50),
+        )
+        a = RC.recommend(s, SETTINGS)["ranking"][0]
+        self.assertEqual((a["failure_rate"], a["ok"], a["n"]), (0.0, 50, 50))
+        self.assertEqual(a["failure_ci"][0], 0.0)
+
+    def test_stale_resolvers_do_not_decide_which_rates_count(self):
+        # Fast's 4 failures in 200 aren't significantly more than Steady's none; OldISP, measured only
+        # in older runs (not current), must not make them count by its own large clean sample.
+        s = summary(
+            rows_for("Fast", "1.1.1.1", [10] * 196, timeouts=4),
+            rows_for("Steady", "8.8.8.8", [30] * 200),
+            rows_for("OldISP", "192.0.2.53", [80] * 2000),
+        )
+        rec = RC.recommend(s, SETTINGS, current=["Fast", "Steady"])
+        self.assertEqual(rec["best"], "Fast")
+        self.assertFalse(next(e for e in rec["ranking"] if e["resolver"] == "Fast")["failures_counted"])
+        # when OldISP is current it is a fair comparison, and the failures count
+        self.assertEqual(RC.recommend(s, SETTINGS)["best"], "Steady")
+
+    def test_backup_ties_leave_out_the_backups_aliases(self):
+        s = summary(
+            rows_for("Best", "1.1.1.1", [5.0] * 40),
+            rows_for("Google", "8.8.8.8", [20.0] * 40),
+            rows_for("Google2", "8.8.8.8", [20.2] * 40, domain_prefix="g"),
+        )
+        rec = RC.recommend(s, SETTINGS)
+        self.assertEqual((rec["backup"], rec["backup_tied_with"]), ("Google", []))
+
+    def test_local_errors_are_noted_when_nothing_answered(self):
+        s = summary(error_rows("A", "2606:4700:4700::1111", 5), error_rows("B", "2001:4860:4860::8888", 5))
+        rec = RC.recommend(s, SETTINGS)
+        self.assertIsNone(rec["best"])
+        self.assertIn("local_errors", [n["code"] for n in rec["notes"]])
 
 
 if __name__ == "__main__":

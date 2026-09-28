@@ -47,6 +47,11 @@ SERVER_TIE_ABS_MS = 0.5
 FAILURE_WARN_RATE = 0.02
 LOW_SAMPLE = 30
 UNANSWERED_SHOWN = 5  # domains named in an "unanswered" note
+# What "within noise" tested, for the notes and the report.
+NOISE_TEST = (
+    f"medians within {TIE_ABS_MS:g} ms or with overlapping 95 % intervals, and no significant "
+    "difference in slow answers or failures"
+)
 
 
 # The formula is for people: it uses the multiplication sign, as the README does.
@@ -253,8 +258,15 @@ def _rate_ci(k: int, n: int) -> list[float]:
     return [round(lo, 4), round(hi, 4)]
 
 
-def rank(summary: Summary, timeout_ms: float) -> tuple[list[Ranked], list[str]]:
-    """Every resolver that answered, best first, and the names of those that never did."""
+def rank(
+    summary: Summary, timeout_ms: float, current: Iterable[str] | None = None
+) -> tuple[list[Ranked], list[str]]:
+    """Every resolver that answered, best first, and the names of those that never did.
+
+    A failure or retry rate counts when it is significantly higher than that of a resolver in
+    ``current`` (see choose; None: any resolver). One measured only in older runs of "All runs
+    combined" was measured at other times, so it can't make another's failures count.
+    """
     by_res = summary.get("by_resolver") or {}
     by_srv = summary.get("by_server") or {}
     order = summary.get("resolvers") or list(by_res.keys())
@@ -271,7 +283,8 @@ def rank(summary: Summary, timeout_ms: float) -> tuple[list[Ranked], list[str]]:
             no_answers.append(name)
             continue
         live.append((name, st, eff, srv))
-    group = [eff for _, _, eff, _ in live]
+    cur = set(current) if current is not None else None
+    group = [eff for name, _, eff, _ in live if cur is None or name in cur] or [eff for _, _, eff, _ in live]
     ranked: list[tuple[float, float, int, Ranked]] = []
     for name, st, eff, srv in live:
         fail_counts = _significant(eff, group, "failures")
@@ -287,10 +300,11 @@ def rank(summary: Summary, timeout_ms: float) -> tuple[list[Ranked], list[str]]:
             "median": st["median"] or 0.0,
             "p95": st["p95"] or 0.0,
             "mean": st["mean"] or 0.0,
-            "failure_rate": st["failure_rate"],
-            "retry_rate": st.get("retry_rate") or 0.0,
-            "ok": st["ok"],
-            "n": st["n"],
+            # the rates and counts the score used: servers that never answered left out
+            "failure_rate": eff["failure_rate"],
+            "retry_rate": eff.get("retry_rate") or 0.0,
+            "ok": eff["ok"],
+            "n": eff["n"],
             "fastest_server": ordered[0] if ordered else None,
             "median_ci": st.get("median_ci"),
             "p95_ci": st.get("p95_ci"),
@@ -332,12 +346,26 @@ class Choice:
     eligible: list[Ranked]  # may be recommended (in the current config), best first
     stale: list[Ranked]  # ranked, but not in the current config
     aliases: list[Ranked]  # other names for best's servers
-    tied_with: list[str]  # within noise of best
-    backup_tied_with: list[str]  # within noise of the backup, and could be it
+    tied_with: list[str]  # ranked right after best and within noise of it (_tie_run)
+    backup_tied_with: list[str]  # the same for the backup, among other providers that could be it
     primary_ip: str | None
     secondary_ip: str | None
     secondary_txt: str | None  # how the summary names the secondary: "8.8.8.8 (Google)"
     suggested: list[str]
+
+
+def _tie_run(lead: Ranked, rest: list[Ranked]) -> list[str]:
+    """The resolvers ranked right after ``lead`` that are within noise of it, up to the first that isn't.
+
+    Ties are pairwise and not transitive: a resolver can be within noise of the best while one ranked
+    above it is not. Listing it would skip a resolver that is clearly different, so the run stops.
+    """
+    run: list[str] = []
+    for e in rest:
+        if e.name not in lead.entry["ties"]:
+            break
+        run.append(e.name)
+    return run
 
 
 def choose(ranking: list[Ranked], current: Iterable[str] | None = None) -> Choice:
@@ -363,8 +391,10 @@ def choose(ranking: list[Ranked], current: Iterable[str] | None = None) -> Choic
     candidates = [e for e in eligible[1:] if not (e.keys & best.keys)]
     backup = candidates[0] if candidates else None
     alias_names = {e.name for e in aliases}
-    tied_with = [e.name for e in eligible[1:] if e.name not in alias_names and e.name in best.entry["ties"]]
-    backup_tied_with = [e.name for e in candidates[1:] if backup and e.name in backup.entry["ties"]]
+    tied_with = _tie_run(best, [e for e in eligible[1:] if e.name not in alias_names])
+    backup_tied_with = (
+        _tie_run(backup, [e for e in candidates[1:] if not (e.keys & backup.keys)]) if backup else []
+    )
     primary_ip = best.fastest
     secondary_ip = None
     secondary_txt = None
@@ -601,8 +631,7 @@ def _choice_notes(c: Choice, tested: int) -> list[Note]:
         notes.append(
             _note(
                 "tie",
-                f"{best.name} is within noise of {_join(c.tied_with)} (no significant difference in "
-                "median, slow answers or failures) — "
+                f"{best.name} is within noise of {_join(c.tied_with)} ({NOISE_TEST}) — "
                 f"{'either' if len(c.tied_with) == 1 else 'any of them'} is a good choice.",
                 resolver=best.name,
                 tied_with=c.tied_with,
@@ -691,15 +720,15 @@ def _measurement_notes(summary: Summary | None, ranking: list[Ranked]) -> list[N
     """Notes on how the numbers were measured: cache effects, local errors, missing records."""
     notes: list[Note] = []
     overall = summary.get("overall") if summary else None
-    if overall and overall.get("repeat_n") and overall.get("first_median") is not None:
+    if overall and overall.get("repeat_n") and overall.get("median") is not None:
         notes.append(
             _note(
                 "first_answers",
-                "p80, p95 and p98 use only the first answer of each domain from each resolver: repeat "
-                "queries are usually answered from the resolver's cache (median "
-                f"{_ms(overall['first_median'])} for first answers, {_ms(overall['repeat_median'])} for "
-                f"the {overall['repeat_n']} repeats).",
-                first_median=overall["first_median"],
+                "Latency figures use only the first answer of each domain from each resolver: the "
+                f"{overall['repeat_n']} repeat queries were mostly answered from the resolver's cache "
+                f"(median {_ms(overall['repeat_median'])}, against {_ms(overall['median'])} for first "
+                "answers), which your device's own cache spares you in real use.",
+                first_median=overall["median"],
                 repeat_median=overall["repeat_median"],
                 repeats=overall["repeat_n"],
             )
@@ -799,7 +828,7 @@ def recommend(
     None means every resolver may be recommended.
     """
     timeout_ms = float((settings or {}).get("timeout_ms", 1000))
-    ranking, no_answers = rank(summary, timeout_ms)
+    ranking, no_answers = rank(summary, timeout_ms, current)
     if not ranking:
         return {
             "best": None,
@@ -817,6 +846,7 @@ def recommend(
                     "Results reflect this network at this time; check your connection "
                     "(UDP port 53 must be allowed) and run again.",
                 ),
+                *_measurement_notes(summary, []),
             ],
         }
     choice = choose(ranking, current)
