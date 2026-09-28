@@ -75,6 +75,12 @@ jobs:
             echo "$out"
             grep -q "needs Python 3.13 or newer" <<<"$out"
           done
+      # The one live check of System detection on each OS (the unit tests use recorded outputs): Linux
+      # runners use systemd-resolved, so this also covers following its stub to the upstream servers.
+      - name: System resolver detection (live; sends no DNS queries)
+        run: |
+          uv run ./dns-bench --config "$RUNNER_TEMP/detect.json" --runs-dir "$RUNNER_TEMP/runs" config --detect
+          grep -q '"System"' "$RUNNER_TEMP/detect.json"
 
   # One stable check name for branch protection, however the matrix above changes.
   ci-passed:
