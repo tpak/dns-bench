@@ -2,15 +2,15 @@
 
 ## In Progress
 
-- v1.2.0 release: notes rewritten after a pre-release review (39 findings; `.project/research/2026-09-28-release-1.2.0-review.md`); `serve --allow-remote` on 0.0.0.0 fixed; `python -m dnsbench` version check
+- Phase 8 — measurement validity (branch `phase-8-measurement-validity`): significance-gated failure/retry penalties, interval-based ties (backup too), first-answer tail stats, local errors, reply validation + connected sockets, unanswered-domain notes, ANALYSIS_VERSION 2; serve timing measured (no SO_TIMESTAMP needed)
 
 ## Up Next
 
 - Consider Dependabot's `pre-commit` ecosystem for the hook revs (would replace manual `pre-commit autoupdate`; CLAUDE.md §7.2 would change) — `.project/research/2026-09-27-ci-actions.md`
-- Phase 8 — measurement validity; changes results, ships separately (not in the current push)
 
 ## Done This Week
 
+- v1.2.0 released: notes rewritten after a pre-release review (39 findings; `.project/research/2026-09-28-release-1.2.0-review.md`), `serve --allow-remote` on 0.0.0.0 fixed, `python -m dnsbench` version check, live System detection in CI. PR #14, tag v1.2.0, GitHub release published by release.yml (2026-09-29)
 - Tag ruleset "release tags" for `v*`: updates and deletions restricted, admin bypass (2026-09-28)
 - Chris clicked through the web UI in his browser after Phases 3–7: fine (2026-09-28)
 - Phase 7 — Frontend (single file): one rAF-batched scheduleRender and read-only view builders; keyboard focus kept after sort, chips, Show all and closing details, and moved to the view on tab changes; charts one tab stop each (roving tabindex); <main> landmark restored; Settings errors linked to fields with a focused summary; Failed queries capped at 200; 15 s fetch timeouts and polling that recovers; light-theme contrast (WCAG AA) and reduced-motion fixes; Biome's noDescendingSpecificity back on (screenshots byte-identical). Review found four small UI issues — fixed. PR #13 (2026-09-28)

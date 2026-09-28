@@ -19,8 +19,9 @@ review findings below are kept as recorded.
 **Status (2026-09-28):** Phase 0 is done (PRs #2/#3). Phase 1 is done (PRs #5/#6); see its
 "As built" notes, which differ from the plan in two places. v1.1.0 is the first release through the
 new release workflow. Phase 2 is done (PR #8). Phase 3 is done (PR #9). Phase 4 is done (PR #10).
-Phase 5 is done (PR #11). Phase 6 is done (PR #12). Phase 7 is done (PR #13). Phase 8 changes results, so it
-ships on its own, and it hasn't started.
+Phase 5 is done (PR #11). Phase 6 is done (PR #12). Phase 7 is done (PR #13). v1.2.0 released
+Phases 2–7 (PR #14, 2026-09-29). Phase 8 changes results, so it ships on its own PR; see its
+"As built" notes.
 
 ## Verdict: would a distinguished engineer approve? **No, not as-is.**
 The problems are structural, not rot. The Python core is better than typical one-shot output: an
@@ -493,6 +494,39 @@ Done before the layering so the error format changes only once.
   both paths.
 - Bump `ANALYSIS_VERSION`. Old runs recompute under the new scoring; their `.txt` files keep the
   old verdicts. Documented in the CHANGELOG.
+
+**As built (2026-09-29).** Differences from the plan, with the reasons in
+`.project/research/2026-09-29-phase-8-measurement-validity.md`:
+
+- **Significance.** "Significantly higher" failure and retry rates use Newcombe's interval for a
+  difference of two rates, built from Wilson intervals. The overlap of two Wilson intervals is
+  too conservative: 5/50 timeouts against 0/50 went unpenalised. A rate counts in the score only
+  when it is significantly higher than *another* resolver's (`failures_counted`,
+  `retries_counted`), and the full rate counts. The same rule orders sibling servers, replacing
+  the 1-point `SERVER_TIE_FAIL`.
+- **Ties.**
+  - Medians: overlap of the exact 95 % order-statistic intervals (as planned), with a 2 ms floor
+    (0.5 ms between siblings).
+  - Tails: a two-sample quantile test at the pooled p95 (`stats.tails_differ`), because a p95
+    interval has no upper bound below 72 samples.
+  - `TIE_REL` and `SERVER_TIE_REL` are gone.
+  - Each ranking entry lists its `ties`. `backup_tied_with` and a `backup_tie` note cover the
+    backup. The text report marks `=`.
+- **Cache.** "First" is the first *answer* per (run, resolver, domain) by start time. For
+  per-server figures it is per (run, server, domain), so a sibling never ends up with no first
+  answers. Only p80/p95/p98 use first answers; `first_median` / `repeat_median` and a note show
+  the split.
+- **Local errors.** A failed query with no rcode whose error doesn't start with `recv:` is local.
+  It is left out of the rates entirely (`local_errors`, and a note). ICMP errors are charged.
+- **Answer quality.** Domains a resolver answered without records while another returned
+  records: summary `unanswered`, plus a note. Not charged.
+- **Serve-mode timing.** Measured: no distortion (median 0.41 vs 0.45 ms, p95 1.36 vs 1.74 ms,
+  loopback, 2,400 answers per mode), so no `SO_TIMESTAMP`.
+- `ANALYSIS_VERSION` 2. The v1-fixtures test now pins what must *not* change (counts, mean,
+  median, min, max, stdev; best = Cloudflare) and the cache effect (Quad9's p95 19.4 → 165.1 ms).
+- **On the 13 saved runs:** best unchanged in all of them; suggested servers changed in 9 (config
+  order for siblings within noise, and backups following the first-answer p95). "All runs
+  combined" has no tie for best.
 
 ## Critical files
 dnsbench/{server,cli,config,storage,runner,recommend,stats,report,resolver}.py; new
