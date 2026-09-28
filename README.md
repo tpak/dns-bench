@@ -134,15 +134,18 @@ picking a resolver or closing a domain's details leaves the keyboard where it wa
 save that fails, the list of problems gets the focus, and each problem takes you to its field. The
 page also follows the system's light or dark theme and its reduced-motion setting.
 
-The server listens on 127.0.0.1 only. It rejects requests whose `Host` header isn't
-localhost (protection against DNS rebinding). A state-changing request must be
+By default the server listens on 127.0.0.1 only. It answers only requests addressed to it by a
+loopback name (`localhost`, `127.0.0.1`, `[::1]`), by the address given to `--host`, or, when it
+listens on every interface (`--host 0.0.0.0`), by any IP address; never by another host name
+(protection against DNS rebinding). A state-changing request must be
 `Content-Type: application/json`, and if it comes from a web page, that page must be the UI
 itself (its `Origin` header is checked), so other sites can't change your config or start runs.
 The page runs under a strict Content Security Policy.
 
 There is no authentication, so `serve` refuses a `--host` that other machines can reach, such
-as `0.0.0.0` or a LAN address, unless you add `--allow-remote`. To use the UI from another
-computer, forward the port over SSH instead and keep the default host:
+as `0.0.0.0` or a LAN address, unless you add `--allow-remote`. Other computers then have to use
+an IP address in the URL (for example http://192.168.1.10:8053/), not a host name. The safer way
+to use the UI from another computer is to forward the port over SSH and keep the default host:
 
 ```sh
 ssh -L 8053:127.0.0.1:8053 you@machine-running-dns-bench

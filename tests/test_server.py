@@ -244,6 +244,54 @@ class SecurityTest(ServerTestBase):
         self.assertEqual(status, 403)
         self.assertIn("error", data)
 
+    def test_an_ip_address_host_is_refused_on_a_loopback_bind(self):
+        status, _, _ = self.req("GET", "/api/config", headers={"Host": f"192.0.2.10:{self.port}"})
+        self.assertEqual(status, 403)
+
+    def test_bound_to_every_interface_any_ip_address_host_is_accepted(self):
+        # serve --host 0.0.0.0 --allow-remote: other machines use this machine's IP address, which the
+        # server can't list in advance. Host names stay refused: DNS rebinding always uses one.
+        srv = SV.make_server(
+            "0.0.0.0", 0, self.cfg_path, self.runs_dir, query_fn=self.fake, web_dir=self.web_dir
+        )
+        thread = threading.Thread(target=srv.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True)
+        thread.start()
+        port = srv.server_address[1]
+        try:
+            for host, expected in (
+                (f"192.0.2.10:{port}", 200),
+                (f"[2001:db8::10]:{port}", 200),
+                (f"localhost:{port}", 200),
+                (f"evil.com:{port}", 403),
+                (f"192.0.2.10.evil.com:{port}", 403),
+                (f"192.0.2.10:{port + 1}", 403),
+            ):
+                with self.subTest(host=host):
+                    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+                    conn.request("GET", "/api/info", headers={"Host": host})
+                    self.assertEqual(conn.getresponse().status, expected)
+                    conn.close()
+            # a page loaded from that address may change state; another origin may not
+            for origin, expected in ((f"http://192.0.2.10:{port}", 200), ("http://evil.com", 403)):
+                with self.subTest(origin=origin):
+                    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+                    conn.request(
+                        "POST",
+                        "/api/config/validate",
+                        body=json.dumps(small_config()),
+                        headers={
+                            "Host": f"192.0.2.10:{port}",
+                            "Origin": origin,
+                            "Content-Type": "application/json",
+                        },
+                    )
+                    self.assertEqual(conn.getresponse().status, expected)
+                    conn.close()
+        finally:
+            srv.shutdown()
+            srv.server_close()
+            thread.join(2)
+
     def test_cross_origin_state_changes_are_refused(self):
         port = self.port
         for method, path, body in (

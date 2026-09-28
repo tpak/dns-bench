@@ -1,7 +1,9 @@
 """Local web UI + JSON API (stdlib ThreadingHTTPServer).
 
-Binds 127.0.0.1 by default. Requests whose Host header is not a loopback
-name are rejected (DNS-rebinding protection). State-changing requests must be
+Binds 127.0.0.1 by default. Requests whose Host header doesn't name this
+server are rejected (DNS-rebinding protection): a loopback name, the --host
+address, or, when bound to every interface, any IP address. A rebinding
+attack always arrives under the attacker's host name, never a bare IP. State-changing requests must be
 ``Content-Type: application/json``, which a cross-site form can't send and which
 forces a CORS preflight that is never granted. Their ``Origin``, when present,
 must also be this server's own origin.
@@ -187,7 +189,10 @@ class DNSBenchServer(ThreadingHTTPServer):
         self.quiet = quiet
         super().__init__((host, port), Handler)
         self.allowed_hosts = set(LOOPBACK_HOSTS)
-        if host not in ("", "0.0.0.0", "::"):
+        # Bound to every interface (serve --allow-remote): other machines reach it under this machine's
+        # IP addresses, which can't all be listed, so any IP literal is accepted as a Host.
+        self.any_ip_host = host in ("", "0.0.0.0", "::")
+        if not self.any_ip_host:
             self.allowed_hosts.add(f"[{host.lower()}]" if ":" in host else host.lower())
 
     @property
@@ -363,7 +368,13 @@ class Handler(BaseHTTPRequestHandler):
                 return None
             if int(port) != self.server.server_address[1]:
                 return None
-        return host if name in self.server.allowed_hosts else None
+        if name in self.server.allowed_hosts:
+            return host
+        if self.server.any_ip_host:
+            with contextlib.suppress(ValueError):
+                ipaddress.ip_address(name.strip("[]"))
+                return host
+        return None
 
     def _origin_ok(self, host: str) -> bool:
         """Browsers send Origin with every request that isn't a GET or HEAD, and a page can't remove or
@@ -736,8 +747,8 @@ def serve(
     print(f"Runs:   {runs_dir}", file=sys.stderr, flush=True)
     if not is_loopback_host(host):
         print(
-            "warning: listening on a non-loopback address; only loopback Host names are "
-            "accepted, and there is no authentication.",
+            "warning: listening on an address other machines can reach, with no authentication. Only "
+            "requests addressed to an IP address or a loopback name are answered, not to host names.",
             file=sys.stderr,
         )
     if open_browser:
