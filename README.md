@@ -19,7 +19,8 @@ older browsers leave them out.
 If your `python3` is older (macOS ships 3.9, Debian 12 and Raspberry Pi OS bookworm ship
 3.11, Ubuntu 24.04 ships 3.12), run dns-bench with a newer interpreter, for example
 `python3.13 ./dns-bench`, or let [uv](https://docs.astral.sh/uv/) fetch one:
-`uv run --python 3.13 ./dns-bench`.
+`uv run --no-project --python 3.13 ./dns-bench`. (`--no-project` runs the script as it is; without
+it, uv sets up a `.venv/` in the checkout and downloads a build tool the first time.)
 
 ## Fast, and still polite
 
@@ -264,9 +265,12 @@ removed or renamed since) is still ranked but never suggested, and a note says s
 
 Your config and your runs live in the checkout: `config.json` and `runs/`, next to the
 `dns-bench` launcher, whatever directory you run it from. Neither is part of the repository
-(both are git-ignored), so `git pull` never touches them.
+(both are git-ignored), so `git pull` never touches them. The one exception is the pull that
+upgrades from 1.1.0 or earlier, which still had `config.json` in the repository: see "Upgrading"
+in the [1.2.0 release notes](CHANGELOG.md).
 
-* `DNSBENCH_HOME=/some/dir` moves both, to `/some/dir/config.json` and `/some/dir/runs/`.
+* `DNSBENCH_HOME=/some/dir` keeps both in `/some/dir/config.json` and `/some/dir/runs/`. Files
+  already in the checkout are not moved for you: `mkdir -p /some/dir && mv config.json runs /some/dir/`.
 * `--config PATH` and `--runs-dir DIR` move one each, and win over `DNSBENCH_HOME`.
 * A non-editable install (not in a checkout) needs `DNSBENCH_HOME`, or both flags.
 
