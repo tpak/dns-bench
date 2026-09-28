@@ -472,7 +472,7 @@ Done before the layering so the error format changes only once.
   closed detail, tab clicks and arrow keys; one tab stop per chart; "200 of 300" failed queries;
   the error summary and its links after a failed save; no script errors.
 
-### Phase 8 — Measurement validity (M) — changes results; ship separately
+### Phase 8 — Measurement validity (M) — ✅ done (PR #15); changes results, shipped separately
 - **Failure accounting** (COR-1, COR-M2):
   - Classify failures as timeout, fast rcode (SERVFAIL/REFUSED) or local error (send/socket/
     exception). Local errors are not charged to the resolver.
