@@ -50,7 +50,7 @@ UNANSWERED_SHOWN = 5  # domains named in an "unanswered" note
 # What "within noise" tested, for the notes and the report.
 NOISE_TEST = (
     f"medians within {TIE_ABS_MS:g} ms or with overlapping 95 % intervals, and no significant "
-    "difference in slow answers or failures"
+    "difference in slow answers, failures or retries"
 )
 
 
@@ -329,7 +329,13 @@ def rank(
         r.entry["rank"] = i
         differ = tails["resolvers"].get(r.name) or []
         r.entry["ties"] = [
-            o.name for o in out if o is not r and within_noise(r.eff, o.eff, tails_differ=o.name in differ)
+            o.name
+            for o in out
+            if o is not r
+            and within_noise(r.eff, o.eff, tails_differ=o.name in differ)
+            # the score must treat their rates alike: one whose failures count isn't "a good choice"
+            # next to one whose failures don't
+            and _counted_flags(r) == _counted_flags(o)
         ]
     return out, no_answers
 
@@ -352,6 +358,10 @@ class Choice:
     secondary_ip: str | None
     secondary_txt: str | None  # how the summary names the secondary: "8.8.8.8 (Google)"
     suggested: list[str]
+
+
+def _counted_flags(e: Ranked) -> tuple[bool, bool]:
+    return (e.entry["failures_counted"], e.entry["retries_counted"])
 
 
 def _tie_run(lead: Ranked, rest: list[Ranked]) -> list[str]:
@@ -603,22 +613,36 @@ def _coverage_notes(c: Choice, coverage: Mapping[str, Coverage]) -> list[Note]:
     return notes
 
 
-def _low_sample_note(ranking: list[Ranked]) -> list[Note]:
-    low = [e for e in ranking if e.entry["ok"] < LOW_SAMPLE]
+def _first_n(e: Ranked) -> int:
+    """How many latency samples (first answers) e's figures rest on."""
+    return e.eff.get("first_n") or e.entry["ok"]
+
+
+def _low_sample_note(ranking: list[Ranked], n_runs: int | None) -> list[Note]:
+    # Latency uses each domain's first answer, so more rounds add no samples: more domains, or runs
+    # combined, do.
+    low = [e for e in ranking if _first_n(e) < LOW_SAMPLE]
     if not low:  # one note, not one per resolver (a short run makes them all low)
         return []
     if len(low) == 1:
-        what = f"{low[0].name}: only {low[0].entry['ok']} successful samples"
-    elif len({e.entry["ok"] for e in low}) == 1:
-        what = f"{_join([e.name for e in low])}: only {low[0].entry['ok']} successful samples each"
+        what = f"{low[0].name}: only {_first_n(low[0])} first answers"
+    elif len({_first_n(e) for e in low}) == 1:
+        what = f"{_join([e.name for e in low])}: only {_first_n(low[0])} first answers each"
     else:
-        counts = [f"{e.name} ({e.entry['ok']})" for e in low]
-        what = f"{_join(counts)}: fewer than {LOW_SAMPLE} successful samples each"
+        counts = [f"{e.name} ({_first_n(e)})" for e in low]
+        what = f"{_join(counts)}: fewer than {LOW_SAMPLE} first answers each"
+    if n_runs is not None and n_runs >= 2:  # already combined: don't point at the view itself
+        advice = "add domains, or combine more runs"
+    else:
+        advice = (
+            'add domains, or combine runs taken at different times (UI "All runs combined" or '
+            "`dns-bench report all`)"
+        )
     return [
         _note(
             "low_samples",
-            f"{what} — low sample size, run more rounds for a steadier answer.",
-            samples={e.name: e.entry["ok"] for e in low},
+            f"{what} — low sample size, so the latency figures are rough; {advice}.",
+            samples={e.name: _first_n(e) for e in low},
             minimum=LOW_SAMPLE,
         )
     ]
@@ -724,10 +748,10 @@ def _measurement_notes(summary: Summary | None, ranking: list[Ranked]) -> list[N
         notes.append(
             _note(
                 "first_answers",
-                "Latency figures use only the first answer of each domain from each resolver: the "
-                f"{overall['repeat_n']} repeat queries were mostly answered from the resolver's cache "
-                f"(median {_ms(overall['repeat_median'])}, against {_ms(overall['median'])} for first "
-                "answers), which your device's own cache spares you in real use.",
+                "Latency figures use only the first answer of each domain from each resolver. The "
+                f"{overall['repeat_n']} repeat queries (median {_ms(overall['repeat_median'])}, against "
+                f"{_ms(overall['median'])} for first answers) are left out: a repeat can be answered "
+                "from the resolver's cache, which your device's own cache spares you in real use.",
                 first_median=overall["median"],
                 repeat_median=overall["repeat_median"],
                 repeats=overall["repeat_n"],
@@ -739,7 +763,7 @@ def _measurement_notes(summary: Summary | None, ranking: list[Ranked]) -> list[N
             _note(
                 "local_errors",
                 f"{k} of {overall['n']} quer{'y' if k == 1 else 'ies'} failed on this computer before "
-                "reaching a resolver (for example no route to an IPv6 address); they are not counted "
+                "reaching a resolver (for example no IPv6 route from this computer); they are not counted "
                 "against any resolver.",
                 count=k,
                 n=overall["n"],
@@ -794,7 +818,7 @@ def explain(
     notes = [_no_answers_note(name) for name in no_answers]
     notes += _reliability_notes(ranking, timeout_ms)
     notes += _coverage_notes(choice, coverage or {})
-    notes += _low_sample_note(ranking)
+    notes += _low_sample_note(ranking, n_runs)
     notes += _choice_notes(choice, tested)
     notes += _measurement_notes(summary, ranking)
     notes.append(_closing_note(n_runs))

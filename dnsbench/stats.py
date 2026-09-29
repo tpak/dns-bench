@@ -52,6 +52,7 @@ _ALPHA_HALF = (1, 40)  # 2.5 % in each tail, as a fraction for exact integer ari
 _EXACT_CI_MAX_N = 10_000
 
 FailureKind = Literal["timeout", "answer", "network", "local"]
+_HOST_UNREACHABLE = ("Host is down", "No route to host")  # strerror of EHOSTDOWN, EHOSTUNREACH
 
 
 def nearest_rank[T](sorted_values: Sequence[T], p: float) -> T | None:
@@ -83,9 +84,11 @@ def failure_kind(row: Row) -> FailureKind | None:
 
     * ``timeout``: no reply in time;
     * ``answer``: the resolver replied with an error rcode (SERVFAIL, REFUSED, ...);
-    * ``network``: an ICMP error came back (port or host unreachable);
-    * ``local``: the query never properly left this computer (no socket, no route, a crash in the
-      query code). Not the resolver's fault, so it is not charged to it.
+    * ``network``: an ICMP error came back (port or host unreachable), or the resolver's host is
+      down or unreachable ("Host is down", "No route to host": macOS reports a dead on-link host on
+      send, after ARP fails; Linux reports it on receive);
+    * ``local``: the query never properly left this computer (no socket, no route to the network, a
+      crash in the query code). Not the resolver's fault, so it is not charged to it.
     """
     status = row.get("status")
     if status == "ok":
@@ -94,10 +97,13 @@ def failure_kind(row: Row) -> FailureKind | None:
         return "timeout"
     if row.get("rcode"):
         return "answer"
-    # resolver.py prefixes each error with where it happened. Only "recv:" means the query left this
-    # computer and something came back; the rest ("socket:", "connect:", "send:", "address:", an
-    # invalid name, a crash the runner caught) happened before the query got anywhere.
-    if str(row.get("error") or "").startswith("recv:"):
+    # resolver.py prefixes each error with where it happened. "recv:" means the query left this
+    # computer and something came back. A host that is down or has no route is the resolver's problem
+    # wherever it shows up. The rest ("socket:", "connect:", "send:" otherwise, "address:", an invalid
+    # name, a crash the runner caught) happened before the query got anywhere. The error text is
+    # strerror's, which Python leaves in English, so this also reads files from other systems.
+    error = str(row.get("error") or "")
+    if error.startswith("recv:") or any(s in error for s in _HOST_UNREACHABLE):
         return "network"
     return "local"
 

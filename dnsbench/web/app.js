@@ -1393,6 +1393,8 @@
 
   function failBadge(st) {
     if (!st || !isNum(st.failure_rate)) return '—';
+    // every query failed on this computer: there is no failure rate to show
+    if (st.n > 0 && st.n === st.local_errors) return '—';
     if (st.failure_rate === 0) return h('span', { class: 'muted' }, '0%');
     if (st.failure_rate > 0.02)
       return h('span', { class: 'status status-critical' }, icon('alert', 13), fmtPct(st.failure_rate));
@@ -2240,7 +2242,7 @@
                 h(
                   'span',
                   { class: 'muted small' },
-                  'Medians within 2 ms or with overlapping intervals, and no significant difference in slow answers or failures; either is a good choice.',
+                  `Medians within 2 ms or with overlapping intervals, and no significant difference in slow answers, failures or retries; ${tied.length > 1 ? 'any of them' : 'either'} is a good choice.`,
                 ),
               )
             : null,
@@ -2597,7 +2599,7 @@
         'Mean',
         st.mean,
         st.repeat_n > 0
-          ? `${plural(st.repeat_n, 'repeat')} left out (mostly cached): median ${fmtMsU(st.repeat_median)}`
+          ? `${plural(st.repeat_n, 'repeat')} left out (may be cached): median ${fmtMsU(st.repeat_median)}`
           : null,
       ),
       msKpi('Median', st.median, ciText(st.median_ci)),
@@ -2714,7 +2716,7 @@
         .filter((r) => r.resolver === sel && r.status === 'ok' && isNum(r.ms))
         .map((r) => r.ms);
       histSub = histValues.length
-        ? `All ${plural(histValues.length, 'successful answer')}, 10 bins. The last bin also holds anything slower.`
+        ? `All ${plural(histValues.length, 'successful answer')}, repeats included (the figures above use first answers only), 10 bins. The last bin also holds anything slower.`
         : null;
     } else {
       const bd = sum.by_domain || {};
