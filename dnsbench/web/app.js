@@ -294,6 +294,8 @@
   }
   function writeDatasetUrl(key) {
     const params = new URLSearchParams(location.search);
+    const named = params.get('run');
+    if (named === key || (key === 'latest' && !named)) return; // it already says so: leave it as typed
     if (key === 'latest') params.delete('run');
     else params.set('run', key);
     const query = params.toString();
@@ -1905,7 +1907,9 @@
         key === 'all' ||
         (key === 'latest' && newest !== newestBefore) ||
         (key !== 'latest' && key !== 'all' && !runRow(key));
-      if (datasetStale) await selectDataset(key, { rerender: 'auto' });
+      // The first run list to arrive (the one at startup failed): honour the address's dataset.
+      if (datasetStale)
+        await selectDataset(before ? key : datasetFromUrl(), { rerender: 'auto', fromUrl: !before });
       else scheduleRender(state.route.tab === 'settings' ? { tabs: true } : { view: true });
     } finally {
       runsRefreshing = false;
@@ -2100,8 +2104,8 @@
   }
 
   function viewRun(id) {
+    go('overview'); // first, so the History entry keeps the dataset it had for Back
     selectDataset(id);
-    go('overview');
   }
 
   // ================================================================ trend
@@ -3494,8 +3498,8 @@
         type: 'button',
         class: 'btn btn-sm',
         onClick: () => {
+          go('overview'); // first, so the History entry keeps the dataset it had for Back
           selectDataset('all');
-          go('overview');
         },
       },
       icon('layers', 14),
@@ -4680,7 +4684,7 @@
           state.datasetError,
           h(
             'button',
-            { type: 'button', class: 'btn', onClick: () => selectDataset('latest') },
+            { type: 'button', class: 'btn', onClick: () => selectDataset(state.datasetKey) }, // retry the same
             icon('refresh', 14),
             'Try again',
           ),
@@ -4715,22 +4719,27 @@
   /** Back and Forward restore each page's own address, dataset included: show the one it names. */
   function syncDatasetFromUrl() {
     const want = datasetFromUrl();
-    if (state.bootstrapped && state.runs.length && want !== state.datasetKey)
-      selectDataset(want, { fromUrl: true });
+    if (!state.bootstrapped || !state.runs.length || want === state.datasetKey) return;
+    const onSettings = state.route.tab === 'settings';
+    // Leaving Settings with unsaved edits: onHashChange asks first, and switches only if the user leaves.
+    if (onSettings && state.dirty && parseHash().tab !== 'settings') return;
+    // Still on Settings (Back or Forward changed only the query): never rebuild the form under the user.
+    selectDataset(want, { fromUrl: true, rerender: onSettings ? 'auto' : undefined });
   }
 
   function onHashChange() {
-    syncDatasetFromUrl();
     const next = parseHash();
     const prev = state.route;
-    if (prev.tab === next.tab && prev.arg === next.arg) return;
     if (prev.tab === 'settings' && next.tab !== 'settings' && state.dirty) {
       if (!window.confirm('You have unsaved changes in Settings. Leave and discard them?')) {
         history.replaceState(null, '', '#settings');
+        writeDatasetUrl(state.datasetKey); // the address a step back named another dataset: undo that too
         return;
       }
       discardDraft();
     }
+    syncDatasetFromUrl();
+    if (prev.tab === next.tab && prev.arg === next.arg) return;
     state.route = next;
     const byKeys = state.tabKeyNav;
     state.tabKeyNav = false;
