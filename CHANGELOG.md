@@ -7,6 +7,14 @@ release notes.
 
 ## [Unreleased]
 
+### Added
+
+- Web UI: the address bar keeps the dataset shown, so a bookmark or a reload shows the same data.
+  `?run=all` opens All runs combined (for example http://127.0.0.1:8053/?run=all#overview) and
+  `?run=<id>` one saved run; without it the latest run is shown, as before. Back and Forward
+  bring back the dataset each page had. An id that isn't saved falls back to the latest run with a
+  notice.
+
 ## [1.3.0] - 2026-09-29
 
 Measurement validity (REMEDIATION_PLAN.md Phase 8). **Results change**: saved runs are analysed
