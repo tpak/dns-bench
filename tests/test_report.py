@@ -105,6 +105,18 @@ class ReportTest(unittest.TestCase):
         self.assertIn("* not significantly higher", text)
         self.assertIn("= within noise of the resolver above: medians within 2 ms", text)
 
+    def test_every_query_failed_locally(self):
+        # No failure rate exists when nothing left this computer: "-", not "0.0%" (review of 1.3.0)
+        run = make_run()
+        for r in run["results"]:
+            if r["resolver"] == "Google":
+                r.update(
+                    status="error", ms=None, rcode=None, error="connect: [Errno 51] Network is unreachable"
+                )
+        text = report.render_text(analysis.finalize(run))
+        self.assertIn("n=3 fail=-", text)
+        self.assertIn("Queries:   7 (4 ok, 0 failed, 3 failed on this computer) across 3 domains", text)
+
     def test_no_star_with_a_single_resolver(self):
         run = make_run()
         run["results"] = [r for r in run["results"] if r["resolver"] == "Google"]

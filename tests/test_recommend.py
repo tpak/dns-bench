@@ -235,7 +235,11 @@ class RecommendTest(unittest.TestCase):
 
 
 def error_rows(resolver, server, count, prefix="e"):
-    """Instant local failures (e.g. 'send: No route to host' for IPv6 on an IPv4-only network)."""
+    """Instant local failures (e.g. no IPv6 route from this computer).
+
+    Since 1.3.0 "No route to host" and "Host is down" are the resolver host's failures (a LAN resolver
+    that went down), so the local example is "Network is unreachable".
+    """
     return [
         {
             "resolver": resolver,
@@ -246,7 +250,7 @@ def error_rows(resolver, server, count, prefix="e"):
             "ms": None,
             "rcode": None,
             "answers": 0,
-            "error": "send: No route to host",
+            "error": "connect: [Errno 51] Network is unreachable",
             "t": 0.0,
         }
         for i in range(count)
@@ -327,7 +331,7 @@ class DeadServerTest(unittest.TestCase):
         self.assertEqual(rec["suggested_servers"], ["1.1.1.1", "8.8.8.8"])
         cf = rec["ranking"][0]
         self.assertEqual(cf["score"], 4.0)
-        # Phase 8: "No route to host" is a local error, not the resolver's failure (it was 0.5)
+        # Phase 8: "Network is unreachable" is a local error, not the resolver's failure (it was 0.5)
         self.assertEqual(cf["failure_rate"], 0.0)
         self.assertTrue(any(n["code"] == "local_errors" for n in rec["notes"]), rec["notes"])
         self.assertTrue(any("2606:4700:4700::1111" in n and "never answered" in n for n in notes(rec)))
@@ -463,23 +467,38 @@ class LowSampleNoteTest(unittest.TestCase):
             rows_for("C", "9.9.9.9", [30] * 12),
             rows_for("D", "4.4.4.4", [40] * 40),
         )
+        # 1.3.0: latency uses first answers, so the note counts those and no longer says "run more
+        # rounds" (more rounds add no latency samples); it was "successful samples ... run more rounds"
         low = [n for n in notes(RC.recommend(s, SETTINGS)) if "low sample size" in n]
         self.assertEqual(
             low,
             [
-                "A (20), B (20) and C (12): fewer than 30 successful samples each "
-                "— low sample size, run more rounds for a steadier answer."
+                "A (20), B (20) and C (12): fewer than 30 first answers each — low sample size, so the "
+                'latency figures are rough; add domains, or combine runs taken at different times (UI "All '
+                'runs combined" or `dns-bench report all`).'
             ],
         )
         s = summary(rows_for("A", "1.1.1.1", [10] * 20), rows_for("B", "8.8.8.8", [20] * 20))
         low = [n for n in notes(RC.recommend(s, SETTINGS)) if "low sample size" in n]
-        self.assertEqual(
-            low,
-            [
-                "A and B: only 20 successful samples each — low sample size, "
-                "run more rounds for a steadier answer."
-            ],
-        )
+        self.assertTrue(low[0].startswith("A and B: only 20 first answers each — low sample size"), low)
+
+    def test_counts_first_answers_not_rounds(self):
+        # 5 domains x 10 rounds: 50 answers, but only 5 first answers per resolver (review of 1.3.0)
+        rows = []
+        for rnd in range(10):
+            for name, server in (("A", "1.1.1.1"), ("B", "8.8.8.8")):
+                rows += [
+                    {**r, "round": rnd + 1, "t": rnd + i / 10}
+                    for i, r in enumerate(rows_for(name, server, [10] * 5))
+                ]
+        rec = RC.recommend(S.summarize(rows), SETTINGS)
+        note = next(n for n in rec["notes"] if n["code"] == "low_samples")
+        self.assertEqual(note["params"]["samples"], {"A": 5, "B": 5})
+        self.assertNotIn("more rounds", note["text"])
+        # combined runs: no pointer back at "All runs combined"
+        rec = RC.recommend(S.summarize(rows), SETTINGS, n_runs=3)
+        note = next(n for n in rec["notes"] if n["code"] == "low_samples")
+        self.assertTrue(note["text"].endswith("add domains, or combine more runs."), note["text"])
 
 
 class CurrentResolversTest(unittest.TestCase):
@@ -644,6 +663,21 @@ class ReviewFixesTest(unittest.TestCase):
         )
         rec = RC.recommend(s, SETTINGS)
         self.assertEqual((rec["backup"], rec["backup_tied_with"]), ("Google", []))
+
+    def test_no_tie_when_only_one_sides_failures_count(self):
+        # Review of 1.3.0: A's 5 failures in 120 count (significantly more than C's none) while B's 1
+        # doesn't; the pair alone can't be told apart, but calling A "a good choice" next to B would
+        # contradict A's own score.
+        s = summary(
+            rows_for("B", "1.1.1.1", [30.5] * 119, timeouts=1),
+            rows_for("A", "8.8.8.8", [30.0] * 115, timeouts=5),
+            rows_for("C", "9.9.9.9", [200.0] * 120),
+        )
+        rec = RC.recommend(s, SETTINGS)
+        a = next(e for e in rec["ranking"] if e["resolver"] == "A")
+        self.assertTrue(a["failures_counted"])
+        self.assertNotIn("B", a["ties"])
+        self.assertEqual(rec["tied_with"], [])
 
     def test_local_errors_are_noted_when_nothing_answered(self):
         s = summary(error_rows("A", "2606:4700:4700::1111", 5), error_rows("B", "2001:4860:4860::8888", 5))

@@ -30,6 +30,13 @@ def _pct(rate: float | None) -> str:
     return "-" if rate is None else f"{rate * 100:.1f}%"
 
 
+def _fail(st: Mapping[str, Any]) -> str:
+    """The failure rate, or "-" when every query failed on this computer (there is no rate)."""
+    if st.get("n") and st.get("n") == st.get("local_errors"):
+        return "-"
+    return _pct(st.get("failure_rate"))
+
+
 def _ci(ci: Any) -> str:
     """A [lo, hi] interval, the bounds joined by an en dash; an unbounded side is "?"."""
     if not isinstance(ci, (list, tuple)) or len(ci) != 2:
@@ -55,7 +62,7 @@ def stats_line(name: str, st: Mapping[str, Any]) -> str:
         f"{name}: mean={_f(st.get('mean'))} median={_f(st.get('median'))} "
         f"p80={_f(st.get('p80'))} p95={_f(st.get('p95'))} p98={_f(st.get('p98'))} "
         f"min={_f(st.get('min'))} max={_f(st.get('max'))} n={st.get('n', 0)} "
-        f"fail={_pct(st.get('failure_rate'))}"
+        f"fail={_fail(st)}"
     )
     if st.get("retried"):  # only with tries > 1: queries that answered on a retry
         line += f" retried={st['retried']}"
@@ -107,8 +114,9 @@ def render_text(bundle: Mapping[str, Any]) -> str:
         lines.append(f"Started:   {local_time(bundle.get('started_at'))}")
         lines.append(f"Duration:  {_f(bundle.get('duration_s'))} s on {bundle.get('host', '?')}")
     lines.append(
-        f"Queries:   {overall.get('n', 0)} ({overall.get('ok', 0)} ok, "
-        f"{overall.get('failures', 0)} failed) across {len(summary.get('domains') or [])} domains"
+        f"Queries:   {overall.get('n', 0)} ({overall.get('ok', 0)} ok, {overall.get('failures', 0)} failed"
+        + (f", {overall['local_errors']} failed on this computer" if overall.get("local_errors") else "")
+        + f") across {len(summary.get('domains') or [])} domains"
     )
     lines.append(
         f"Pacing:    one query at a time per server, ≥{settings['per_server_interval_ms']} ms apart "
@@ -130,7 +138,7 @@ def render_text(bundle: Mapping[str, Any]) -> str:
             server,
             _f(st.get("median")),
             _f(st.get("p95")),
-            _pct(st.get("failure_rate")),
+            _fail(st),
             str(st.get("retried") or 0),
         ]
         for name in names

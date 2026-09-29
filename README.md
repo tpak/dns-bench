@@ -95,15 +95,15 @@ Ranking (score = 0.5 × median + 0.3 × p95 + 0.2 × mean + failure_rate × time
   2=  System       10.4     6.0  5.7–6.6   17.9   9.9  0.0%    60/60  192.168.1.1
   3   Google       84.5     7.8  6.5–9.8  239.6  43.7  0.0%  120/120  8.8.8.8
   A failure or retry rate counts only when it is significantly higher than another resolver's.
-  = within noise of the resolver above: medians within 2 ms or with overlapping 95 % intervals, and no significant difference in slow answers or failures.
+  = within noise of the resolver above: medians within 2 ms or with overlapping 95 % intervals, and no significant difference in slow answers, failures or retries.
 ...
 Recommendation: Use Cloudflare: put 1.1.1.1 first and 192.168.1.1 (System) second. ...
 ```
 
 Latency figures use the first answer of each domain from each resolver (`first_answers=60`);
-`repeat_median` is the median of the repeats, which the resolver mostly answered from its cache.
-`=` marks a resolver within noise of the one above it
-([How the recommendation works](#how-the-recommendation-works)).
+`repeat_median` is the median of the repeats, which the resolver can answer from its cache. `=`
+marks a resolver within noise of the one above it, and a `*` after a failure rate means the score
+leaves it out ([How the recommendation works](#how-the-recommendation-works)).
 
 While a run is going, `[slow]` and `[fail]` lines are printed to stderr, like the original
 did, along with a live progress line showing done/total, elapsed time and ETA. Press Ctrl-C
@@ -217,8 +217,8 @@ would mix different networks' resolvers under one name. After moving to another 
 | `domains` | 60 sites | 1–500 | Names are lower-cased, a trailing dot is removed, duplicates are dropped, and Unicode names are IDNA-encoded. |
 | `per_server_interval_ms` | 250 | 50–5000 | Minimum gap between query starts to the same server. This is what keeps the load polite: 1000/interval = max queries/s per server. |
 | `timeout_ms` | 1000 | 200–10000 | How long to wait for an answer. |
-| `tries` | 1 | 1–3 | Attempts per query. A retry happens only after a timeout, and is paced by the interval like any other query. Each result row records its `attempts`; a query that answered only on a retry counts as `retried` and is penalised in the score, and its `ms` is the retry's round trip. |
-| `rounds` | 1 | 1–10 | How many times each domain is queried on each server. Repeats are mostly answered from the resolver's cache, so latency figures use only each domain's first answer ([Cache effects](#how-the-recommendation-works)); more rounds sharpen the failure rates. For steadier latency, combine runs taken at different times. |
+| `tries` | 1 | 1–3 | Attempts per query. A retry happens only after a timeout, and is paced by the interval like any other query. Each result row records its `attempts`; a query that answered only on a retry counts as `retried`, and its `ms` is the retry's round trip. The retry rate is penalised in the score when it is significantly higher than another resolver's. |
+| `rounds` | 1 | 1–10 | How many times each domain is queried on each server. Repeats can be answered from the resolver's cache, so latency figures use only each domain's first answer ([Cache effects](#how-the-recommendation-works)); more rounds sharpen the failure rates. For steadier latency, combine runs taken at different times. |
 | `slow_threshold_ms` | 200 | 1–10000 | Answers slower than this are listed as `[slow]`. |
 | `record_type` | `A` | `A`, `AAAA` | Query type. |
 | `shuffle` | `true` | bool | Shuffle each server's domain order independently. |
@@ -229,16 +229,21 @@ A **status** is recorded for every query:
 
 * `ok` – the server answered with NOERROR or NXDOMAIN;
 * `error` – it answered with SERVFAIL, REFUSED and so on, an ICMP error came back (port or host
-  unreachable), or the query failed on this computer;
+  unreachable), the server's host is down or has no route ("Host is down", "No route to host"), or
+  the query failed on this computer;
 * `timeout` – no answer arrived before the timeout.
 
 Only a reply that comes from the server that was asked, carries the query's ID, is a standard
 query response and repeats the question that was asked is accepted. Anything else is ignored as a
-stray packet. An error reply may leave the question out, as servers often do for FORMERR and REFUSED.
+stray packet. An error reply (FORMERR, SERVFAIL, REFUSED, ...) may leave the question out, as
+servers often do; NOERROR and NXDOMAIN must repeat it.
 
-A query that failed **on this computer** (no socket, no route to an IPv6 address, and the like)
-says nothing about the resolver. It is counted as a *local error* and left out of the failure and
-retry rates. A note gives the count.
+A query that failed **on this computer** (no socket, no IPv6 route, a network that can't be
+reached, and the like) says nothing about the resolver. It is counted as a *local error* and left
+out of the failure and retry rates, which are over `n` − `local_errors`. It still counts in `n`
+and the ranking's OK/N (`n` = `ok` + `failures` + `local_errors`), and where every query failed
+locally the report shows the failure rate as `-`. A note gives the count. "Host is down" and "No
+route to host" are not local: they are what a LAN resolver that went down looks like.
 
 Latency statistics (mean, median, p80/p95/p98, min, max, stdev) use **only `ok` answers**.
 Percentiles use the same nearest-rank method as the original awk script,
@@ -248,17 +253,23 @@ reported separately as `failure_rate`.
 **Cache effects.** A resolver answers a name it was just asked from its cache. The benchmark's own
 repeats are exactly that: more rounds, or a provider's second server asking the same name. In real
 use your device caches each answer for its TTL, so a resolver sees each name from you about once
-per TTL. **Every latency figure (mean, median, p80/p95/p98, min, max, stdev) therefore uses only
-the first answer of each domain from each resolver in a run** (`first_n` of them). Otherwise
-repeats would pull the figures down, more so for providers with more servers, and make them look
-more precise than they are. The repeats still count for the failure and retry rates, and
-`repeat_n` and `repeat_median` show them apart, with a note. So more rounds sharpen the failure
-rates, not the latency figures. For steadier latency, combine runs taken at different times ("All
-runs combined").
+per TTL. **Every resolver, overall and per-domain latency figure (mean, median, p80/p95/p98,
+min, max, stdev) therefore uses only the first answer of each domain from each resolver in a
+run** (`first_n` of them). Otherwise repeats would pull the figures down, more so for providers
+with more servers, and make them look more precise than they are. The repeats still count for the
+failure and retry rates, and `repeat_n` and `repeat_median` show them apart, with a note. So more
+rounds sharpen the failure rates, not the latency figures. For steadier latency, add domains or
+combine runs taken at different times ("All runs combined"). Per-domain figures from one run rest
+on one answer per resolver. Per-server figures, used to compare a provider's servers, use each
+server's own first answer of each domain, so they can include answers the sibling server's query
+put in the cache and can sit below the resolver's figures. The web UI's latency histogram shows
+every answer, repeats included.
 
-**Uncertainty.** Every median and p95 comes with an exact 95 % confidence interval from order
-statistics (`median_ci`, `p95_ci`). A `null` bound means the samples can't bound it: a p95 needs
-72 answers for an upper bound. Failure rates get a 95 % Wilson interval (`failure_ci`).
+**Uncertainty.** Every median and p95 comes with a 95 % confidence interval from order statistics
+(`median_ci`, `p95_ci`; exact up to 10,000 answers, a normal approximation above). A `null` bound
+means the samples can't bound it: a p95 needs 72 first answers for an upper bound. With no answers
+at all the whole interval is `null`, like the median. Failure rates get a 95 % Wilson interval
+(`failure_ci`).
 
 Each resolver with at least one answer then gets a score, where lower is better:
 
@@ -295,7 +306,9 @@ Two resolvers are **within noise** of each other when nothing measured tells the
   one's answers lie above the p95 of both pooled. A p95 interval can't be bounded from one run's
   60 answers, and even this test needs a clean split: with 60 answers each, only 6 of the 6
   slowest answers on one side counts;
-* neither fails or needs a retry significantly more often.
+* neither fails or needs a retry significantly more often;
+* and the score counts their failure and retry rates alike (a resolver whose failures count is not
+  "a good choice" next to one whose failures don't).
 
 Each ranking entry lists the resolvers it is within noise of (`ties`), and the text report marks
 one within noise of the resolver above it with `=`. Ties aren't transitive: a resolver can be
@@ -318,7 +331,7 @@ From the ranking:
 * **Notes** warn about:
   * failure and retry rates above 2 %, saying whether the score counts them and naming the IP
     when one server of a resolver is to blame;
-  * fewer than 30 successful samples ("run more rounds");
+  * fewer than 30 first answers ("add domains, or combine runs");
   * ties;
   * servers and resolvers that never answered;
   * local errors;

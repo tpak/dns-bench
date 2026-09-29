@@ -286,7 +286,11 @@ class FailureKindTest(unittest.TestCase):
             (err("SERVFAIL", "SERVFAIL"), "answer"),
             (err("REFUSED", "REFUSED"), "answer"),
             (err("recv: [Errno 61] Connection refused"), "network"),
-            (err("send: [Errno 65] No route to host"), "local"),
+            # 1.3.0: a host that is down or unreachable is the resolver's failure, wherever it shows:
+            # macOS reports a dead LAN host on send (review of 1.3.0; it was "local")
+            (err("send: [Errno 65] No route to host"), "network"),
+            (err("send: [Errno 64] Host is down"), "network"),
+            (err("recv: [Errno 113] No route to host"), "network"),
             (err("connect: [Errno 51] Network is unreachable"), "local"),
             (err("socket: [Errno 24] Too many open files"), "local"),
             (err("address: [Errno 8] nodename nor servname provided"), "local"),
@@ -300,7 +304,7 @@ class FailureKindTest(unittest.TestCase):
 
     def test_local_errors_are_not_charged(self):
         rows = [row(10), row(12), {**row(11), "attempts": 2}, row(None, "timeout")]
-        rows += [err("send: [Errno 65] No route to host") for _ in range(4)]
+        rows += [err("connect: [Errno 51] Network is unreachable") for _ in range(4)]
         st = S.latency_stats(rows)
         self.assertEqual((st["n"], st["ok"], st["local_errors"]), (8, 3, 4))
         self.assertEqual((st["failures"], st["timeouts"], st["errors"]), (1, 1, 0))
