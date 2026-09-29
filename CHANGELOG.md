@@ -7,6 +7,14 @@ release notes.
 
 ## [Unreleased]
 
+### Added
+
+- Web UI: the address bar keeps the dataset shown, so a bookmark or a reload shows the same data.
+  `?run=all` opens All runs combined (for example http://127.0.0.1:8053/?run=all#overview) and
+  `?run=<id>` one saved run; without it the latest run is shown, as before. Back and Forward
+  bring back the dataset each page had. An id that isn't saved falls back to the latest run with a
+  notice.
+
 ### Fixed
 
 - `dns-bench serve` on a Python older than 3.13.15 or 3.14.7 (Ubuntu 26.04 ships 3.14.4) answered

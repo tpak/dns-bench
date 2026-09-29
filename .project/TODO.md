@@ -5,13 +5,13 @@
 
 ## Up Next
 
-- UI: make "All runs combined" reachable by URL (the dataset lives only in UI state; found by the 1.3.0 review)
 - Chris: decide whether a significant failure rate should count in full (as now) or only its excess over the most reliable resolver's (review of PR #15; `.project/research/2026-09-29-phase-8-measurement-validity.md`)
 - Chris: confirm Phase 8's extension of the plan — every latency figure from first answers, not just the tail (DECISIONS 2026-09-29 [Statistics])
 - Consider Dependabot's `pre-commit` ecosystem for the hook revs (would replace manual `pre-commit autoupdate`; CLAUDE.md §7.2 would change) — `.project/research/2026-09-27-ci-actions.md`
 
 ## Done This Week
 
+- Web UI: the dataset shown is in the address bar (`?run=all`, `?run=<id>`), so a bookmark or reload keeps it and Back/Forward restore it; checked in headless Firefox (2026-09-29)
 - Linux check of a dead LAN resolver (container): timeouts, already charged — no change needed (2026-09-29)
 - CI ready for ubuntu-latest → Ubuntu 26.04: probed ubuntu-26.04 (lint, tests, live System detection); fixed the one failure (CPython gh-54930 on the image's 3.14.4) in the server; weekly scheduled CI + manual trigger; tests on the oldest patch releases 3.13.0/3.14.0 (2026-09-29)
 - v1.3.0: pre-release review workflow (16 agents; `.project/research/2026-09-29-release-1.3.0-review.md`): dead LAN resolvers no longer hidden as local errors, low-sample note counts first answers, ties need matching counted rates, local-error display, notes and README corrected (2026-09-29)

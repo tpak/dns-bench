@@ -286,6 +286,25 @@
     location.hash = hashFor(tab, arg);
   }
 
+  // The dataset shown lives in the address bar's query string: ?run=all for All runs combined,
+  // ?run=<id> for one saved run, nothing for the latest run. Not in the hash, which names the tab:
+  // this way switching tabs keeps it, and a bookmark or a reload shows the same data.
+  function datasetFromUrl() {
+    return new URLSearchParams(location.search).get('run') || 'latest';
+  }
+  function writeDatasetUrl(key) {
+    const params = new URLSearchParams(location.search);
+    const named = params.get('run');
+    if (named === key || (key === 'latest' && !named)) return; // it already says so: leave it as typed
+    if (key === 'latest') params.delete('run');
+    else params.set('run', key);
+    const query = params.toString();
+    const url = `${location.pathname}${query ? `?${query}` : ''}${location.hash}`;
+    // replaceState: picking a dataset is not a place to go Back to (the tabs are)
+    if (url !== location.pathname + location.search + location.hash)
+      history.replaceState(history.state, '', url);
+  }
+
   // ---------------------------------------------------------------- schema
   /** The settings from the schema, in display order, each with its presentation (label, help, ...). */
   function settingFields() {
@@ -1888,7 +1907,9 @@
         key === 'all' ||
         (key === 'latest' && newest !== newestBefore) ||
         (key !== 'latest' && key !== 'all' && !runRow(key));
-      if (datasetStale) await selectDataset(key, { rerender: 'auto' });
+      // The first run list to arrive (the one at startup failed): honour the address's dataset.
+      if (datasetStale)
+        await selectDataset(before ? key : datasetFromUrl(), { rerender: 'auto', fromUrl: !before });
       else scheduleRender(state.route.tab === 'settings' ? { tabs: true } : { view: true });
     } finally {
       runsRefreshing = false;
@@ -2012,8 +2033,13 @@
     const background = opts.rerender === 'auto';
     const finish = () =>
       scheduleRender(background && state.route.tab === 'settings' ? { tabs: true } : { view: true });
-    if (key !== 'latest' && key !== 'all' && !runRow(key)) key = 'latest';
+    if (key !== 'latest' && key !== 'all' && !runRow(key)) {
+      if (opts.fromUrl && state.runs.length)
+        showBanner(`There is no saved run "${key}" here, so the latest run is shown.`, 'info');
+      key = 'latest';
+    }
     state.datasetKey = key;
+    if (state.runs.length) writeDatasetUrl(key);
     state.datasetError = null;
     if (!state.runs.length) {
       state.dataset = null;
@@ -2078,8 +2104,8 @@
   }
 
   function viewRun(id) {
+    go('overview'); // first, so the History entry keeps the dataset it had for Back
     selectDataset(id);
-    go('overview');
   }
 
   // ================================================================ trend
@@ -3472,8 +3498,8 @@
         type: 'button',
         class: 'btn btn-sm',
         onClick: () => {
+          go('overview'); // first, so the History entry keeps the dataset it had for Back
           selectDataset('all');
-          go('overview');
         },
       },
       icon('layers', 14),
@@ -4658,7 +4684,7 @@
           state.datasetError,
           h(
             'button',
-            { type: 'button', class: 'btn', onClick: () => selectDataset('latest') },
+            { type: 'button', class: 'btn', onClick: () => selectDataset(state.datasetKey) }, // retry the same
             icon('refresh', 14),
             'Try again',
           ),
@@ -4690,17 +4716,30 @@
     return TAB_IDS.has(tab) ? { tab, arg: arg || null } : { tab: 'overview', arg: null };
   }
 
+  /** Back and Forward restore each page's own address, dataset included: show the one it names. */
+  function syncDatasetFromUrl() {
+    const want = datasetFromUrl();
+    if (!state.bootstrapped || !state.runs.length || want === state.datasetKey) return;
+    const onSettings = state.route.tab === 'settings';
+    // Leaving Settings with unsaved edits: onHashChange asks first, and switches only if the user leaves.
+    if (onSettings && state.dirty && parseHash().tab !== 'settings') return;
+    // Still on Settings (Back or Forward changed only the query): never rebuild the form under the user.
+    selectDataset(want, { fromUrl: true, rerender: onSettings ? 'auto' : undefined });
+  }
+
   function onHashChange() {
     const next = parseHash();
     const prev = state.route;
-    if (prev.tab === next.tab && prev.arg === next.arg) return;
     if (prev.tab === 'settings' && next.tab !== 'settings' && state.dirty) {
       if (!window.confirm('You have unsaved changes in Settings. Leave and discard them?')) {
         history.replaceState(null, '', '#settings');
+        writeDatasetUrl(state.datasetKey); // the address a step back named another dataset: undo that too
         return;
       }
       discardDraft();
     }
+    syncDatasetFromUrl();
+    if (prev.tab === next.tab && prev.arg === next.arg) return;
     state.route = next;
     const byKeys = state.tabKeyNav;
     state.tabKeyNav = false;
@@ -4749,7 +4788,7 @@
     state.bootstrapped = true;
     resetColors();
     scheduleRender({ controls: true });
-    if (state.runs.length) await selectDataset('latest');
+    if (state.runs.length) await selectDataset(datasetFromUrl(), { fromUrl: true });
     else scheduleRender();
     if (stR.status === 'fulfilled' && stR.value && stR.value.running) {
       state.job = { ...stR.value, running: true };
@@ -4802,6 +4841,7 @@
       location.hash = tabs[j].getAttribute('href');
     });
     window.addEventListener('hashchange', onHashChange);
+    window.addEventListener('popstate', syncDatasetFromUrl); // a step back that changes only the query
     window.addEventListener('beforeunload', (e) => {
       if (state.dirty) {
         e.preventDefault();

@@ -147,6 +147,13 @@ class ServerTestBase(unittest.TestCase):
 
 
 class StaticTest(ServerTestBase):
+    def test_index_with_a_dataset_query(self):
+        # The UI keeps the dataset in the query string (?run=all): the page must still be served.
+        status, headers, body = self.req("GET", "/?run=all")
+        self.assertEqual(status, 200)
+        self.assertTrue(headers["content-type"].startswith("text/html"))
+        self.assertEqual(body, self.req("GET", "/")[2])
+
     def test_index(self):
         status, headers, body = self.req("GET", "/")
         self.assertEqual(status, 200)
