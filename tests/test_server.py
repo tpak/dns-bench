@@ -398,17 +398,30 @@ class SecurityTest(ServerTestBase):
             )
             return h
 
-        for requestline, code in (("GET / HTTP/9.9", 505), ("GET / HTTP/x", 400), ("POST /x", 400)):
+        for requestline, code in (
+            ("GET / HTTP/9.9", 505),
+            ("GET / HTTP/x", 400),
+            ("POST /x", 400),
+            ("GET", 400),
+        ):
             with self.subTest(requestline=requestline):
                 h = handler(requestline)
                 h.send_error(code)
                 out = h.wfile.getvalue()
                 self.assertTrue(out.startswith(f"HTTP/1.0 {code} ".encode()), out[:60])
                 self.assertIn(b"X-Content-Type-Options: nosniff", out)
-        # a real HTTP/0.9 request is still answered the HTTP/0.9 way: the body alone
+        # even a real HTTP/0.9 request gets a status line and the security headers (review of PR #19:
+        # no client of this server speaks HTTP/0.9, and every answer should carry the headers)
         h = handler("GET /nope")
         h.send_error(404, "Not found")
-        self.assertTrue(h.wfile.getvalue().startswith(b'{"error"'))
+        self.assertTrue(h.wfile.getvalue().startswith(b"HTTP/1.0 404 "), h.wfile.getvalue()[:60])
+
+    def test_http09_request_gets_a_403_with_headers(self):
+        # CPython 3.13.15+/3.14.4+ give an HTTP/0.9 request a plain {} for headers (gh-70765); the Host
+        # check crashed on it with a 500. It has no Host, so it is refused: with a status line and headers.
+        resp = self.raw_request(b"GET /api/status\r\n\r\n")
+        self.assertTrue(resp.startswith(b"HTTP/1.0 403 "), resp[:60])
+        self.assertIn(b"X-Content-Type-Options: nosniff", resp)
 
     def test_one_request_per_connection(self):
         host = f"Host: 127.0.0.1:{self.port}\r\n"
