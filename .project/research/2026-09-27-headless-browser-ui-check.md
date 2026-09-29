@@ -42,7 +42,7 @@ import shutil, subprocess, sys, tempfile, threading, time
 from pathlib import Path
 from dnsbench import paths, server as SV
 
-out = Path(sys.argv[1])
+out = Path(sys.argv[1]).resolve()  # Firefox may silently skip a relative --screenshot path
 out.mkdir(parents=True, exist_ok=True)
 routes = (
     sys.argv[2].split(",") if len(sys.argv) > 2 else ["overview", "resolver", "domain", "history", "settings"]
@@ -117,7 +117,7 @@ from urllib.parse import parse_qs, urlsplit
 from dnsbench import paths, server as SV
 
 here = Path(__file__).parent
-out = Path(sys.argv[1])
+out = Path(sys.argv[1]).resolve()  # Firefox may silently skip a relative --screenshot path
 out.mkdir(parents=True, exist_ok=True)
 tmp = Path(tempfile.mkdtemp())
 shutil.copytree(Path("tests/fixtures/runs-v1"), tmp / "runs")

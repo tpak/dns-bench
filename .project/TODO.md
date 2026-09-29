@@ -5,13 +5,16 @@
 
 ## Up Next
 
+- UI: make "All runs combined" reachable by URL (the dataset lives only in UI state; found by the 1.3.0 review)
+- Check live on Linux how a dead on-link resolver is reported (expected: recv EHOSTUNREACH → network)
+- Watch CI after 2026-10-19: `ubuntu-latest` moves to Ubuntu 26 (CI annotation); the live System-detection step depends on systemd-resolved
 - Chris: decide whether a significant failure rate should count in full (as now) or only its excess over the most reliable resolver's (review of PR #15; `.project/research/2026-09-29-phase-8-measurement-validity.md`)
 - Chris: confirm Phase 8's extension of the plan — every latency figure from first answers, not just the tail (DECISIONS 2026-09-29 [Statistics])
-- Release 1.3.0 when ready: Phase 8 changes results (ask before tagging)
 - Consider Dependabot's `pre-commit` ecosystem for the hook revs (would replace manual `pre-commit autoupdate`; CLAUDE.md §7.2 would change) — `.project/research/2026-09-27-ci-actions.md`
 
 ## Done This Week
 
+- v1.3.0: pre-release review workflow (16 agents; `.project/research/2026-09-29-release-1.3.0-review.md`): dead LAN resolvers no longer hidden as local errors, low-sample note counts first answers, ties need matching counted rates, local-error display, notes and README corrected (2026-09-29)
 - Phase 8 — Measurement validity: replies must echo the question (opcode 0; QDCOUNT=0 only on error rcodes) over connected UDP sockets; local errors not charged; failure/retry rates count only when significantly higher (Newcombe); exact order-statistic CIs and Wilson intervals; ties from intervals + Fisher's test on tails, reported as a run down the ranking (backup too); every latency figure from each domain's first answer (repeats are cache hits); unanswered-domain notes; ANALYSIS_VERSION 2; serve timing measured, no SO_TIMESTAMP needed. Three review agents: 9 fixes. On the 13 saved runs the best resolver never changed. PR #15 (2026-09-29)
 - v1.2.0 released: notes rewritten after a pre-release review (39 findings; `.project/research/2026-09-28-release-1.2.0-review.md`), `serve --allow-remote` on 0.0.0.0 fixed, `python -m dnsbench` version check, live System detection in CI. PR #14, tag v1.2.0, GitHub release published by release.yml (2026-09-29)
 - Tag ruleset "release tags" for `v*`: updates and deletions restricted, admin bypass (2026-09-28)
