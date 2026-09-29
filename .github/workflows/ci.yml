@@ -81,7 +81,8 @@ jobs:
         if: matrix.python == '3.13'
         run: |
           for cmd in "./dns-bench --version" "-m dnsbench --version"; do
-            if out=$(uv run --no-project --python 3.12 python $cmd 2>&1); then
+            read -ra args <<<"$cmd"
+            if out=$(uv run --no-project --python 3.12 python "${args[@]}" 2>&1); then
               echo "::error::'python $cmd' ran under Python 3.12: $out"
               exit 1
             fi
