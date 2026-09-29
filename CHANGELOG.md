@@ -7,6 +7,8 @@ release notes.
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-09-29
+
 Measurement validity (REMEDIATION_PLAN.md Phase 8). **Results change**: saved runs are analysed
 afresh when loaded (analysis version 2), so a run's recommendation can differ from the one its
 `.txt` report shows. On the 13 runs we checked, the best resolver never changed. The suggested
@@ -269,7 +271,8 @@ First release: a faster, rate-limited DNS benchmark with a web UI, rewritten in 
 original zsh script (kept in `archive/`). It is the one-shot generated version, tagged as a fixed
 baseline before the work in REMEDIATION_PLAN.md.
 
-[Unreleased]: https://github.com/tpak/dns-bench/compare/v1.2.0...HEAD
+[Unreleased]: https://github.com/tpak/dns-bench/compare/v1.3.0...HEAD
+[1.3.0]: https://github.com/tpak/dns-bench/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/tpak/dns-bench/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/tpak/dns-bench/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/tpak/dns-bench/releases/tag/v1.0.0
