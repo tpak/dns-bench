@@ -7,6 +7,13 @@ release notes.
 
 ## [Unreleased]
 
+### Fixed
+
+- `dns-bench serve` on a Python older than 3.13.15 or 3.14.7 (Ubuntu 26.04 ships 3.14.4) answered
+  a malformed request line, such as an unsupported HTTP version, with the JSON error body alone: no
+  status line and none of the security headers. It now always sends them, as newer Pythons do
+  (CPython gh-54930).
+
 ## [1.3.0] - 2026-09-29
 
 Measurement validity (REMEDIATION_PLAN.md Phase 8). **Results change**: saved runs are analysed
