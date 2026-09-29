@@ -58,8 +58,8 @@ unchanged, and 1.2.0 still reads files that 1.3.0 saves.
   failure, and used to count as retried too.
 - Sibling servers within noise of each other still go by config order, but "within noise" now
   uses the same tests as for resolvers (medians within 0.5 ms or overlapping median intervals, and
-  no significant difference in slow answers, failures or retries) instead of a fixed 5 % median margin and
-  a 1-point failure margin. So 2 failures in 100 against none no longer decides which server goes
+  no significant difference in slow answers, failures or retries) instead of a fixed 5 % median
+  margin and a 1-point failure margin. So 2 failures in 100 against none no longer decides which server goes
   first, and a server that is reliably a little faster than its sibling now does.
 - Replies are checked more strictly: they must repeat the question that was asked (the name in
   any letter case) and be a standard query response (opcode 0). A reply that leaves out the
