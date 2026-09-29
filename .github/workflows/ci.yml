@@ -18,7 +18,7 @@ concurrency:
 
 jobs:
   lint:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04 # TEMPORARY: probe of the image ubuntu-latest becomes from 2026-10-19
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -39,7 +39,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: [ubuntu-latest, macos-latest, ubuntu-26.04] # TEMPORARY: ubuntu-26.04 probe
         python: ["3.13", "3.14"]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 10
