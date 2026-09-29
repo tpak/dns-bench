@@ -143,7 +143,10 @@ the runs directory before sending any queries.
   updates) a **System** row with the resolvers your computer uses now.
 
 The dataset picker at the top chooses which data every tab shows: the latest run, any single
-run, or **All runs combined**.
+run, or **All runs combined**. The address bar keeps the choice, so a bookmark or a reload shows
+the same data: `?run=all` is All runs combined and `?run=<id>` one saved run (for example
+http://127.0.0.1:8053/?run=all#overview); without it you see the latest run. Back and Forward
+bring back the dataset each page had.
 
 Everything works from the keyboard. The arrow keys move between the tabs; Tab reaches each chart
 once, and the arrow keys (Home and End too) then move between its bars or points. Sorting a table,
