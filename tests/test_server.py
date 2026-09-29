@@ -389,6 +389,47 @@ class SecurityTest(ServerTestBase):
                 self.assertEqual(headers["cross-origin-resource-policy"], "same-origin")
                 self.assertTrue(json.loads(body)["error"])
 
+    def test_malformed_request_line_gets_a_status_line_on_any_python(self):
+        # CPython before 3.13.15 / 3.14.7 (gh-54930) left request_version at "HTTP/0.9" for a request
+        # line with a bad or too new version, so the error went out with no status line and no headers
+        # (found on Ubuntu 26.04, whose Python is 3.14.4). send_error must add them whatever the
+        # interpreter did: this sets up the state an older one leaves behind.
+        def handler(requestline):
+            h = SV.Handler.__new__(SV.Handler)
+            h.server, h.client_address, h.wfile = self.srv, ("127.0.0.1", 0), io.BytesIO()
+            h.request_version, h.requestline, h.command, h.close_connection = (
+                "HTTP/0.9",
+                requestline,
+                None,
+                False,
+            )
+            return h
+
+        for requestline, code in (
+            ("GET / HTTP/9.9", 505),
+            ("GET / HTTP/x", 400),
+            ("POST /x", 400),
+            ("GET", 400),
+        ):
+            with self.subTest(requestline=requestline):
+                h = handler(requestline)
+                h.send_error(code)
+                out = h.wfile.getvalue()
+                self.assertTrue(out.startswith(f"HTTP/1.0 {code} ".encode()), out[:60])
+                self.assertIn(b"X-Content-Type-Options: nosniff", out)
+        # even a real HTTP/0.9 request gets a status line and the security headers (review of PR #19:
+        # no client of this server speaks HTTP/0.9, and every answer should carry the headers)
+        h = handler("GET /nope")
+        h.send_error(404, "Not found")
+        self.assertTrue(h.wfile.getvalue().startswith(b"HTTP/1.0 404 "), h.wfile.getvalue()[:60])
+
+    def test_http09_request_gets_a_403_with_headers(self):
+        # CPython 3.13.15+/3.14.4+ give an HTTP/0.9 request a plain {} for headers (gh-70765); the Host
+        # check crashed on it with a 500. It has no Host, so it is refused: with a status line and headers.
+        resp = self.raw_request(b"GET /api/status\r\n\r\n")
+        self.assertTrue(resp.startswith(b"HTTP/1.0 403 "), resp[:60])
+        self.assertIn(b"X-Content-Type-Options: nosniff", resp)
+
     def test_one_request_per_connection(self):
         host = f"Host: 127.0.0.1:{self.port}\r\n"
         # HTTP/1.0 even when the client asks for keep-alive: raw_request reads until the server closes.

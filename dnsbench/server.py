@@ -295,8 +295,11 @@ class Handler(BaseHTTPRequestHandler):
         # (the UI polls /api/status twice a second; logging that would be noise).
         interesting = not self.server.quiet and (code >= 400 or self.command in ("PUT", "POST"))
         if interesting:
-            path = getattr(self, "path", "")
-            sys.stderr.write(f"[{time.strftime('%H:%M:%S')}] {self.command} {path} -> {code}\n")
+            if self.command:
+                what = f"{self.command} {getattr(self, 'path', '')}"
+            else:  # a request line the base class couldn't parse: show it (escaped, cut short)
+                what = repr(getattr(self, "requestline", "")[:80]) or "(no request line)"
+            sys.stderr.write(f"[{time.strftime('%H:%M:%S')}] {what} -> {code}\n")
 
     def log_error(self, format, *args):  # noqa: A002
         if not self.server.quiet:
@@ -327,6 +330,7 @@ class Handler(BaseHTTPRequestHandler):
         """The base class calls this for requests it can't parse or route: a malformed request line, an
         oversized header, an unsupported method or HTTP version. Answer in JSON with the usual security
         headers, like every other error, instead of its HTML page."""
+        self._no_http09()
         self.close_connection = True
         try:
             phrase = HTTPStatus(code).phrase
@@ -349,7 +353,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def _request_host(self) -> str | None:
         """The Host header (lower-cased) if it names this server, else None: DNS-rebinding protection."""
-        values = self.headers.get_all("Host") or []
+        # For an HTTP/0.9 request CPython 3.13.15+ and 3.14.4+ set headers to a plain {} (gh-70765).
+        get_all = getattr(self.headers, "get_all", None)
+        values = (get_all("Host") if get_all else None) or []
         if len(values) != 1:
             return None
         host = values[0].strip().lower()
@@ -385,7 +391,19 @@ class Handler(BaseHTTPRequestHandler):
             return True
         return len(origins) == 1 and origins[0].strip().lower() == f"http://{host}"
 
+    def _no_http09(self) -> None:
+        """Answer with a status line and headers even where the base class would answer the HTTP/0.9 way.
+
+        The base class omits both when request_version is "HTTP/0.9": for a real HTTP/0.9 request, and
+        on CPython before 3.13.15 and 3.14.7 (gh-54930) also for a malformed request line, whose version
+        it never sets (Ubuntu 26.04 ships 3.14.4). No client of this server speaks HTTP/0.9, and every
+        answer should carry the security headers.
+        """
+        if getattr(self, "request_version", "") == "HTTP/0.9":
+            self.request_version = ""
+
     def _dispatch(self, method: str):
+        self._no_http09()
         try:
             host = self._request_host()
             if host is None:
