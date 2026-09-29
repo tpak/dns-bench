@@ -11,8 +11,8 @@ release notes.
 
 - `dns-bench serve` on a Python older than 3.13.15 or 3.14.7 (Ubuntu 26.04 ships 3.14.4) answered
   a malformed request line, such as an unsupported HTTP version, with the JSON error body alone: no
-  status line and none of the security headers. It now always sends them, as newer Pythons do
-  (CPython gh-54930).
+  status line and none of the security headers (CPython gh-54930). Every answer now has them, also
+  to an HTTP/0.9 request, which on newer Pythons got a 500 instead of its 403.
 
 ## [1.3.0] - 2026-09-29
 

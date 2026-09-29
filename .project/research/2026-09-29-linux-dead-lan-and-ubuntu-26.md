@@ -5,7 +5,8 @@
   1. The 1.3.0 review found that on macOS a LAN resolver that goes down shows up as
      "Host is down" / "No route to host" send errors, which 1.3.0 counts as the resolver's
      failures. How does it show up on Linux?
-  2. GitHub moves `ubuntu-latest` to Ubuntu 26.04 from 2026-10-19. Does CI still pass there?
+  2. GitHub moves `ubuntu-latest` to Ubuntu 26.04 gradually from 2026-10-19. Does CI still pass
+     there?
 
 ## Findings
 
@@ -46,10 +47,13 @@
     before those `send_error` calls.
   - Our other jobs use uv-managed Pythons, which are the latest patch releases, so nothing showed.
     Anyone running `serve` on Ubuntu 26.04's own Python would get header-less error replies.
-- The fix in dns-bench: `Handler.send_error` does what gh-54930 does. A request still at
-  "HTTP/0.9" that isn't a real HTTP/0.9 request (`GET /path`) is answered with a status line and
-  headers. A new test sets up the state an old interpreter leaves behind, so it checks the fix on
-  any Python.
+- The fix in dns-bench: the server never answers the HTTP/0.9 way (`Handler._no_http09`, in
+  `send_error` and `_dispatch`). Every answer has a status line and the security headers, on every
+  Python. A first version copied gh-54930 exactly and still answered a real HTTP/0.9 request
+  (`GET /path`) without them. The review of PR #19 found that no client of this server speaks
+  HTTP/0.9, and that on 3.13.15+ and 3.14.4+ such a request got a 500. Those versions give it a
+  plain `{}` for headers (gh-70765), which the Host check didn't expect; it now copes. A new test
+  sets up the state an old interpreter leaves behind, so it checks the fix on any Python.
 - With the fix, the suite passes locally on 3.13.0, 3.14.0 and 3.14.4, the oldest supported patch
   releases and the one Ubuntu 26.04 ships.
 
@@ -59,15 +63,18 @@
 - **#6:**
   - Fix the server as above.
   - Add a weekly scheduled CI run (plus a manual trigger), so a change in the runner images or in
-    Python releases shows up even when nobody pushes. GitHub emails the repo owner when a
-    scheduled run fails.
+    Python releases shows up even when nobody pushes. When a scheduled run fails, GitHub notifies
+    whoever last changed the cron line.
   - Add test jobs on the oldest patch release of each supported Python (3.13.0, 3.14.0). This bug
     showed that "3.13" and "3.14" in CI meant the newest patch releases only, while users run
     whatever their system has.
-  - Revert the temporary `ubuntu-26.04` probe. `ubuntu-latest` becomes that image on 2026-10-19,
-    and the weekly run will catch anything else.
-- **A limit of scheduled workflows:** GitHub disables them after 60 days without activity in the
-  repository. Re-enable the workflow in the Actions tab if that happens.
+  - Revert the temporary `ubuntu-26.04` probe. `ubuntu-latest` moves to that image gradually,
+    from 2026-10-19 to about 2026-11-19, and the weekly run will catch anything else. Merge the
+    schedule before then: it only runs once it is on `main`.
+- **How GitHub handles scheduled workflows:**
+  - GitHub notifies the person who last changed the cron line when a scheduled run fails.
+  - It disables the schedule after 60 days without activity in the repository. If that happens,
+    re-enable the workflow in the Actions tab.
 
 ## Sources
 
@@ -75,5 +82,8 @@
   v3.14.4, v3.14.5, v3.14.6 and v3.14.7, and v3.13.13–v3.13.15.
 - PR #19's CI run on `ubuntu-26.04` (job 109390921137): "Using CPython 3.14.4 interpreter at:
   /usr/bin/python3.14".
-- GitHub Actions: scheduled workflows are disabled after 60 days of repository inactivity
-  (docs: "Disabling and enabling a workflow").
+- GitHub Actions docs, "Disabling and enabling a workflow" (a schedule is disabled after 60 days
+  of repository inactivity) and "Notifications for workflow runs" (a failed scheduled run notifies
+  whoever last modified the cron syntax).
+- actions/runner-images#14748: `ubuntu-latest` moves to Ubuntu 26.04 gradually, from 2026-10-19.
+- CPython gh-70765: an HTTP/0.9 request's `headers` is a plain dict from 3.13.15 and 3.14.4 on.
