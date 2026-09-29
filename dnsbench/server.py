@@ -327,6 +327,13 @@ class Handler(BaseHTTPRequestHandler):
         """The base class calls this for requests it can't parse or route: a malformed request line, an
         oversized header, an unsupported method or HTTP version. Answer in JSON with the usual security
         headers, like every other error, instead of its HTML page."""
+        # CPython before 3.13.15 and 3.14.7 (gh-54930) leaves request_version at its default,
+        # "HTTP/0.9", for a malformed request line (a bad or too new HTTP version, a bad HTTP/0.9
+        # request), and so answers it the HTTP/0.9 way: no status line, no headers. Ubuntu 26.04 ships
+        # 3.14.4. Only a real HTTP/0.9 request ("GET /path") may get such an answer.
+        words = (getattr(self, "requestline", "") or "").split()
+        if getattr(self, "request_version", "") == "HTTP/0.9" and not (len(words) == 2 and words[0] == "GET"):
+            self.request_version = ""
         self.close_connection = True
         try:
             phrase = HTTPStatus(code).phrase
