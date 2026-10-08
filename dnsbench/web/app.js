@@ -4841,7 +4841,10 @@
       location.hash = tabs[j].getAttribute('href');
     });
     window.addEventListener('hashchange', onHashChange);
-    window.addEventListener('popstate', syncDatasetFromUrl); // a step back that changes only the query
+    // A step between entries whose query differs fires popstate but no hashchange (the URLs differ in
+    // more than the fragment), even when the hash changed too: route it like a hash change. Where both
+    // fire, the second finds the route and the dataset already in place and does nothing.
+    window.addEventListener('popstate', onHashChange);
     window.addEventListener('beforeunload', (e) => {
       if (state.dirty) {
         e.preventDefault();
