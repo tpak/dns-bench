@@ -191,6 +191,108 @@ The injected-script method also checks keyboard behaviour: dispatch `KeyboardEve
 bubbles: true})`, call `.focus()` and `.click()`, then report `document.activeElement`. `focus()`
 works in headless mode even though the window never has the system focus.
 
+## Addendum (2026-10-09): testing Back and Forward needs an iframe
+
+The methods above can't test session history. Until a document's `load` event has fired, Firefox
+turns `location.hash = ...` into a replace, not a push. Holding back `load` with `slow.png`, which
+the screenshot needs, therefore leaves `history.length` at 1, and `history.back()` does nothing.
+The PR #18 checks fell into this: they reported Back/Forward "checked" without exercising it.
+
+The fix: serve a wrapper page holding the app in an `<iframe>`. Hold back the *wrapper's* `load`
+for the screenshot, while the app's own document finishes loading, so hash changes push entries.
+The harness has to relax `frame-ancestors` to `'self'` and drop `X-Frame-Options` for the copy it
+serves. `uitest.js` runs inside the frame. It logs `popstate` and `hashchange` to see which fired.
+
+That is how the 1.4.0 review found that a step between entries whose query strings differ fires
+`popstate` but no `hashchange`, in any browser (the HTML spec fires `hashchange` only when the URLs
+differ in the fragment alone). So the page didn't change on Back. Run the harness from the repo
+root as `uv run --no-project python harness.py <out-dir> '<start path>' <test name>`, with a
+`uitest.js` next to it that switches on `window.UITEST`:
+
+```python
+"""Serve a copy of the UI with uitest.js injected, open argv[2] in headless Firefox, print reports.
+
+usage (from the repo root): uv run --no-project python harness.py <out-dir> <start path> <test name>
+"""
+
+import shutil, subprocess, sys, tempfile, threading, time
+from pathlib import Path
+from urllib.parse import parse_qs, urlsplit
+
+sys.path.insert(0, str(Path.cwd()))
+from dnsbench import paths, server as SV
+
+here = Path(__file__).parent
+out = Path(sys.argv[1]).resolve()
+out.mkdir(parents=True, exist_ok=True)
+start, test = sys.argv[2], sys.argv[3]
+tmp = Path(tempfile.mkdtemp(dir=here))
+shutil.copytree(Path("tests/fixtures/runs-v1"), tmp / "runs")
+web = tmp / "web"
+shutil.copytree(paths.WEB_DIR, web)
+shutil.copy(here / "uitest.js", web / "uitest.js")
+html = (web / "index.html").read_text()
+# The app runs in an iframe whose own load completes, so hash changes push History entries (a
+# document that hasn't finished loading replaces them instead); the wrapper's load is held back.
+(web / "index.html").write_text(html.replace("</body>", '<script src="/static/uitest.js"></script></body>'))
+(web / "wrap.html").write_text(
+    f'<!doctype html><html><body><iframe src="{start}" width="1260" height="1500"></iframe>'
+    '<img src="/static/slow.png" alt="" width="1" height="1"></body></html>'
+)
+SV._HTML_CSP = SV._HTML_CSP.replace("frame-ancestors 'none'", "frame-ancestors 'self'")
+_orig_send_header = SV.Handler.send_header
+
+
+def send_header(self, k, v):
+    if k != "X-Frame-Options":
+        _orig_send_header(self, k, v)
+
+
+SV.Handler.send_header = send_header
+(web / "uitest.js").write_text(f"window.UITEST = '{test}';\n" + (web / "uitest.js").read_text())
+done = threading.Event()
+orig = SV.Handler.h_static
+
+
+def h_static(self, file):
+    if file == "slow.png":
+        done.wait(60)
+        raise SV.HTTPError(404, "Not found")
+    if file == "report":
+        q = parse_qs(urlsplit(self.path).query)
+        k, v = q.get("k", [""])[0], q.get("v", [""])[0]
+        print(f"{k}: {v}", flush=True)
+        if k == "done":
+            done.set()
+        self._send(204, b"", "text/plain")
+        return
+    return orig(self, file)
+
+
+SV.Handler.h_static = h_static
+srv = SV.make_server("127.0.0.1", 0, tmp / "config.json", tmp / "runs", web_dir=web)
+srv.quiet = True
+threading.Thread(target=srv.serve_forever, daemon=True).start()
+(tmp / "ff").mkdir()
+subprocess.run(
+    [
+        "/Applications/Firefox.app/Contents/MacOS/firefox",
+        "--headless",
+        "--no-remote",
+        "--profile",
+        str(tmp / "ff"),
+        "--screenshot",
+        str(out / f"{test}.png"),
+        "--window-size=1280,1600",
+        f"http://127.0.0.1:{srv.server_address[1]}/static/wrap.html",
+    ],
+    capture_output=True,
+    timeout=120,
+)
+print("finished:", done.is_set())
+srv.shutdown()
+```
+
 ## Sources
 
 - Firefox headless mode and `--screenshot`: https://firefox-source-docs.mozilla.org/testing/headless/index.html
