@@ -14,15 +14,20 @@ release notes.
 - Web UI: the address bar keeps the dataset shown, so a bookmark or a reload shows the same data.
   `?run=all` opens All runs combined (for example http://127.0.0.1:8053/?run=all#overview) and
   `?run=<id>` one saved run; without it the latest run is shown, as before. Back and Forward
-  bring back the dataset each page had. An id that isn't saved falls back to the latest run with a
-  notice.
+  bring back the page and the dataset each step had. An id that isn't saved falls back to the
+  latest run with a notice. If a dataset fails to load, Try again retries that dataset instead of
+  switching to the latest run.
 
 ### Fixed
 
 - `dns-bench serve` on a Python older than 3.13.15 or 3.14.7 (Ubuntu 26.04 ships 3.14.4) answered
   a malformed request line, such as an unsupported HTTP version, with the JSON error body alone: no
-  status line and none of the security headers (CPython gh-54930). Every answer now has them, also
-  to an HTTP/0.9 request, which on newer Pythons got a 500 instead of its 403.
+  status line and none of the security headers (CPython gh-54930). Every answer now has them. That
+  includes the answer to an HTTP/0.9 request (a request line with no HTTP version), which never had
+  them, and which on Python 3.13.15 and later or 3.14.4 and later was a 500 Internal Server Error
+  instead of a 403.
+- `dns-bench serve` logs a request it can't parse by its request line (`'GET / HTTP/9.9' -> 505`)
+  instead of `None  -> 505`.
 
 ## [1.3.0] - 2026-09-29
 
