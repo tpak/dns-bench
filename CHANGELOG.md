@@ -7,6 +7,8 @@ release notes.
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-10-09
+
 ### Added
 
 - Web UI: the address bar keeps the dataset shown, so a bookmark or a reload shows the same data.
@@ -310,7 +312,8 @@ First release: a faster, rate-limited DNS benchmark with a web UI, rewritten in 
 original zsh script (kept in `archive/`). It is the one-shot generated version, tagged as a fixed
 baseline before the work in REMEDIATION_PLAN.md.
 
-[Unreleased]: https://github.com/tpak/dns-bench/compare/v1.3.0...HEAD
+[Unreleased]: https://github.com/tpak/dns-bench/compare/v1.4.0...HEAD
+[1.4.0]: https://github.com/tpak/dns-bench/compare/v1.3.0...v1.4.0
 [1.3.0]: https://github.com/tpak/dns-bench/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/tpak/dns-bench/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/tpak/dns-bench/compare/v1.0.0...v1.1.0
