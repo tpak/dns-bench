@@ -7,6 +7,8 @@ release notes.
 
 ## [Unreleased]
 
+## [1.4.1] - 2026-10-09
+
 ### Fixed
 
 - `dns-bench serve` logs a request line too long to read (over 64 KiB) as `(no request line) -> 414`
@@ -322,7 +324,8 @@ First release: a faster, rate-limited DNS benchmark with a web UI, rewritten in 
 original zsh script (kept in `archive/`). It is the one-shot generated version, tagged as a fixed
 baseline before the work in REMEDIATION_PLAN.md.
 
-[Unreleased]: https://github.com/tpak/dns-bench/compare/v1.4.0...HEAD
+[Unreleased]: https://github.com/tpak/dns-bench/compare/v1.4.1...HEAD
+[1.4.1]: https://github.com/tpak/dns-bench/compare/v1.4.0...v1.4.1
 [1.4.0]: https://github.com/tpak/dns-bench/compare/v1.3.0...v1.4.0
 [1.3.0]: https://github.com/tpak/dns-bench/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/tpak/dns-bench/compare/v1.1.0...v1.2.0
