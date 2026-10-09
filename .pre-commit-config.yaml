@@ -1,7 +1,8 @@
 # Git hooks: lint and format staged files before each commit.
 # Setup (once per clone):  uv tool install pre-commit && pre-commit install
 # Run on everything:        pre-commit run --all-files
-# Update hook versions:     pre-commit autoupdate
+# Hook versions:            Dependabot proposes updates monthly (.github/dependabot.yml);
+#                           `pre-commit autoupdate` still works in between
 repos:
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.16.9

@@ -484,7 +484,7 @@ pre-commit install
 |---|---|
 | Check the whole repo | `pre-commit run --all-files` |
 | Type-check only | `pre-commit run mypy --all-files` |
-| Update the pinned tool versions | `pre-commit autoupdate` |
+| Update the pinned tool versions | Dependabot opens a pull request monthly; by hand, `pre-commit autoupdate` |
 | Make `git blame` skip the one-off reformat commit | `git config blame.ignoreRevsFile .git-blame-ignore-revs` |
 | Run one test module, or the tests whose name matches | `uv run python -m unittest discover -s tests -p test_config.py`, `uv run python -m unittest discover -s tests -k test_config_commands` |
 | Try the UI on sample data, away from your own | `DNSBENCH_HOME=$(mktemp -d) ./dns-bench serve --runs-dir tests/fixtures/runs-v1` |
@@ -497,19 +497,25 @@ without annotations.
 
 ### Continuous integration
 
-GitHub Actions (`.github/workflows/ci.yml`) runs on every push to `main` and every pull request:
+GitHub Actions (`.github/workflows/ci.yml`) runs on every push to `main` and every pull request.
+It also runs on `main` every Monday, so a change nobody pushed (a new runner image, a Python patch
+release) still shows up, and you can start it by hand (Actions > ci > Run workflow).
 
 - `lint`: the same pre-commit hooks (ruff, mypy, Biome), at the same pinned versions, over the whole
-  repo. If it fails
-  on a PR, run `pre-commit run --all-files` locally and commit what it fixes.
-- `test`: the unit tests on Linux and macOS with Python 3.13 and 3.14, plus the `./dns-bench`
-  launcher, run directly and through a symlink, and refusing Python 3.12, and the `dns-bench`
-  command that `pyproject.toml` defines.
+  repo. If it fails on a PR, run `pre-commit run --all-files` locally and commit what it fixes.
+- `test`: the unit tests on Linux and macOS with the newest Python 3.13 and 3.14, and on Linux also
+  with the oldest, 3.13.0 and 3.14.0. Also:
+  - the `./dns-bench` launcher, run directly and through a symlink;
+  - the launcher and `python -m dnsbench` refusing Python 3.12;
+  - the `dns-bench` command that `pyproject.toml` defines;
+  - a live check of System resolver detection.
 - `ci-passed`: succeeds only if both jobs did. It is the check `main`'s branch protection requires,
   so a pull request can't merge until CI is green.
 
-Actions are pinned to commit SHAs. Dependabot opens one grouped PR a month to update them, and
-skips releases younger than a week.
+Dependabot opens one grouped pull request a month for the actions, which are pinned to commit
+SHAs, and one for the pre-commit hook versions, in each case skipping releases younger than a
+week. A hook update that reformats or flags code needs its fixes committed to that pull request
+before it merges.
 
 ## Releasing
 

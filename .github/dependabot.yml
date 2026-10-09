@@ -1,5 +1,5 @@
-# Keep the SHA-pinned actions in .github/workflows up to date. Dependabot updates the SHA and the
-# version comment beside it together.
+# Keep the SHA-pinned actions in .github/workflows and the hook versions in .pre-commit-config.yaml
+# up to date. For actions, Dependabot updates the SHA and the version comment beside it together.
 version: 2
 updates:
   - package-ecosystem: github-actions
@@ -14,3 +14,18 @@ updates:
         patterns: ["*"]
     commit-message:
       prefix: ci
+
+  # ruff, mypy and Biome, pinned by `rev:` in .pre-commit-config.yaml, in place of a manual
+  # `pre-commit autoupdate`. CI's lint job runs the new versions on the PR; if they reformat or flag
+  # code, fix it on the Dependabot branch before merging (CLAUDE.md §7.2).
+  - package-ecosystem: pre-commit
+    directory: /
+    schedule:
+      interval: monthly
+    cooldown:
+      default-days: 7
+    groups:
+      pre-commit-hooks:
+        patterns: ["*"]
+    commit-message:
+      prefix: chore

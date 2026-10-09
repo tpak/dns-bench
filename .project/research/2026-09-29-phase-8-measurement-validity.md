@@ -150,6 +150,17 @@ After these changes, on the 13 saved runs:
 - "All runs combined" (Cloudflare, then OpenDNS with ISP and Quad9 within noise of it, then
   Google) has no tie for best.
 
+## Addendum (2026-10-09): the two open decisions
+
+`.project/research/2026-10-09-phase-8-open-decisions.md` analysed the two questions this phase left
+to Chris. On 2026-10-09 he settled them:
+- **Failure-rate counting:** stays as built (left alone for now).
+- **First-answer latency:** kept.
+
+That note also corrects the "falsely narrow" argument above. Within a run, repeats make the median
+interval only about 8 % too narrow. The bias between providers and the run-to-run behaviour carry
+the decision.
+
 ## Sources
 
 - Newcombe R. G. (1998), "Interval estimation for the difference between independent proportions:
