@@ -430,6 +430,23 @@ class SecurityTest(ServerTestBase):
         self.assertTrue(resp.startswith(b"HTTP/1.0 403 "), resp[:60])
         self.assertIn(b"X-Content-Type-Options: nosniff", resp)
 
+    def test_log_names_an_unparseable_request_line(self):
+        # serve's request log shows the line itself for a request the base class couldn't parse, and a
+        # label when there is none: CPython leaves requestline empty for a line over 64 KiB (a 414),
+        # which was logged as "'' -> 414" (review of 1.4.0).
+        quiet, self.srv.quiet = self.srv.quiet, False
+        self.addCleanup(setattr, self.srv, "quiet", quiet)
+        host = f"Host: 127.0.0.1:{self.port}\r\n"
+        for request, expected in (
+            (f"GET / HTTP/9.9\r\n{host}\r\n".encode(), "'GET / HTTP/9.9' -> 505"),
+            (b"GET /" + b"a" * 70_000 + b" HTTP/1.1\r\n\r\n", "(no request line) -> 414"),
+        ):
+            with self.subTest(expected=expected):
+                err = io.StringIO()
+                with contextlib.redirect_stderr(err):
+                    self.raw_request(request)
+                self.assertIn(expected, err.getvalue())
+
     def test_one_request_per_connection(self):
         host = f"Host: 127.0.0.1:{self.port}\r\n"
         # HTTP/1.0 even when the client asks for keep-alive: raw_request reads until the server closes.
