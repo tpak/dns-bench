@@ -298,7 +298,8 @@ class Handler(BaseHTTPRequestHandler):
             if self.command:
                 what = f"{self.command} {getattr(self, 'path', '')}"
             else:  # a request line the base class couldn't parse: show it (escaped, cut short)
-                what = repr(getattr(self, "requestline", "")[:80]) or "(no request line)"
+                line = getattr(self, "requestline", "") or ""  # "" for one over 64 KiB (a 414)
+                what = repr(line[:80]) if line else "(no request line)"
             sys.stderr.write(f"[{time.strftime('%H:%M:%S')}] {what} -> {code}\n")
 
     def log_error(self, format, *args):  # noqa: A002
