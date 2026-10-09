@@ -5,12 +5,11 @@
 
 ## Up Next
 
-- Chris: decide on failure-rate counting — recommendation: keep counting a significant rate in full (not the excess); revisit with the shrinkage rule "e1" only if threshold flips show up in practice (`.project/research/2026-10-09-phase-8-open-decisions.md`)
-- Chris: confirm first-answer latency — recommendation: keep it (same research note)
-- Consider Dependabot's `pre-commit` ecosystem for the hook revs (would replace manual `pre-commit autoupdate`; CLAUDE.md §7.2 would change) — `.project/research/2026-09-27-ci-actions.md`
-
 ## Done This Week
 
+- Phase 8 decisions settled by Chris: failure-rate counting left as is (revisit with "e1" only if threshold flips appear); first-answer latency kept (DECISIONS 2026-10-09) (2026-10-09)
+- Dependabot updates the pre-commit hook versions (monthly, grouped, 7-day cooldown); CLAUDE.md §7.2 and README updated (2026-10-09)
+- PR #20 merged: setup-uv 10.1.0 → 10.2.0, pinned SHA checked against the v10.2.0 tag (2026-10-09)
 - `serve` log: a request line over 64 KiB is logged as `(no request line) -> 414`, not `'' -> 414` (2026-10-09)
 - Web UI: the dataset shown is in the address bar (`?run=all`, `?run=<id>`), so a bookmark or reload keeps it and Back/Forward restore it (2026-09-29). Back/Forward only really tested on 2026-10-09 with the iframe harness, which found and fixed popstate-only steps not changing the page (1.4.0 review)
 - Linux check of a dead LAN resolver (container): timeouts, already charged — no change needed (2026-09-29)
