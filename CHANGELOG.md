@@ -11,8 +11,8 @@ release notes.
 
 ### Fixed
 
-- `dns-bench serve` logs a request line too long to read (over 64 KiB) as `(no request line) -> 414`
-  instead of `'' -> 414`.
+- `dns-bench serve` logs a request line too long to read (over 64 KiB, counting its line ending) as
+  `(no request line) -> 414` instead of `'' -> 414`.
 
 ## [1.4.0] - 2026-10-09
 

@@ -113,6 +113,24 @@ exits 1 with "dns-bench needs Python 3.13 or newer (found 3.12)".
   publishes nothing.
 - Follow-up: consider Dependabot's `pre-commit` ecosystem for the hook revs.
 
+## Addendum (2026-10-09): the pre-commit ecosystem follow-up is done
+
+The follow-up above shipped in PR #23. `.github/dependabot.yml` now has a `pre-commit` block beside
+the github-actions one (monthly, grouped, 7-day cooldown, prefix `chore`), replacing a routine
+manual `pre-commit autoupdate`.
+
+- **Checked against the docs:** `pre-commit` is a generally available ecosystem, with
+  `default-days` cooldown, groups and a commit-message prefix.
+- **The three hook repos** (ruff-pre-commit, mirrors-mypy, biomejs/pre-commit) tag releases as
+  `vX.Y.Z`, so Dependabot can update them.
+- **CI checks each update.** The lint job's cache is keyed on `.pre-commit-config.yaml`, so the new
+  versions are installed and run. If a hook update reformats or flags code, the fixes go on the
+  Dependabot branch before merging (CLAUDE.md §7.2).
+- **Not covered:** the pre-commit version that ci.yml runs (`uvx pre-commit@…`) is still bumped by
+  hand.
+
+See DECISIONS.md, 2026-10-09 [Dependencies].
+
 ## Sources
 
 - https://docs.github.com/en/code-security/dependabot/working-with-dependabot/dependabot-options-reference
