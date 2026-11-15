@@ -2,11 +2,11 @@
 
 ## In Progress
 
-
 ## Up Next
 
 ## Done This Week
 
+- Fixed the Biome 2.6.3 schema mismatch and kept Markdown out of Biome's scope (2026-11-15)
 - Phase 8 decisions settled by Chris: failure-rate counting left as is (revisit with "e1" only if threshold flips appear); first-answer latency kept (DECISIONS 2026-10-09) (2026-10-09)
 - Dependabot updates the pre-commit hook versions (monthly, grouped, 7-day cooldown); CLAUDE.md §7.2 and README updated (2026-10-09)
 - PR #20 merged: setup-uv 10.1.0 → 10.2.0, pinned SHA checked against the v10.2.0 tag (2026-10-09)
