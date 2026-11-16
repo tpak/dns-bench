@@ -36,7 +36,7 @@ The following files in `.project/` are the single source of truth for project st
 
 ### 3.1 `.project/TODO.md`
 
-Living task list. Three sections: `## In Progress`, `## Up Next`, `## Done This Week` (rotate weekly). When you start a task, move it to In Progress. When you complete it, move it to Done. When you discover a new task, add it to Up Next.
+Living task list. Three sections: `## In Progress`, `## Up Next`, `## Done This Week` (rotate weekly: move older entries to the top of `.project/DONE.md`). When you start a task, move it to In Progress. When you complete it, move it to Done. When you discover a new task, add it to Up Next.
 
 ### 3.2 `.project/DECISIONS.md`
 
